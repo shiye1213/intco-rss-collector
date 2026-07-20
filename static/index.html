@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>英科医疗 RSS 采集</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260720-3" />
+    <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script defer src="/static/app.js?v=20260720-3"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-mark">IN</div>
+        <div>
+          <h1>英科医疗 RSS 采集</h1>
+          <p id="header-schedule">每日 08:00 · Asia/Shanghai</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="run-indicator" class="run-indicator idle">
+          <span class="indicator-dot"></span>
+          <span>空闲</span>
+        </span>
+        <button id="collect-now" class="button primary" type="button">
+          <i data-lucide="refresh-cw"></i>
+          <span>立即采集</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="app-shell">
+      <nav class="side-nav" aria-label="主导航">
+        <button class="nav-item active" data-view="articles" type="button">
+          <i data-lucide="newspaper"></i><span>采集信息</span>
+        </button>
+        <button class="nav-item" data-view="runs" type="button">
+          <i data-lucide="scroll-text"></i><span>采集日志</span>
+        </button>
+        <button class="nav-item" data-view="sources" type="button">
+          <i data-lucide="rss"></i><span>RSS 源</span>
+        </button>
+        <button class="nav-item" data-view="keywords" type="button">
+          <i data-lucide="tags"></i><span>关键词</span>
+        </button>
+        <button class="nav-item" data-view="settings" type="button">
+          <i data-lucide="settings-2"></i><span>采集设置</span>
+        </button>
+      </nav>
+
+      <main class="main-content">
+        <section class="status-strip" aria-label="采集概览">
+          <div class="status-item">
+            <span>已存信息</span>
+            <strong id="metric-articles">0</strong>
+          </div>
+          <div class="status-item">
+            <span>启用 RSS 源</span>
+            <strong id="metric-sources">0</strong>
+          </div>
+          <div class="status-item">
+            <span>启用关键词组</span>
+            <strong id="metric-keywords">0</strong>
+          </div>
+          <div class="status-item wide">
+            <span>下次定时采集</span>
+            <strong id="metric-next-run">-</strong>
+          </div>
+          <div class="status-item wide">
+            <span>最近一次结果</span>
+            <strong id="metric-last-run">尚未采集</strong>
+          </div>
+        </section>
+
+        <section id="view-articles" class="view active">
+          <div class="view-heading">
+            <div><h2>采集信息</h2><p id="article-total">共 0 条</p></div>
+            <button id="refresh-articles" class="icon-button" type="button" title="刷新列表">
+              <i data-lucide="rotate-cw"></i>
+            </button>
+          </div>
+          <div class="toolbar">
+            <label class="search-field">
+              <i data-lucide="search"></i>
+              <input id="article-search" type="search" placeholder="搜索标题、摘要或发布方" />
+            </label>
+            <select id="article-source-filter" aria-label="按 RSS 源筛选">
+              <option value="">全部 RSS 源</option>
+            </select>
+            <select id="article-keyword-filter" aria-label="按关键词筛选">
+              <option value="">全部关键词</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>标题</th><th>发布方</th><th>关键词</th><th>发布时间</th><th>采集时间</th></tr></thead>
+              <tbody id="article-rows"></tbody>
+            </table>
+            <div id="article-empty" class="empty-state hidden">当前筛选条件下没有采集信息</div>
+          </div>
+          <div class="pager">
+            <button id="article-prev" class="button secondary" type="button"><i data-lucide="chevron-left"></i><span>上一页</span></button>
+            <span id="article-page">第 1 页</span>
+            <button id="article-next" class="button secondary" type="button"><span>下一页</span><i data-lucide="chevron-right"></i></button>
+          </div>
+        </section>
+
+        <section id="view-runs" class="view">
+          <div class="view-heading">
+            <div><h2>采集日志</h2><p>运行记录与任务明细</p></div>
+            <button id="refresh-runs" class="icon-button" type="button" title="刷新日志">
+              <i data-lucide="rotate-cw"></i>
+            </button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>编号</th><th>触发方式</th><th>状态</th><th>采集时间窗</th><th>任务</th><th>命中 / 新增</th><th>开始时间</th><th></th></tr></thead>
+              <tbody id="run-rows"></tbody>
+            </table>
+            <div id="run-empty" class="empty-state hidden">暂无采集日志</div>
+          </div>
+        </section>
+
+        <section id="view-sources" class="view">
+          <div class="view-heading">
+            <div><h2>RSS 源</h2><p>搜索型与直连型 Feed</p></div>
+            <button id="add-source" class="button primary" type="button"><i data-lucide="plus"></i><span>新增 RSS 源</span></button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>名称</th><th>类型</th><th>语言</th><th>地址</th><th>启用</th><th></th></tr></thead>
+              <tbody id="source-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="view-keywords" class="view">
+          <div class="view-heading">
+            <div><h2>关键词</h2><p>查询表达式与正文匹配词</p></div>
+            <button id="add-keyword" class="button primary" type="button"><i data-lucide="plus"></i><span>新增关键词组</span></button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>名称</th><th>查询表达式</th><th>匹配词</th><th>启用</th><th></th></tr></thead>
+              <tbody id="keyword-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="view-settings" class="view">
+          <div class="view-heading"><div><h2>采集设置</h2><p>Asia/Shanghai</p></div></div>
+          <form id="settings-form" class="settings-form">
+            <label>
+              <span>每日采集时间</span>
+              <input id="schedule-time" type="time" required />
+            </label>
+            <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存设置</span></button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="source-dialog" class="modal">
+      <form id="source-form" method="dialog">
+        <div class="modal-header"><h3 id="source-dialog-title">新增 RSS 源</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+        <input id="source-id" type="hidden" />
+        <div class="form-grid">
+          <label><span>名称</span><input id="source-name" maxlength="100" required /></label>
+          <label><span>类型</span><select id="source-mode"><option value="search">搜索型</option><option value="direct">直连型</option></select></label>
+          <label><span>语言</span><input id="source-language" maxlength="30" placeholder="zh-CN" /></label>
+          <label class="full"><span>Feed 地址</span><textarea id="source-url" rows="3" maxlength="2000" required placeholder="https://...q={query}"></textarea></label>
+          <label class="switch-label"><span>启用</span><input id="source-active" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
+        </div>
+        <div class="modal-actions"><button class="button secondary close-dialog" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="keyword-dialog" class="modal">
+      <form id="keyword-form" method="dialog">
+        <div class="modal-header"><h3 id="keyword-dialog-title">新增关键词组</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+        <input id="keyword-id" type="hidden" />
+        <div class="form-grid one-column">
+          <label><span>名称</span><input id="keyword-name" maxlength="100" required /></label>
+          <label><span>查询表达式（自动生成）</span><textarea id="keyword-query" rows="4" maxlength="2000" readonly></textarea></label>
+          <label><span>正文匹配词</span><textarea id="keyword-terms" rows="4" required placeholder="每行一个匹配词"></textarea></label>
+          <label class="switch-label"><span>启用</span><input id="keyword-active" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
+        </div>
+        <div class="modal-actions"><button class="button secondary close-dialog" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="run-dialog" class="modal wide-modal">
+      <div class="modal-header"><h3 id="run-dialog-title">采集日志</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div id="run-summary" class="run-summary"></div>
+      <div class="table-wrap modal-table">
+        <table><thead><tr><th>RSS 源</th><th>关键词</th><th>状态</th><th>读取</th><th>时间窗外</th><th>命中</th><th>新增</th><th>错误</th></tr></thead><tbody id="run-detail-rows"></tbody></table>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

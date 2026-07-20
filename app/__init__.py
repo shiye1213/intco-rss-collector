@@ -1,0 +1,2 @@
+"""INTCO RSS collector application."""
+
