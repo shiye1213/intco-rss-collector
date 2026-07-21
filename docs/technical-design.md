@@ -171,7 +171,9 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Candidate["articles 中的 RSS 候选"] --> Fetch["解析最终 URL 并抓取网页"]
+    Candidate["articles 中的 RSS 候选"] --> Snapshot["锁定本次全部待办快照"]
+    Snapshot --> Batch["按 ai_batch_size 连续分批"]
+    Batch --> Fetch["解析最终 URL 并抓取网页"]
     Fetch -->|"失败"| FetchError["article_contents.failed + 批次错误"]
     Fetch -->|"成功"| Content["清洗正文 + SHA-256"]
     Content --> Review["第一次 DeepSeek：仅相关性审核"]
@@ -188,6 +190,8 @@ flowchart TD
 关键约束：
 
 - RSS 标题和摘要只用于候选匹配，不用于 AI 最终判断。
+- 一次手动点击或自动分析会锁定启动时的全部待办，按批次连续运行，无需用户重复触发。
+- 单篇失败不阻断后续文章；失败项在当前快照中只尝试一次，并保留为下一次可重试待办。
 - Google News 链接先解析为出版社 URL，再抓取页面。
 - 全文失败时不退回 RSS 摘要，防止证据标准不一致。
 - 完整清洗正文保存在数据库；发送模型时按 `ai_content_max_chars` 截断，默认 30000 字符。
@@ -295,7 +299,11 @@ erDiagram
 
 应用启动时将上次未完成的 `running`/`processing` 记录改为 `interrupted` 或 `failed`，避免页面永久显示运行中。失败的全文、相关性或业务分析记录仍满足待办条件，可以后续重试。
 
-### 9.4 模型输出约束
+### 9.4 AI 连续批处理
+
+AI 任务启动时先查询并固定当前待办文章 ID，随后按 `ai_batch_size` 拆分。每批独立写入 `ai_analysis_runs` 和逐文章日志，但进程内运行锁会覆盖整个队列，避免批次切换时被误判为任务结束或启动重叠任务。新采集且未进入本次快照的文章留给下一次任务；当前批次失败的文章不会在同一队列中循环重试。
+
+### 9.5 模型输出约束
 
 - 三类 Prompt 要求只输出 JSON。
 - Pydantic 校验布尔值、枚举、字符串长度、数组数量和数值范围。

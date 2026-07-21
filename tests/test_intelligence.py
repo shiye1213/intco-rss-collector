@@ -379,6 +379,92 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     assert repository.has_successful_report(date(2026, 7, 20))
 
 
+def test_analysis_queue_drains_all_pending_articles_across_batches(tmp_path) -> None:
+    database = Database(tmp_path / "analysis-queue.db")
+    database.initialize()
+    article_ids = [
+        create_article(
+            database,
+            slug=f"pending-{index}",
+            title=f"待处理文章 {index}",
+            summary="候选摘要",
+        )
+        for index in range(5)
+    ]
+    repository = IntelligenceRepository(database)
+    content_fetcher = FakeContentFetcher(
+        [
+            content_document(
+                f"https://example.com/pending-{index}",
+                f"与企业业务无关的测试正文 {index}" * 30,
+            )
+            for index in range(5)
+        ]
+    )
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review() for _ in range(5)]),
+        content_fetcher,
+    )
+
+    first_run_id, queued_ids = manager.prepare_queue(batch_size=2)
+    manager.execute_queue(first_run_id, queued_ids, batch_size=2)
+
+    assert queued_ids == article_ids
+    assert len(content_fetcher.calls) == 5
+    assert repository.status()["pending"] == 0
+    assert manager.running_run_id is None
+    runs = repository.list_analysis_runs()
+    assert len(runs) == 3
+    assert [run["articles_total"] for run in runs] == [1, 2, 2]
+    assert {run["status"] for run in runs} == {"success"}
+
+
+def test_analysis_queue_attempts_failed_article_only_once_per_click(tmp_path) -> None:
+    database = Database(tmp_path / "analysis-queue-failure.db")
+    database.initialize()
+    article_ids = [
+        create_article(
+            database,
+            slug=f"retry-{index}",
+            title=f"待处理文章 {index}",
+            summary="候选摘要",
+        )
+        for index in range(3)
+    ]
+    repository = IntelligenceRepository(database)
+    content_fetcher = FakeContentFetcher(
+        [
+            ContentFetchError("正文抓取结果过短"),
+            content_document(
+                "https://example.com/retry-1", "无关测试正文 1" * 30
+            ),
+            content_document(
+                "https://example.com/retry-2", "无关测试正文 2" * 30
+            ),
+        ]
+    )
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review(), irrelevant_review()]),
+        content_fetcher,
+    )
+
+    first_run_id, queued_ids = manager.prepare_queue(batch_size=2)
+    manager.execute_queue(first_run_id, queued_ids, batch_size=2)
+
+    assert queued_ids == article_ids
+    assert len(content_fetcher.calls) == 3
+    assert content_fetcher.calls.count("https://example.com/retry-0") == 1
+    assert repository.status()["pending"] == 1
+    assert manager.running_run_id is None
+    runs = repository.list_analysis_runs()
+    assert len(runs) == 2
+    assert [run["status"] for run in runs] == ["success", "partial"]
+
+
 def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     article = {
         "article_id": 1,

@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>英科医疗 RSS 情报</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260721-3" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260721-4" />
     <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script defer src="/static/app.js?v=20260721-3"></script>
+    <script defer src="/static/app.js?v=20260721-4"></script>
   </head>
   <body>
     <header class="app-header">
@@ -131,7 +131,7 @@
           <div class="view-heading">
             <div><h2>AI 情报</h2><p id="ai-view-status">DeepSeek · 等待状态</p></div>
             <button id="analyze-pending" class="button primary" type="button">
-              <i data-lucide="sparkles"></i><span>处理待办文章</span>
+              <i data-lucide="sparkles"></i><span>处理全部待办</span>
             </button>
           </div>
           <div class="ai-summary" aria-label="AI 分析概览">
@@ -266,7 +266,7 @@
             <form id="ai-settings-form" class="ai-settings-form">
               <label class="full"><span>企业业务边界</span><textarea id="ai-business-profile" rows="9" minlength="50" maxlength="10000" required></textarea></label>
               <label><span>相关性阈值</span><input id="ai-threshold" type="number" min="0" max="100" required /></label>
-              <label><span>单批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /></label>
+              <label><span>每批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /></label>
               <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /></label>
               <label class="switch-row"><span><strong>采集后自动分析</strong></span><input id="ai-auto-analyze" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
               <label class="switch-row"><span><strong>分析后自动生成当天日报</strong></span><input id="ai-auto-report" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>

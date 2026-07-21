@@ -244,7 +244,7 @@ class IntelligenceRepository:
     def candidate_article_ids(
         self,
         *,
-        limit: int,
+        limit: int | None,
         force: bool = False,
         article_ids: list[int] | None = None,
     ) -> list[int]:
@@ -257,6 +257,9 @@ class IntelligenceRepository:
             filters.append(f"a.id IN ({placeholders})")  # noqa: S608
             parameters.extend(article_ids)
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        if limit is not None:
+            parameters.append(limit)
         with self.database.connect() as connection:
             rows = connection.execute(
                 f"""
@@ -267,9 +270,9 @@ class IntelligenceRepository:
                 LEFT JOIN business_articles ba ON ba.article_id = a.id
                 {where}
                 ORDER BY a.published_at, a.id
-                LIMIT ?
+                {limit_clause}
                 """,  # noqa: S608
-                [*parameters, limit],
+                parameters,
             ).fetchall()
         return [int(row["id"]) for row in rows]
 
@@ -1205,7 +1208,91 @@ class ArticleAnalysisManager:
             self._running_run_id = run_id
         return run_id, candidate_ids
 
+    def prepare_queue(
+        self,
+        *,
+        trigger_type: str = "manual",
+        batch_size: int = 20,
+        force: bool = False,
+        article_ids: list[int] | None = None,
+    ) -> tuple[int, list[int]]:
+        if not self.client.configured:
+            raise ValueError("尚未配置 DEEPSEEK_API_KEY")
+        batch_size = max(1, min(100, batch_size))
+        with self._state_lock:
+            if self._running_run_id is not None:
+                raise IntelligenceAlreadyRunningError(
+                    f"AI 处理任务 #{self._running_run_id} 正在运行"
+                )
+            candidate_ids = self.repository.candidate_article_ids(
+                limit=None, force=force, article_ids=article_ids
+            )
+            run_id = self.repository.create_analysis_run(
+                candidate_ids[:batch_size],
+                trigger_type=trigger_type,
+                model=self.client.model,
+            )
+            self._running_run_id = run_id
+        return run_id, candidate_ids
+
     def execute(
+        self,
+        run_id: int,
+        article_ids: list[int],
+        *,
+        force: bool = False,
+        refresh_content: bool = False,
+    ) -> None:
+        try:
+            self._execute_run(
+                run_id,
+                article_ids,
+                force=force,
+                refresh_content=refresh_content,
+            )
+        finally:
+            with self._state_lock:
+                if self._running_run_id == run_id:
+                    self._running_run_id = None
+
+    def execute_queue(
+        self,
+        first_run_id: int,
+        article_ids: list[int],
+        *,
+        batch_size: int = 20,
+        trigger_type: str = "manual",
+        force: bool = False,
+        refresh_content: bool = False,
+    ) -> None:
+        batch_size = max(1, min(100, batch_size))
+        batches = [
+            article_ids[index : index + batch_size]
+            for index in range(0, len(article_ids), batch_size)
+        ] or [[]]
+        active_run_id = first_run_id
+        try:
+            for index, batch in enumerate(batches):
+                if index > 0:
+                    active_run_id = self.repository.create_analysis_run(
+                        batch,
+                        trigger_type=trigger_type,
+                        model=self.client.model,
+                    )
+                    with self._state_lock:
+                        self._running_run_id = active_run_id
+                self._execute_run(
+                    active_run_id,
+                    batch,
+                    force=force,
+                    refresh_content=refresh_content,
+                )
+        finally:
+            with self._state_lock:
+                if self._running_run_id == active_run_id:
+                    self._running_run_id = None
+
+    def _execute_run(
         self,
         run_id: int,
         article_ids: list[int],
@@ -1358,9 +1445,6 @@ class ArticleAnalysisManager:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
             )
-            with self._state_lock:
-                if self._running_run_id == run_id:
-                    self._running_run_id = None
 
     def _get_or_fetch_content(
         self,
@@ -1579,10 +1663,15 @@ class AutomaticIntelligenceWorkflow:
         except ValueError:
             limit = 20
         try:
-            run_id, article_ids = self.analysis_manager.prepare(
-                trigger_type="collection", limit=limit
+            run_id, article_ids = self.analysis_manager.prepare_queue(
+                trigger_type="collection", batch_size=limit
             )
-            self.analysis_manager.execute(run_id, article_ids)
+            self.analysis_manager.execute_queue(
+                run_id,
+                article_ids,
+                batch_size=limit,
+                trigger_type="collection",
+            )
         except IntelligenceAlreadyRunningError:
             return
         if settings.get("ai_auto_report", "false").lower() != "true":

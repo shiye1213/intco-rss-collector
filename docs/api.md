@@ -136,13 +136,18 @@
 ```json
 {
   "limit": 20,
+  "process_all": true,
   "force": false,
   "refresh_content": false,
   "article_ids": null
 }
 ```
 
+默认 `process_all=true`：启动时锁定当时的全部待办文章，并以 `limit` 指定的单批大小连续执行，直到该待办快照全部尝试完成；批次切换不需要再次调用接口。单篇失败不会阻断后续批次，也不会在本次任务内重复尝试，失败项会保留为待办供下次重试。设置 `process_all=false` 可保留旧行为，只处理最多 `limit` 篇。
+
 任务依次执行最终链接解析、网页正文抽取、相关性审核和真相关文章业务分析。`force=true` 会重新审核和分析已成功处理的文章；`refresh_content=true` 还会强制重新抓取网页正文。`article_ids` 可指定文章 ID，最多 100 个。未配置 `DEEPSEEK_API_KEY` 时返回 `503`，已有处理任务运行时返回 `409`。
+
+响应中的 `article_count` 是本次锁定的文章总数，`batch_size` 是每个日志批次的文章上限。每个批次分别写入 `ai_analysis_runs`，便于查看阶段状态与 Token 用量。
 
 ### `GET /api/ai/articles`
 

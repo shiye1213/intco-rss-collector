@@ -118,6 +118,7 @@ class SettingsPayload(BaseModel):
 
 class AIAnalysisPayload(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
+    process_all: bool = True
     force: bool = False
     refresh_content: bool = False
     article_ids: list[int] | None = Field(
@@ -370,30 +371,49 @@ def create_app(
     @app.post("/api/ai/analyze", status_code=status.HTTP_202_ACCEPTED)
     async def start_ai_analysis(payload: AIAnalysisPayload):
         try:
-            run_id, article_ids = analysis_manager.prepare(
-                limit=payload.limit,
-                force=payload.force,
-                article_ids=payload.article_ids,
-            )
+            if payload.process_all:
+                run_id, article_ids = analysis_manager.prepare_queue(
+                    batch_size=payload.limit,
+                    force=payload.force,
+                    article_ids=payload.article_ids,
+                )
+            else:
+                run_id, article_ids = analysis_manager.prepare(
+                    limit=payload.limit,
+                    force=payload.force,
+                    article_ids=payload.article_ids,
+                )
         except IntelligenceAlreadyRunningError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        task = asyncio.create_task(
-            asyncio.to_thread(
+        if payload.process_all:
+            worker = asyncio.to_thread(
+                analysis_manager.execute_queue,
+                run_id,
+                article_ids,
+                batch_size=payload.limit,
+                trigger_type="manual",
+                force=payload.force,
+                refresh_content=payload.refresh_content,
+            )
+        else:
+            worker = asyncio.to_thread(
                 analysis_manager.execute,
                 run_id,
                 article_ids,
                 force=payload.force,
                 refresh_content=payload.refresh_content,
             )
-        )
+        task = asyncio.create_task(worker)
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
         return {
             "run_id": run_id,
             "status": "running",
             "article_count": len(article_ids),
+            "batch_size": payload.limit,
+            "process_all": payload.process_all,
         }
 
     @app.get("/api/ai/runs")

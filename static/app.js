@@ -266,7 +266,7 @@ async function loadAIStatus() {
     $("ai-settings-status").textContent = statusText;
     const analyzeButton = $("analyze-pending");
     analyzeButton.disabled = !data.configured || data.analysis_running || data.pending === 0;
-    analyzeButton.querySelector("span").textContent = data.analysis_running ? "正在处理" : "处理待办文章";
+    analyzeButton.querySelector("span").textContent = data.analysis_running ? "正在处理" : "处理全部待办";
     const reportButton = $("generate-report");
     reportButton.disabled = !data.configured || data.report_running;
     reportButton.querySelector("span").textContent = data.report_running ? "正在生成" : "生成日报";
@@ -368,10 +368,10 @@ async function startAIAnalysis() {
   try {
     const data = await api("/api/ai/analyze", {
       method: "POST",
-      body: JSON.stringify({ limit: state.aiBatchSize, force: false, refresh_content: false }),
+      body: JSON.stringify({ limit: state.aiBatchSize, process_all: true, force: false, refresh_content: false }),
     });
     state.wasAnalysisRunning = true;
-    showToast(`AI 处理任务 #${data.run_id} 已启动，共 ${data.article_count} 篇`);
+    showToast(`AI 处理已启动，共 ${data.article_count} 篇，将按每批 ${data.batch_size} 篇连续处理`);
     await loadAIStatus();
   } catch (error) {
     showToast(error.message, true);
