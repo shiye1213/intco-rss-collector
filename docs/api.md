@@ -45,6 +45,8 @@
 | `limit` | integer | 返回数量，默认 50，最大 200 |
 | `offset` | integer | 分页偏移量 |
 
+每篇文章包含结构化的 `sources`、`keywords`、`languages`、`countries` 和 `categories` 字段。`sources` 中保存来源名称、Feed 地址、RSS 提供的文章链接、GUID、语言、国家、分类及首次/最后发现时间。
+
 ## RSS 源
 
 ### `GET /api/sources`
@@ -59,6 +61,7 @@
   "url_template": "https://news.google.com/rss/search?q={query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
   "mode": "search",
   "language": "zh-CN",
+  "country": "CN",
   "active": true
 }
 ```
@@ -120,6 +123,88 @@
 
 时间格式必须为 `HH:MM`，当前时区固定为 `Asia/Shanghai`。
 
+## AI 情报
+
+### `GET /api/ai/status`
+
+返回 DeepSeek 配置状态、模型、处理/日报运行状态，以及待处理、全文成功/失败、相关/无关、业务分析成功/失败数量、分类字典、阈值和三个 Prompt 版本。
+
+### `POST /api/ai/analyze`
+
+启动后台分析任务，返回 HTTP `202`：
+
+```json
+{
+  "limit": 20,
+  "force": false,
+  "refresh_content": false,
+  "article_ids": null
+}
+```
+
+任务依次执行最终链接解析、网页正文抽取、相关性审核和真相关文章业务分析。`force=true` 会重新审核和分析已成功处理的文章；`refresh_content=true` 还会强制重新抓取网页正文。`article_ids` 可指定文章 ID，最多 100 个。未配置 `DEEPSEEK_API_KEY` 时返回 `503`，已有处理任务运行时返回 `409`。
+
+### `GET /api/ai/articles`
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `category` | string | 固定 AI 分类代码 |
+| `date_from` | date | 新闻发布日期起点，北京时间 |
+| `date_to` | date | 新闻发布日期终点，北京时间 |
+| `limit` / `offset` | integer | 分页参数 |
+
+该接口只返回全文审核通过且业务分析成功的最终业务新闻，同时包含 `final_url`、`content_chars`、相关性、摘要、分类、影响和风险字段。
+
+### `GET /api/ai/reviews`
+
+返回成功完成的正文相关性审核记录。支持 `relevant`、`date_from`、`date_to`、`limit` 和 `offset`，用于审计真相关与审核无关的理由、证据、分数、模型及正文元数据。
+
+### `GET /api/ai/runs?limit=50`
+
+返回 AI 分析批次、成功/失败数量、相关/无关数量、模型、Prompt 版本和 Token 用量。
+
+### `GET /api/ai/runs/{run_id}`
+
+返回单个处理批次及每篇文章的 `content_status`、`relevance_status`、`business_analysis_status`、最终链接、正文字符数和错误信息。
+
+### `GET /api/ai/settings` 与 `PUT /api/ai/settings`
+
+```json
+{
+  "business_profile": "英科医疗业务边界……",
+  "relevance_threshold": 70,
+  "batch_size": 20,
+  "content_max_chars": 30000,
+  "auto_analyze": false,
+  "auto_report": false
+}
+```
+
+自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 且当天存在已审核相关新闻时才会执行。
+
+## 情报日报
+
+### `POST /api/reports`
+
+按新闻发布日期和分类生成后台日报任务：
+
+```json
+{
+  "report_date": "2026-07-20",
+  "categories": ["market_demand"]
+}
+```
+
+`categories=[]` 表示全部分类。所选范围没有已通过相关性审核的新闻时返回 `422`。
+
+### `GET /api/reports?limit=50`
+
+返回已生成、运行中或失败的日报列表。
+
+### `GET /api/reports/{report_id}`
+
+返回日报结构化内容和全部依据文章，包括摘要、风险等级、关键进展、风险、机会、建议动作和监控清单。
+
 ## 错误约定
 
 接口错误统一返回 FastAPI 的 `detail` 字段，例如：
@@ -130,4 +215,4 @@
 }
 ```
 
-常见状态码：`404` 资源不存在、`409` 配置冲突或采集任务正在运行、`422` 参数校验失败、`500` 数据库错误。
+常见状态码：`404` 资源不存在、`409` 配置冲突或任务正在运行、`422` 参数或业务范围校验失败、`503` DeepSeek Key 未配置、`500` 数据库错误。

@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "启动 RSS 采集系统",
+      "name": "启动 RSS 情报系统",
       "type": "debugpy",
       "request": "launch",
       "module": "uvicorn",

@@ -1,0 +1,1598 @@
+from __future__ import annotations
+
+import json
+import threading
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any, Literal
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
+
+from pydantic import BaseModel, Field, field_validator
+
+from .content import ArticleContentFetcher, ContentDocument, WebContentFetcher
+from .database import Database, utc_now_iso
+from .llm import JSONLLMClient, LLMResult
+from .prompts import (
+    BUSINESS_ANALYSIS_PROMPT_VERSION,
+    CATEGORY_LABELS,
+    RELEVANCE_PROMPT_VERSION,
+    REPORT_PROMPT_VERSION,
+    build_business_analysis_prompts,
+    build_relevance_prompts,
+    build_report_prompts,
+)
+
+
+CategoryCode = Literal[
+    "market_demand",
+    "competitor",
+    "raw_material_supply",
+    "policy_regulation",
+    "trade_tariff",
+    "public_health",
+    "technology_product",
+    "customer_channel",
+    "esg",
+    "other",
+]
+RiskLevel = Literal["low", "medium", "high", "critical"]
+ImpactDirection = Literal["positive", "negative", "mixed", "neutral"]
+
+
+def _clean_string_list(values: list[str], *, limit: int = 8) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values[:limit]:
+        cleaned = " ".join(str(value).split())[:500]
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
+            result.append(cleaned)
+    return result
+
+
+def risk_level_for_score(score: int) -> RiskLevel:
+    if score >= 85:
+        return "critical"
+    if score >= 65:
+        return "high"
+    if score >= 35:
+        return "medium"
+    return "low"
+
+
+def local_date_window(
+    date_from: date,
+    date_to: date | None = None,
+    timezone_name: str = "Asia/Shanghai",
+) -> tuple[str, str]:
+    timezone = ZoneInfo(timezone_name)
+    inclusive_end = date_to or date_from
+    start = datetime.combine(date_from, time.min, tzinfo=timezone).astimezone(UTC)
+    end = datetime.combine(
+        inclusive_end + timedelta(days=1), time.min, tzinfo=timezone
+    ).astimezone(UTC)
+    return (
+        start.isoformat().replace("+00:00", "Z"),
+        end.isoformat().replace("+00:00", "Z"),
+    )
+
+
+class RelevanceAssessment(BaseModel):
+    is_relevant: bool
+    relevance_score: int = Field(ge=0, le=100)
+    relevance_reason: str = Field(min_length=1, max_length=1000)
+    evidence: list[str] = Field(default_factory=list, max_length=8)
+    confidence: int = Field(ge=0, le=100)
+
+    @field_validator("evidence")
+    @classmethod
+    def normalize_evidence(cls, values: list[str]) -> list[str]:
+        return _clean_string_list(values)
+
+
+class BusinessAnalysis(BaseModel):
+    category: CategoryCode
+    secondary_categories: list[CategoryCode] = Field(default_factory=list, max_length=5)
+    summary: str = Field(min_length=1, max_length=1500)
+    impact_direction: ImpactDirection = "neutral"
+    impact_score: int = Field(default=1, ge=1, le=5)
+    impact_analysis: str = Field(min_length=1, max_length=2000)
+    risk_level: RiskLevel = "low"
+    risk_score: int = Field(default=0, ge=0, le=100)
+    risk_factors: list[str] = Field(default_factory=list, max_length=8)
+    opportunities: list[str] = Field(default_factory=list, max_length=8)
+    recommended_actions: list[str] = Field(default_factory=list, max_length=8)
+    evidence: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator(
+        "risk_factors", "opportunities", "recommended_actions", "evidence"
+    )
+    @classmethod
+    def normalize_lists(cls, values: list[str]) -> list[str]:
+        return _clean_string_list(values)
+
+
+class KeyDevelopment(BaseModel):
+    article_id: int
+    title: str = Field(max_length=500)
+    finding: str = Field(max_length=1000)
+    business_impact: str = Field(max_length=1000)
+
+
+class DailyReportAssessment(BaseModel):
+    title: str = Field(max_length=300)
+    executive_summary: str = Field(max_length=4000)
+    risk_level: RiskLevel
+    risk_score: int = Field(ge=0, le=100)
+    risk_basis: str = Field(max_length=2000)
+    key_developments: list[KeyDevelopment] = Field(default_factory=list, max_length=20)
+    key_risks: list[str] = Field(default_factory=list, max_length=12)
+    opportunities: list[str] = Field(default_factory=list, max_length=12)
+    recommended_actions: list[str] = Field(default_factory=list, max_length=12)
+    watchlist: list[str] = Field(default_factory=list, max_length=12)
+
+    @field_validator("key_risks", "opportunities", "recommended_actions", "watchlist")
+    @classmethod
+    def normalize_lists(cls, values: list[str]) -> list[str]:
+        return _clean_string_list(values, limit=12)
+
+
+class IntelligenceAlreadyRunningError(RuntimeError):
+    pass
+
+
+class IntelligenceRepository:
+    REVIEW_JSON_FIELDS = ("evidence",)
+    BUSINESS_JSON_FIELDS = (
+        "relevance_evidence",
+        "secondary_categories",
+        "risk_factors",
+        "opportunities",
+        "recommended_actions",
+        "analysis_evidence",
+    )
+    REPORT_JSON_FIELDS = (
+        "categories",
+        "key_developments",
+        "key_risks",
+        "opportunities",
+        "recommended_actions",
+        "watchlist",
+    )
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    @staticmethod
+    def _decode_json(value: Any, fallback: Any) -> Any:
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return fallback
+
+    @staticmethod
+    def _candidate_condition() -> str:
+        return """
+            ic.article_id IS NULL OR ic.status = 'failed'
+            OR rr.article_id IS NULL OR rr.status = 'failed'
+            OR rr.content_hash <> ic.content_hash
+            OR (
+                rr.status = 'success' AND rr.is_relevant = 1
+                AND (
+                    ba.article_id IS NULL OR ba.analysis_status = 'failed'
+                    OR ba.content_hash <> ic.content_hash
+                )
+            )
+        """
+
+    def status(self) -> dict[str, Any]:
+        condition = self._candidate_condition()
+        with self.database.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN ic.status = 'success' THEN 1 ELSE 0 END) AS content_ready,
+                    SUM(CASE WHEN ic.status = 'failed' THEN 1 ELSE 0 END) AS content_failed,
+                    SUM(CASE WHEN ic.status = 'success'
+                        AND rr.status = 'success'
+                        AND rr.content_hash = ic.content_hash
+                        AND rr.is_relevant = 1 THEN 1 ELSE 0 END) AS relevant,
+                    SUM(CASE WHEN ic.status = 'success'
+                        AND rr.status = 'success'
+                        AND rr.content_hash = ic.content_hash
+                        AND rr.is_relevant = 0 THEN 1 ELSE 0 END) AS irrelevant,
+                    SUM(CASE WHEN ic.status = 'success'
+                        AND rr.status = 'failed'
+                        AND rr.content_hash = ic.content_hash
+                        THEN 1 ELSE 0 END) AS review_failed,
+                    SUM(CASE WHEN ic.status = 'success'
+                        AND ba.analysis_status = 'success'
+                        AND ba.content_hash = ic.content_hash
+                        THEN 1 ELSE 0 END) AS analyzed,
+                    SUM(CASE WHEN ic.status = 'success'
+                        AND ba.analysis_status = 'failed'
+                        AND ba.content_hash = ic.content_hash
+                        THEN 1 ELSE 0 END) AS analysis_failed,
+                    SUM(CASE WHEN {condition} THEN 1 ELSE 0 END) AS pending
+                FROM articles a
+                LEFT JOIN article_contents ic ON ic.article_id = a.id
+                LEFT JOIN article_relevance_reviews rr ON rr.article_id = a.id
+                LEFT JOIN business_articles ba ON ba.article_id = a.id
+                """  # noqa: S608
+            ).fetchone()
+            latest_run = connection.execute(
+                "SELECT * FROM ai_analysis_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return {
+            "total": int(row["total"] or 0),
+            "pending": int(row["pending"] or 0),
+            "content_ready": int(row["content_ready"] or 0),
+            "content_failed": int(row["content_failed"] or 0),
+            "relevant": int(row["relevant"] or 0),
+            "irrelevant": int(row["irrelevant"] or 0),
+            "review_failed": int(row["review_failed"] or 0),
+            "analyzed": int(row["analyzed"] or 0),
+            "analysis_failed": int(row["analysis_failed"] or 0),
+            "failed": int(row["content_failed"] or 0)
+            + int(row["review_failed"] or 0)
+            + int(row["analysis_failed"] or 0),
+            "latest_run": dict(latest_run) if latest_run else None,
+        }
+
+    def candidate_article_ids(
+        self,
+        *,
+        limit: int,
+        force: bool = False,
+        article_ids: list[int] | None = None,
+    ) -> list[int]:
+        filters: list[str] = []
+        parameters: list[Any] = []
+        if not force:
+            filters.append(f"({self._candidate_condition()})")
+        if article_ids:
+            placeholders = ",".join("?" for _ in article_ids)
+            filters.append(f"a.id IN ({placeholders})")  # noqa: S608
+            parameters.extend(article_ids)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT a.id
+                FROM articles a
+                LEFT JOIN article_contents ic ON ic.article_id = a.id
+                LEFT JOIN article_relevance_reviews rr ON rr.article_id = a.id
+                LEFT JOIN business_articles ba ON ba.article_id = a.id
+                {where}
+                ORDER BY a.published_at, a.id
+                LIMIT ?
+                """,  # noqa: S608
+                [*parameters, limit],
+            ).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    def get_article(self, article_id: int) -> dict[str, Any] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM articles WHERE id = ?", (article_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            source_rows = connection.execute(
+                """
+                SELECT s.name, axs.language, axs.country, axs.categories,
+                       axs.observed_url, axs.canonical_url
+                FROM article_sources axs
+                JOIN rss_sources s ON s.id = axs.rss_source_id
+                WHERE axs.article_id = ?
+                ORDER BY axs.id
+                """,
+                (article_id,),
+            ).fetchall()
+            keyword_rows = connection.execute(
+                """
+                SELECT k.name, ak.matched_terms
+                FROM article_keywords ak
+                JOIN keywords k ON k.id = ak.keyword_id
+                WHERE ak.article_id = ?
+                ORDER BY k.name
+                """,
+                (article_id,),
+            ).fetchall()
+        article = dict(row)
+        article["sources"] = []
+        for source_row in source_rows:
+            source = dict(source_row)
+            source["categories"] = self._decode_json(source["categories"], [])
+            article["sources"].append(source)
+        article["keywords"] = []
+        for keyword_row in keyword_rows:
+            keyword = dict(keyword_row)
+            keyword["matched_terms"] = self._decode_json(
+                keyword["matched_terms"], []
+            )
+            article["keywords"].append(keyword)
+        return article
+
+    def get_content(self, article_id: int) -> dict[str, Any] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM article_contents WHERE article_id = ?",
+                (article_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_review(self, article_id: int) -> dict[str, Any] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM article_relevance_reviews WHERE article_id = ?",
+                (article_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        review = dict(row)
+        review["evidence"] = self._decode_json(review["evidence"], [])
+        return review
+
+    def create_analysis_run(
+        self,
+        article_ids: list[int],
+        *,
+        trigger_type: str,
+        model: str,
+    ) -> int:
+        now = utc_now_iso()
+        prompt_version = (
+            f"{RELEVANCE_PROMPT_VERSION}|{BUSINESS_ANALYSIS_PROMPT_VERSION}"
+        )
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO ai_analysis_runs
+                    (trigger_type, status, model, prompt_version, started_at,
+                     articles_total)
+                VALUES (?, 'running', ?, ?, ?, ?)
+                """,
+                (trigger_type, model, prompt_version, now, len(article_ids)),
+            )
+            run_id = int(cursor.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO ai_analysis_run_items
+                    (run_id, article_id, status, content_status,
+                     relevance_status, business_analysis_status)
+                VALUES (?, ?, 'pending', 'pending', 'pending', 'pending')
+                """,
+                [(run_id, article_id) for article_id in article_ids],
+            )
+        return run_id
+
+    def mark_content_processing(
+        self, run_id: int, article_id: int, requested_url: str
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO article_contents
+                    (article_id, status, requested_url, error_message)
+                VALUES (?, 'processing', ?, '')
+                ON CONFLICT(article_id) DO UPDATE SET
+                    status = 'processing', requested_url = excluded.requested_url,
+                    error_message = ''
+                """,
+                (article_id, requested_url),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'processing', content_status = 'processing',
+                    error_message = ''
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (run_id, article_id),
+            )
+
+    def save_content(
+        self, run_id: int, article_id: int, document: ContentDocument
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO article_contents
+                    (article_id, status, requested_url, final_url, full_text,
+                     content_hash, content_chars, http_status, content_type,
+                     extractor, fetched_at, error_message)
+                VALUES (?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+                ON CONFLICT(article_id) DO UPDATE SET
+                    status = 'success', requested_url = excluded.requested_url,
+                    final_url = excluded.final_url, full_text = excluded.full_text,
+                    content_hash = excluded.content_hash,
+                    content_chars = excluded.content_chars,
+                    http_status = excluded.http_status,
+                    content_type = excluded.content_type,
+                    extractor = excluded.extractor,
+                    fetched_at = excluded.fetched_at, error_message = ''
+                """,
+                (
+                    article_id,
+                    document.requested_url,
+                    document.final_url,
+                    document.full_text,
+                    document.content_hash,
+                    document.content_chars,
+                    document.http_status,
+                    document.content_type,
+                    document.extractor,
+                    utc_now_iso(),
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET content_status = 'success'
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (run_id, article_id),
+            )
+
+    def reuse_content(self, run_id: int, article_id: int) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'processing', content_status = 'success'
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (run_id, article_id),
+            )
+
+    def fail_content(
+        self, run_id: int, article_id: int, requested_url: str, message: str
+    ) -> None:
+        now = utc_now_iso()
+        error = message[:2000]
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO article_contents
+                    (article_id, status, requested_url, fetched_at, error_message)
+                VALUES (?, 'failed', ?, ?, ?)
+                ON CONFLICT(article_id) DO UPDATE SET
+                    status = 'failed', requested_url = excluded.requested_url,
+                    fetched_at = excluded.fetched_at,
+                    error_message = excluded.error_message
+                """,
+                (article_id, requested_url, now, error),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'failed', content_status = 'failed',
+                    relevance_status = 'skipped',
+                    business_analysis_status = 'skipped', error_message = ?
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (error, run_id, article_id),
+            )
+
+    def mark_relevance_processing(
+        self,
+        run_id: int,
+        article_id: int,
+        *,
+        model: str,
+        content_hash: str,
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO article_relevance_reviews
+                    (article_id, status, content_hash, model, prompt_version,
+                     error_message)
+                VALUES (?, 'processing', ?, ?, ?, '')
+                ON CONFLICT(article_id) DO UPDATE SET
+                    status = 'processing', content_hash = excluded.content_hash,
+                    model = excluded.model,
+                    prompt_version = excluded.prompt_version,
+                    error_message = ''
+                """,
+                (
+                    article_id,
+                    content_hash,
+                    model,
+                    RELEVANCE_PROMPT_VERSION,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET relevance_status = 'processing'
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (run_id, article_id),
+            )
+
+    def save_relevance(
+        self,
+        run_id: int,
+        article_id: int,
+        assessment: RelevanceAssessment,
+        result: LLMResult,
+        *,
+        content_hash: str,
+    ) -> None:
+        now = utc_now_iso()
+        evidence = json.dumps(assessment.evidence, ensure_ascii=False)
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO article_relevance_reviews
+                    (article_id, status, is_relevant, relevance_score,
+                     relevance_reason, evidence, confidence, content_hash,
+                     model, prompt_version, raw_response, prompt_tokens,
+                     completion_tokens, reviewed_at, error_message)
+                VALUES (?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+                ON CONFLICT(article_id) DO UPDATE SET
+                    status = 'success', is_relevant = excluded.is_relevant,
+                    relevance_score = excluded.relevance_score,
+                    relevance_reason = excluded.relevance_reason,
+                    evidence = excluded.evidence,
+                    confidence = excluded.confidence,
+                    content_hash = excluded.content_hash,
+                    model = excluded.model,
+                    prompt_version = excluded.prompt_version,
+                    raw_response = excluded.raw_response,
+                    prompt_tokens = excluded.prompt_tokens,
+                    completion_tokens = excluded.completion_tokens,
+                    reviewed_at = excluded.reviewed_at, error_message = ''
+                """,
+                (
+                    article_id,
+                    int(assessment.is_relevant),
+                    assessment.relevance_score,
+                    assessment.relevance_reason,
+                    evidence,
+                    assessment.confidence,
+                    content_hash,
+                    result.model,
+                    RELEVANCE_PROMPT_VERSION,
+                    result.raw_content[:50000],
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    now,
+                ),
+            )
+            if assessment.is_relevant:
+                connection.execute(
+                    """
+                    UPDATE ai_analysis_run_items
+                    SET is_relevant = 1, relevance_status = 'success'
+                    WHERE run_id = ? AND article_id = ?
+                    """,
+                    (run_id, article_id),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM business_articles WHERE article_id = ?",
+                    (article_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE ai_analysis_run_items
+                    SET status = 'success', is_relevant = 0,
+                        relevance_status = 'success',
+                        business_analysis_status = 'skipped', error_message = ''
+                    WHERE run_id = ? AND article_id = ?
+                    """,
+                    (run_id, article_id),
+                )
+
+    def reuse_relevance(
+        self, run_id: int, article_id: int, *, is_relevant: bool
+    ) -> None:
+        with self.database.connect() as connection:
+            if is_relevant:
+                connection.execute(
+                    """
+                    UPDATE ai_analysis_run_items
+                    SET is_relevant = 1, relevance_status = 'success'
+                    WHERE run_id = ? AND article_id = ?
+                    """,
+                    (run_id, article_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE ai_analysis_run_items
+                    SET status = 'success', is_relevant = 0,
+                        relevance_status = 'success',
+                        business_analysis_status = 'skipped'
+                    WHERE run_id = ? AND article_id = ?
+                    """,
+                    (run_id, article_id),
+                )
+
+    def fail_relevance(
+        self,
+        run_id: int,
+        article_id: int,
+        message: str,
+        *,
+        content_hash: str,
+    ) -> None:
+        now = utc_now_iso()
+        error = message[:2000]
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO article_relevance_reviews
+                    (article_id, status, content_hash, reviewed_at, error_message)
+                VALUES (?, 'failed', ?, ?, ?)
+                ON CONFLICT(article_id) DO UPDATE SET
+                    status = 'failed', content_hash = excluded.content_hash,
+                    reviewed_at = excluded.reviewed_at,
+                    error_message = excluded.error_message
+                """,
+                (article_id, content_hash, now, error),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'failed', relevance_status = 'failed',
+                    business_analysis_status = 'skipped', error_message = ?
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (error, run_id, article_id),
+            )
+
+    def mark_business_processing(
+        self,
+        run_id: int,
+        article_id: int,
+        review: RelevanceAssessment,
+        *,
+        content_hash: str,
+        model: str,
+    ) -> None:
+        now = utc_now_iso()
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO business_articles
+                    (article_id, analysis_status, relevance_score,
+                     relevance_reason, relevance_confidence,
+                     relevance_evidence, content_hash, model, prompt_version,
+                     accepted_at, error_message)
+                VALUES (?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, '')
+                ON CONFLICT(article_id) DO UPDATE SET
+                    analysis_status = 'processing',
+                    relevance_score = excluded.relevance_score,
+                    relevance_reason = excluded.relevance_reason,
+                    relevance_confidence = excluded.relevance_confidence,
+                    relevance_evidence = excluded.relevance_evidence,
+                    content_hash = excluded.content_hash,
+                    model = excluded.model,
+                    prompt_version = excluded.prompt_version,
+                    accepted_at = excluded.accepted_at, error_message = ''
+                """,
+                (
+                    article_id,
+                    review.relevance_score,
+                    review.relevance_reason,
+                    review.confidence,
+                    json.dumps(review.evidence, ensure_ascii=False),
+                    content_hash,
+                    model,
+                    BUSINESS_ANALYSIS_PROMPT_VERSION,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET business_analysis_status = 'processing'
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (run_id, article_id),
+            )
+
+    def save_business_analysis(
+        self,
+        run_id: int,
+        article_id: int,
+        analysis: BusinessAnalysis,
+        result: LLMResult,
+    ) -> None:
+        data = analysis.model_dump()
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE business_articles
+                SET analysis_status = 'success', category = ?,
+                    secondary_categories = ?, summary = ?,
+                    impact_direction = ?, impact_score = ?,
+                    impact_analysis = ?, risk_level = ?, risk_score = ?,
+                    risk_factors = ?, opportunities = ?,
+                    recommended_actions = ?, analysis_evidence = ?,
+                    model = ?, prompt_version = ?, raw_response = ?,
+                    prompt_tokens = ?, completion_tokens = ?, analyzed_at = ?,
+                    error_message = ''
+                WHERE article_id = ?
+                """,
+                (
+                    analysis.category,
+                    json.dumps(data["secondary_categories"], ensure_ascii=False),
+                    analysis.summary,
+                    analysis.impact_direction,
+                    analysis.impact_score,
+                    analysis.impact_analysis,
+                    analysis.risk_level,
+                    analysis.risk_score,
+                    json.dumps(data["risk_factors"], ensure_ascii=False),
+                    json.dumps(data["opportunities"], ensure_ascii=False),
+                    json.dumps(data["recommended_actions"], ensure_ascii=False),
+                    json.dumps(data["evidence"], ensure_ascii=False),
+                    result.model,
+                    BUSINESS_ANALYSIS_PROMPT_VERSION,
+                    result.raw_content[:50000],
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    utc_now_iso(),
+                    article_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'success', is_relevant = 1,
+                    business_analysis_status = 'success', error_message = ''
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (run_id, article_id),
+            )
+
+    def fail_business_analysis(
+        self, run_id: int, article_id: int, message: str
+    ) -> None:
+        error = message[:2000]
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE business_articles
+                SET analysis_status = 'failed', analyzed_at = ?,
+                    error_message = ?
+                WHERE article_id = ?
+                """,
+                (utc_now_iso(), error, article_id),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'failed', is_relevant = 1,
+                    business_analysis_status = 'failed', error_message = ?
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (error, run_id, article_id),
+            )
+
+    def fail_run_item(self, run_id: int, article_id: int, message: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'failed', error_message = ?
+                WHERE run_id = ? AND article_id = ?
+                """,
+                (message[:2000], run_id, article_id),
+            )
+
+    def finish_analysis_run(
+        self,
+        run_id: int,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> None:
+        with self.database.connect() as connection:
+            counts = connection.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN is_relevant = 1 THEN 1 ELSE 0 END) AS relevant,
+                    SUM(CASE WHEN status = 'success' AND is_relevant = 0
+                        THEN 1 ELSE 0 END) AS irrelevant,
+                    COUNT(*) AS total
+                FROM ai_analysis_run_items
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            succeeded = int(counts["succeeded"] or 0)
+            failed = int(counts["failed"] or 0)
+            total = int(counts["total"] or 0)
+            status = "success" if failed == 0 else "failed" if succeeded == 0 else "partial"
+            message = "没有待处理文章" if total == 0 else ""
+            connection.execute(
+                """
+                UPDATE ai_analysis_runs
+                SET status = ?, finished_at = ?, articles_succeeded = ?,
+                    articles_failed = ?, relevant_count = ?, irrelevant_count = ?,
+                    prompt_tokens = ?, completion_tokens = ?, message = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    utc_now_iso(),
+                    succeeded,
+                    failed,
+                    int(counts["relevant"] or 0),
+                    int(counts["irrelevant"] or 0),
+                    prompt_tokens,
+                    completion_tokens,
+                    message,
+                    run_id,
+                ),
+            )
+
+    def list_analysis_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM ai_analysis_runs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_analysis_run(self, run_id: int) -> dict[str, Any] | None:
+        with self.database.connect() as connection:
+            run_row = connection.execute(
+                "SELECT * FROM ai_analysis_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if run_row is None:
+                return None
+            item_rows = connection.execute(
+                """
+                SELECT ari.*, a.title, a.url, ic.final_url, ic.content_chars,
+                       rr.relevance_score, rr.relevance_reason,
+                       ba.category, ba.risk_level, ba.risk_score
+                FROM ai_analysis_run_items ari
+                JOIN articles a ON a.id = ari.article_id
+                LEFT JOIN article_contents ic ON ic.article_id = a.id
+                LEFT JOIN article_relevance_reviews rr ON rr.article_id = a.id
+                LEFT JOIN business_articles ba ON ba.article_id = a.id
+                WHERE ari.run_id = ?
+                ORDER BY a.id
+                """,
+                (run_id,),
+            ).fetchall()
+        run = dict(run_row)
+        run["items"] = [dict(row) for row in item_rows]
+        return run
+
+    def list_reviews(
+        self,
+        *,
+        relevant: bool | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        filters = [
+            "rr.status = 'success'",
+            "ic.status = 'success'",
+            "rr.content_hash = ic.content_hash",
+        ]
+        parameters: list[Any] = []
+        if relevant is not None:
+            filters.append("rr.is_relevant = ?")
+            parameters.append(int(relevant))
+        if date_from:
+            window_start, window_end = local_date_window(
+                date_from, date_to or date_from
+            )
+            filters.extend(["a.published_at >= ?", "a.published_at < ?"])
+            parameters.extend([window_start, window_end])
+        where = "WHERE " + " AND ".join(filters)
+        with self.database.connect() as connection:
+            total = int(
+                connection.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM article_relevance_reviews rr
+                    JOIN articles a ON a.id = rr.article_id
+                    JOIN article_contents ic ON ic.article_id = rr.article_id
+                    {where}
+                    """,  # noqa: S608
+                    parameters,
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                f"""
+                SELECT rr.*, a.title, a.url, a.publisher, a.published_at,
+                       ic.final_url, ic.content_chars, ic.fetched_at
+                FROM article_relevance_reviews rr
+                JOIN articles a ON a.id = rr.article_id
+                JOIN article_contents ic ON ic.article_id = rr.article_id
+                {where}
+                ORDER BY rr.reviewed_at DESC, a.id DESC
+                LIMIT ? OFFSET ?
+                """,  # noqa: S608
+                [*parameters, limit, offset],
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        for item in items:
+            item["evidence"] = self._decode_json(item["evidence"], [])
+        return {"total": total, "items": items}
+
+    def list_business_articles(
+        self,
+        *,
+        category: str = "",
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        filters = [
+            "ba.analysis_status = 'success'",
+            "ic.status = 'success'",
+            "ba.content_hash = ic.content_hash",
+        ]
+        parameters: list[Any] = []
+        if category:
+            filters.append("ba.category = ?")
+            parameters.append(category)
+        if date_from:
+            window_start, window_end = local_date_window(
+                date_from, date_to or date_from
+            )
+            filters.extend(["a.published_at >= ?", "a.published_at < ?"])
+            parameters.extend([window_start, window_end])
+        where = "WHERE " + " AND ".join(filters)
+        with self.database.connect() as connection:
+            total = int(
+                connection.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM business_articles ba
+                    JOIN articles a ON a.id = ba.article_id
+                    JOIN article_contents ic ON ic.article_id = ba.article_id
+                    {where}
+                    """,  # noqa: S608
+                    parameters,
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                f"""
+                SELECT ba.*, a.title, a.url, a.publisher, a.published_at,
+                       a.collected_at, ic.final_url, ic.content_chars,
+                       ic.fetched_at
+                FROM business_articles ba
+                JOIN articles a ON a.id = ba.article_id
+                JOIN article_contents ic ON ic.article_id = ba.article_id
+                {where}
+                ORDER BY a.published_at DESC, a.id DESC
+                LIMIT ? OFFSET ?
+                """,  # noqa: S608
+                [*parameters, limit, offset],
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        for item in items:
+            for field in self.BUSINESS_JSON_FIELDS:
+                item[field] = self._decode_json(item[field], [])
+        return {"total": total, "items": items}
+
+    def relevant_articles_for_report(
+        self, report_date: date, categories: list[str]
+    ) -> list[dict[str, Any]]:
+        window_start, window_end = local_date_window(report_date)
+        filters = [
+            "ba.analysis_status = 'success'",
+            "ic.status = 'success'",
+            "ba.content_hash = ic.content_hash",
+            "a.published_at >= ?",
+            "a.published_at < ?",
+        ]
+        parameters: list[Any] = [window_start, window_end]
+        if categories:
+            placeholders = ",".join("?" for _ in categories)
+            filters.append(f"ba.category IN ({placeholders})")  # noqa: S608
+            parameters.extend(categories)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT ba.*, a.title, a.url, a.publisher, a.published_at
+                FROM business_articles ba
+                JOIN articles a ON a.id = ba.article_id
+                JOIN article_contents ic ON ic.article_id = ba.article_id
+                WHERE {' AND '.join(filters)}
+                ORDER BY ba.risk_score DESC, a.published_at DESC
+                """,  # noqa: S608
+                parameters,
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        for item in items:
+            for field in self.BUSINESS_JSON_FIELDS:
+                item[field] = self._decode_json(item[field], [])
+        return items
+
+    def create_report(
+        self,
+        *,
+        report_date: date,
+        categories: list[str],
+        article_ids: list[int],
+        model: str,
+    ) -> int:
+        now = utc_now_iso()
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO daily_reports
+                    (report_date, categories, status, article_count, model,
+                     prompt_version, created_at, updated_at)
+                VALUES (?, ?, 'running', ?, ?, ?, ?, ?)
+                """,
+                (
+                    report_date.isoformat(),
+                    json.dumps(categories, ensure_ascii=False),
+                    len(article_ids),
+                    model,
+                    REPORT_PROMPT_VERSION,
+                    now,
+                    now,
+                ),
+            )
+            report_id = int(cursor.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO daily_report_articles (report_id, article_id)
+                VALUES (?, ?)
+                """,
+                [(report_id, article_id) for article_id in article_ids],
+            )
+        return report_id
+
+    def save_report(
+        self,
+        report_id: int,
+        assessment: DailyReportAssessment,
+        result: LLMResult,
+    ) -> None:
+        data = assessment.model_dump()
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE daily_reports
+                SET status = 'success', risk_level = ?, risk_score = ?,
+                    title = ?, executive_summary = ?, risk_basis = ?,
+                    key_developments = ?, key_risks = ?, opportunities = ?,
+                    recommended_actions = ?, watchlist = ?, model = ?,
+                    raw_response = ?, prompt_tokens = ?, completion_tokens = ?,
+                    updated_at = ?, error_message = ''
+                WHERE id = ?
+                """,
+                (
+                    assessment.risk_level,
+                    assessment.risk_score,
+                    assessment.title,
+                    assessment.executive_summary,
+                    assessment.risk_basis,
+                    json.dumps(data["key_developments"], ensure_ascii=False),
+                    json.dumps(data["key_risks"], ensure_ascii=False),
+                    json.dumps(data["opportunities"], ensure_ascii=False),
+                    json.dumps(data["recommended_actions"], ensure_ascii=False),
+                    json.dumps(data["watchlist"], ensure_ascii=False),
+                    result.model,
+                    result.raw_content[:100000],
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    utc_now_iso(),
+                    report_id,
+                ),
+            )
+
+    def fail_report(self, report_id: int, message: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE daily_reports
+                SET status = 'failed', updated_at = ?, error_message = ?
+                WHERE id = ?
+                """,
+                (utc_now_iso(), message[:2000], report_id),
+            )
+
+    def list_reports(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM daily_reports ORDER BY report_date DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        reports = [dict(row) for row in rows]
+        for report in reports:
+            for field in self.REPORT_JSON_FIELDS:
+                report[field] = self._decode_json(report[field], [])
+        return reports
+
+    def get_report(self, report_id: int) -> dict[str, Any] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM daily_reports WHERE id = ?", (report_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            article_rows = connection.execute(
+                """
+                SELECT a.id AS article_id, a.title, a.url, a.publisher,
+                       a.published_at, COALESCE(ba.category, 'other') AS category,
+                       COALESCE(ba.summary, '') AS summary,
+                       COALESCE(ba.impact_analysis, '') AS impact_analysis,
+                       COALESCE(ba.risk_level, 'low') AS risk_level,
+                       COALESCE(ba.risk_score, 0) AS risk_score,
+                       ic.final_url
+                FROM daily_report_articles dra
+                JOIN articles a ON a.id = dra.article_id
+                LEFT JOIN business_articles ba ON ba.article_id = a.id
+                LEFT JOIN article_contents ic ON ic.article_id = a.id
+                WHERE dra.report_id = ?
+                ORDER BY ba.risk_score DESC, a.published_at DESC
+                """,
+                (report_id,),
+            ).fetchall()
+        report = dict(row)
+        for field in self.REPORT_JSON_FIELDS:
+            report[field] = self._decode_json(report[field], [])
+        report["articles"] = [dict(article) for article in article_rows]
+        return report
+
+    def has_successful_report(self, report_date: date) -> bool:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM daily_reports
+                WHERE report_date = ? AND categories = '[]' AND status = 'success'
+                LIMIT 1
+                """,
+                (report_date.isoformat(),),
+            ).fetchone()
+        return row is not None
+
+
+class ArticleAnalysisManager:
+    def __init__(
+        self,
+        database: Database,
+        repository: IntelligenceRepository,
+        client: JSONLLMClient,
+        content_fetcher: ArticleContentFetcher | None = None,
+    ) -> None:
+        self.database = database
+        self.repository = repository
+        self.client = client
+        self.content_fetcher = content_fetcher or WebContentFetcher()
+        self._state_lock = threading.Lock()
+        self._running_run_id: int | None = None
+
+    @property
+    def running_run_id(self) -> int | None:
+        with self._state_lock:
+            return self._running_run_id
+
+    def prepare(
+        self,
+        *,
+        trigger_type: str = "manual",
+        limit: int = 20,
+        force: bool = False,
+        article_ids: list[int] | None = None,
+    ) -> tuple[int, list[int]]:
+        if not self.client.configured:
+            raise ValueError("尚未配置 DEEPSEEK_API_KEY")
+        with self._state_lock:
+            if self._running_run_id is not None:
+                raise IntelligenceAlreadyRunningError(
+                    f"AI 处理任务 #{self._running_run_id} 正在运行"
+                )
+            candidate_ids = self.repository.candidate_article_ids(
+                limit=limit, force=force, article_ids=article_ids
+            )
+            run_id = self.repository.create_analysis_run(
+                candidate_ids, trigger_type=trigger_type, model=self.client.model
+            )
+            self._running_run_id = run_id
+        return run_id, candidate_ids
+
+    def execute(
+        self,
+        run_id: int,
+        article_ids: list[int],
+        *,
+        force: bool = False,
+        refresh_content: bool = False,
+    ) -> None:
+        prompt_tokens = 0
+        completion_tokens = 0
+        try:
+            settings = self.database.get_settings()
+            business_profile = settings.get("ai_business_profile", "")
+            threshold = self._integer_setting(
+                settings.get("ai_relevance_threshold", "70"), 70, 0, 100
+            )
+            max_content_chars = self._integer_setting(
+                settings.get("ai_content_max_chars", "30000"),
+                30000,
+                2000,
+                100000,
+            )
+            for article_id in article_ids:
+                article = self.repository.get_article(article_id)
+                if article is None:
+                    self.repository.fail_run_item(
+                        run_id, article_id, "文章不存在"
+                    )
+                    continue
+                content = self._get_or_fetch_content(
+                    run_id,
+                    article,
+                    refresh_content=refresh_content,
+                )
+                if content is None:
+                    continue
+
+                review_row = self.repository.get_review(article_id)
+                review: RelevanceAssessment
+                review_is_current = bool(
+                    review_row
+                    and review_row["status"] == "success"
+                    and review_row["content_hash"] == content["content_hash"]
+                )
+                if force or not review_is_current:
+                    try:
+                        self.repository.mark_relevance_processing(
+                            run_id,
+                            article_id,
+                            model=self.client.model,
+                            content_hash=content["content_hash"],
+                        )
+                        prompt_article = self._prompt_article(
+                            article, content, max_content_chars
+                        )
+                        system_prompt, user_prompt = build_relevance_prompts(
+                            prompt_article, business_profile
+                        )
+                        result = self.client.complete_json(
+                            system_prompt, user_prompt, max_tokens=900
+                        )
+                        review = RelevanceAssessment.model_validate(result.data)
+                        if review.is_relevant and review.relevance_score < threshold:
+                            threshold_reason = (
+                                f"{review.relevance_reason.rstrip('。')}；"
+                                f"相关性分数 {review.relevance_score} 低于系统阈值 "
+                                f"{threshold}，按无关处理。"
+                            )
+                            review = review.model_copy(
+                                update={
+                                    "is_relevant": False,
+                                    "relevance_reason": threshold_reason[:1000],
+                                }
+                            )
+                        self.repository.save_relevance(
+                            run_id,
+                            article_id,
+                            review,
+                            result,
+                            content_hash=content["content_hash"],
+                        )
+                        prompt_tokens += result.prompt_tokens
+                        completion_tokens += result.completion_tokens
+                    except Exception as exc:
+                        self.repository.fail_relevance(
+                            run_id,
+                            article_id,
+                            f"相关性审核失败: {type(exc).__name__}: {exc}",
+                            content_hash=content["content_hash"],
+                        )
+                        continue
+                else:
+                    review = RelevanceAssessment.model_validate(
+                        {
+                            "is_relevant": bool(review_row["is_relevant"]),
+                            "relevance_score": review_row["relevance_score"],
+                            "relevance_reason": review_row["relevance_reason"],
+                            "evidence": review_row["evidence"],
+                            "confidence": review_row["confidence"],
+                        }
+                    )
+                    self.repository.reuse_relevance(
+                        run_id,
+                        article_id,
+                        is_relevant=review.is_relevant,
+                    )
+
+                if not review.is_relevant:
+                    continue
+                try:
+                    self.repository.mark_business_processing(
+                        run_id,
+                        article_id,
+                        review,
+                        content_hash=content["content_hash"],
+                        model=self.client.model,
+                    )
+                    prompt_article = self._prompt_article(
+                        article, content, max_content_chars
+                    )
+                    system_prompt, user_prompt = build_business_analysis_prompts(
+                        article=prompt_article,
+                        relevance_review=review.model_dump(),
+                        business_profile=business_profile,
+                    )
+                    result = self.client.complete_json(
+                        system_prompt, user_prompt, max_tokens=1800
+                    )
+                    analysis = BusinessAnalysis.model_validate(result.data)
+                    analysis = analysis.model_copy(
+                        update={
+                            "risk_level": risk_level_for_score(
+                                analysis.risk_score
+                            )
+                        }
+                    )
+                    self.repository.save_business_analysis(
+                        run_id, article_id, analysis, result
+                    )
+                    prompt_tokens += result.prompt_tokens
+                    completion_tokens += result.completion_tokens
+                except Exception as exc:
+                    self.repository.fail_business_analysis(
+                        run_id,
+                        article_id,
+                        f"业务分析失败: {type(exc).__name__}: {exc}",
+                    )
+        finally:
+            self.repository.finish_analysis_run(
+                run_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+            with self._state_lock:
+                if self._running_run_id == run_id:
+                    self._running_run_id = None
+
+    def _get_or_fetch_content(
+        self,
+        run_id: int,
+        article: dict[str, Any],
+        *,
+        refresh_content: bool,
+    ) -> dict[str, Any] | None:
+        article_id = int(article["id"])
+        existing = self.repository.get_content(article_id)
+        if existing and existing["status"] == "success" and not refresh_content:
+            self.repository.reuse_content(run_id, article_id)
+            return existing
+        urls = self._content_urls(article)
+        requested_url = urls[0] if urls else article["url"]
+        self.repository.mark_content_processing(
+            run_id, article_id, requested_url
+        )
+        errors: list[str] = []
+        for url in urls:
+            try:
+                document = self.content_fetcher.fetch(url)
+                self.repository.save_content(run_id, article_id, document)
+                return self.repository.get_content(article_id)
+            except Exception as exc:
+                errors.append(f"{url}: {type(exc).__name__}: {exc}")
+        message = "全文抓取失败: " + " | ".join(errors or ["没有可用文章地址"])
+        self.repository.fail_content(
+            run_id, article_id, requested_url, message
+        )
+        return None
+
+    @staticmethod
+    def _content_urls(article: dict[str, Any]) -> list[str]:
+        candidates: list[str] = []
+        for source in article.get("sources", []):
+            candidates.extend(
+                [source.get("observed_url", ""), source.get("canonical_url", "")]
+            )
+        candidates.extend([article.get("canonical_url", ""), article.get("url", "")])
+        unique: list[str] = []
+        seen: set[str] = set()
+        for value in candidates:
+            url = str(value or "").strip()
+            key = url.casefold()
+            if url and key not in seen:
+                seen.add(key)
+                unique.append(url)
+        return sorted(
+            unique,
+            key=lambda value: (
+                (urlsplit(value).hostname or "").casefold() == "news.google.com",
+                unique.index(value),
+            ),
+        )
+
+    @staticmethod
+    def _prompt_article(
+        article: dict[str, Any], content: dict[str, Any], max_chars: int
+    ) -> dict[str, Any]:
+        full_text = str(content["full_text"])
+        return {
+            "article_id": article["id"],
+            "title": article["title"],
+            "publisher": article["publisher_normalized"] or article["publisher"],
+            "published_at": article["published_at"],
+            "final_url": content["final_url"],
+            "content_hash": content["content_hash"],
+            "content_chars": content["content_chars"],
+            "content_truncated_for_model": len(full_text) > max_chars,
+            "full_text": full_text[:max_chars],
+        }
+
+    @staticmethod
+    def _integer_setting(value: str, fallback: int, minimum: int, maximum: int) -> int:
+        try:
+            return max(minimum, min(maximum, int(value)))
+        except (TypeError, ValueError):
+            return fallback
+
+
+class DailyReportManager:
+    def __init__(
+        self,
+        database: Database,
+        repository: IntelligenceRepository,
+        client: JSONLLMClient,
+    ) -> None:
+        self.database = database
+        self.repository = repository
+        self.client = client
+        self._state_lock = threading.Lock()
+        self._running_report_id: int | None = None
+
+    @property
+    def running_report_id(self) -> int | None:
+        with self._state_lock:
+            return self._running_report_id
+
+    def prepare(
+        self, report_date: date, categories: list[str]
+    ) -> tuple[int, list[dict[str, Any]]]:
+        if not self.client.configured:
+            raise ValueError("尚未配置 DEEPSEEK_API_KEY")
+        invalid_categories = [
+            category for category in categories if category not in CATEGORY_LABELS
+        ]
+        if invalid_categories:
+            raise ValueError(f"未知分类: {', '.join(invalid_categories)}")
+        with self._state_lock:
+            if self._running_report_id is not None:
+                raise IntelligenceAlreadyRunningError(
+                    f"日报 #{self._running_report_id} 正在生成"
+                )
+            articles = self.repository.relevant_articles_for_report(
+                report_date, categories
+            )
+            if not articles:
+                raise ValueError(
+                    "所选日期和分类下没有完成全文审核与业务分析的相关新闻"
+                )
+            report_id = self.repository.create_report(
+                report_date=report_date,
+                categories=categories,
+                article_ids=[int(article["article_id"]) for article in articles],
+                model=self.client.model,
+            )
+            self._running_report_id = report_id
+        return report_id, articles
+
+    def execute(
+        self,
+        report_id: int,
+        report_date: date,
+        categories: list[str],
+        articles: list[dict[str, Any]],
+    ) -> None:
+        try:
+            settings = self.database.get_settings()
+            report_articles = [self._report_article(article) for article in articles]
+            system_prompt, user_prompt = build_report_prompts(
+                report_date=report_date.isoformat(),
+                category_labels=[CATEGORY_LABELS[category] for category in categories],
+                articles=report_articles,
+                business_profile=settings.get("ai_business_profile", ""),
+            )
+            result = self.client.complete_json(
+                system_prompt, user_prompt, max_tokens=3000
+            )
+            assessment = DailyReportAssessment.model_validate(result.data)
+            valid_article_ids = {int(article["article_id"]) for article in articles}
+            developments = [
+                development
+                for development in assessment.key_developments
+                if development.article_id in valid_article_ids
+            ]
+            article_floor = max(int(article["risk_score"]) for article in articles)
+            risk_score = max(assessment.risk_score, article_floor)
+            assessment = assessment.model_copy(
+                update={
+                    "key_developments": developments,
+                    "risk_score": risk_score,
+                    "risk_level": risk_level_for_score(risk_score),
+                }
+            )
+            self.repository.save_report(report_id, assessment, result)
+        except Exception as exc:
+            self.repository.fail_report(report_id, f"{type(exc).__name__}: {exc}")
+        finally:
+            with self._state_lock:
+                if self._running_report_id == report_id:
+                    self._running_report_id = None
+
+    @staticmethod
+    def _report_article(article: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "article_id": article["article_id"],
+            "title": article["title"],
+            "publisher": article["publisher"],
+            "published_at": article["published_at"],
+            "category": article["category"],
+            "summary": article["summary"],
+            "impact_direction": article["impact_direction"],
+            "impact_score": article["impact_score"],
+            "impact_analysis": article["impact_analysis"],
+            "risk_level": article["risk_level"],
+            "risk_score": article["risk_score"],
+            "risk_factors": article["risk_factors"],
+            "opportunities": article["opportunities"],
+            "recommended_actions": article["recommended_actions"],
+            "evidence": article["analysis_evidence"],
+        }
+
+
+class AutomaticIntelligenceWorkflow:
+    def __init__(
+        self,
+        database: Database,
+        analysis_manager: ArticleAnalysisManager,
+        report_manager: DailyReportManager,
+        repository: IntelligenceRepository,
+    ) -> None:
+        self.database = database
+        self.analysis_manager = analysis_manager
+        self.report_manager = report_manager
+        self.repository = repository
+
+    def after_collection(self) -> None:
+        settings = self.database.get_settings()
+        if settings.get("ai_auto_analyze", "false").lower() != "true":
+            return
+        if not self.analysis_manager.client.configured:
+            return
+        try:
+            limit = max(1, min(100, int(settings.get("ai_batch_size", "20"))))
+        except ValueError:
+            limit = 20
+        try:
+            run_id, article_ids = self.analysis_manager.prepare(
+                trigger_type="collection", limit=limit
+            )
+            self.analysis_manager.execute(run_id, article_ids)
+        except IntelligenceAlreadyRunningError:
+            return
+        if settings.get("ai_auto_report", "false").lower() != "true":
+            return
+        timezone = ZoneInfo(settings.get("timezone", "Asia/Shanghai"))
+        report_date = datetime.now(timezone).date()
+        if self.repository.has_successful_report(report_date):
+            return
+        try:
+            report_id, articles = self.report_manager.prepare(report_date, [])
+            self.report_manager.execute(report_id, report_date, [], articles)
+        except (IntelligenceAlreadyRunningError, ValueError):
+            return

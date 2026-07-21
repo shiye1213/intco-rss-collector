@@ -3,17 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>英科医疗 RSS 采集</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260720-3" />
+    <title>英科医疗 RSS 情报</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260721-3" />
     <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script defer src="/static/app.js?v=20260720-3"></script>
+    <script defer src="/static/app.js?v=20260721-3"></script>
   </head>
   <body>
     <header class="app-header">
       <div class="brand-block">
         <div class="brand-mark">IN</div>
         <div>
-          <h1>英科医疗 RSS 采集</h1>
+          <h1>英科医疗 RSS 情报</h1>
           <p id="header-schedule">每日 08:00 · Asia/Shanghai</p>
         </div>
       </div>
@@ -37,6 +37,12 @@
         <button class="nav-item" data-view="runs" type="button">
           <i data-lucide="scroll-text"></i><span>采集日志</span>
         </button>
+        <button class="nav-item" data-view="intelligence" type="button">
+          <i data-lucide="brain-circuit"></i><span>AI 情报</span>
+        </button>
+        <button class="nav-item" data-view="reports" type="button">
+          <i data-lucide="file-chart-column"></i><span>情报日报</span>
+        </button>
         <button class="nav-item" data-view="sources" type="button">
           <i data-lucide="rss"></i><span>RSS 源</span>
         </button>
@@ -44,7 +50,7 @@
           <i data-lucide="tags"></i><span>关键词</span>
         </button>
         <button class="nav-item" data-view="settings" type="button">
-          <i data-lucide="settings-2"></i><span>采集设置</span>
+          <i data-lucide="settings-2"></i><span>系统设置</span>
         </button>
       </nav>
 
@@ -121,6 +127,100 @@
           </div>
         </section>
 
+        <section id="view-intelligence" class="view">
+          <div class="view-heading">
+            <div><h2>AI 情报</h2><p id="ai-view-status">DeepSeek · 等待状态</p></div>
+            <button id="analyze-pending" class="button primary" type="button">
+              <i data-lucide="sparkles"></i><span>处理待办文章</span>
+            </button>
+          </div>
+          <div class="ai-summary" aria-label="AI 分析概览">
+            <div><span>待处理</span><strong id="ai-metric-pending">0</strong></div>
+            <div><span>全文成功</span><strong id="ai-metric-content-ready">0</strong></div>
+            <div><span>全文失败</span><strong id="ai-metric-content-failed">0</strong></div>
+            <div><span>真相关</span><strong id="ai-metric-relevant">0</strong></div>
+            <div><span>审核无关</span><strong id="ai-metric-irrelevant">0</strong></div>
+            <div><span>分析完成</span><strong id="ai-metric-analyzed">0</strong></div>
+            <div><span>相关性阈值</span><strong id="ai-metric-threshold">70</strong></div>
+          </div>
+          <div class="subsection-heading compact-heading">
+            <div><h3>已确认业务新闻</h3><p>全文审核通过并已完成业务分析</p></div>
+          </div>
+          <div class="toolbar intelligence-toolbar">
+            <select id="ai-category-filter" aria-label="按 AI 分类筛选">
+              <option value="">全部分类</option>
+            </select>
+            <label class="date-field"><span>发布日期从</span><input id="ai-date-from" type="date" /></label>
+            <label class="date-field"><span>至</span><input id="ai-date-to" type="date" /></label>
+            <button id="refresh-ai" class="icon-button" type="button" title="刷新 AI 情报">
+              <i data-lucide="rotate-cw"></i>
+            </button>
+          </div>
+          <div class="table-wrap">
+            <table class="ai-table">
+              <thead><tr><th>标题与全文</th><th>相关性</th><th>分类</th><th>摘要与影响</th><th>风险</th><th>分析时间</th></tr></thead>
+              <tbody id="ai-article-rows"></tbody>
+            </table>
+            <div id="ai-article-empty" class="empty-state hidden">当前筛选条件下没有已确认业务新闻</div>
+          </div>
+          <div class="pager">
+            <button id="ai-prev" class="button secondary" type="button"><i data-lucide="chevron-left"></i><span>上一页</span></button>
+            <span id="ai-page">第 1 页</span>
+            <button id="ai-next" class="button secondary" type="button"><span>下一页</span><i data-lucide="chevron-right"></i></button>
+          </div>
+          <div class="subsection-heading">
+            <div><h3>相关性审核记录</h3><p>基于网页正文的审核结果与证据</p></div>
+            <select id="ai-review-filter" aria-label="按相关性审核结果筛选">
+              <option value="">全部审核结果</option>
+              <option value="true">真相关</option>
+              <option value="false">审核无关</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table class="review-table">
+              <thead><tr><th>标题与全文</th><th>审核结果</th><th>判定原因</th><th>正文证据</th><th>审核时间</th></tr></thead>
+              <tbody id="ai-review-rows"></tbody>
+            </table>
+            <div id="ai-review-empty" class="empty-state hidden">当前筛选条件下没有相关性审核记录</div>
+          </div>
+          <div class="pager">
+            <button id="ai-review-prev" class="button secondary" type="button"><i data-lucide="chevron-left"></i><span>上一页</span></button>
+            <span id="ai-review-page">第 1 页</span>
+            <button id="ai-review-next" class="button secondary" type="button"><span>下一页</span><i data-lucide="chevron-right"></i></button>
+          </div>
+          <div class="subsection-heading">
+            <div><h3>AI 处理日志</h3><p>全文、相关性审核与业务分析批次</p></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>编号</th><th>触发方式</th><th>状态</th><th>模型</th><th>完成 / 总数</th><th>相关 / 无关</th><th>Token</th><th>开始时间</th><th></th></tr></thead>
+              <tbody id="ai-run-rows"></tbody>
+            </table>
+            <div id="ai-run-empty" class="empty-state hidden">暂无 AI 处理日志</div>
+          </div>
+        </section>
+
+        <section id="view-reports" class="view">
+          <div class="view-heading">
+            <div><h2>情报日报</h2><p>按新闻发布日期与业务分类汇总</p></div>
+          </div>
+          <form id="report-form" class="report-toolbar">
+            <label><span>日报日期</span><input id="report-date" type="date" required /></label>
+            <label><span>业务分类</span><select id="report-category"><option value="">全部分类</option></select></label>
+            <button id="generate-report" class="button primary" type="submit"><i data-lucide="file-plus-2"></i><span>生成日报</span></button>
+            <button id="refresh-reports" class="icon-button" type="button" title="刷新日报">
+              <i data-lucide="rotate-cw"></i>
+            </button>
+          </form>
+          <div class="table-wrap">
+            <table class="report-table">
+              <thead><tr><th>日报</th><th>日期</th><th>分类范围</th><th>新闻数</th><th>风险</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
+              <tbody id="report-rows"></tbody>
+            </table>
+            <div id="report-empty" class="empty-state hidden">暂无已生成的情报日报</div>
+          </div>
+        </section>
+
         <section id="view-sources" class="view">
           <div class="view-heading">
             <div><h2>RSS 源</h2><p>搜索型与直连型 Feed</p></div>
@@ -128,7 +228,7 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>类型</th><th>语言</th><th>地址</th><th>启用</th><th></th></tr></thead>
+              <thead><tr><th>名称</th><th>类型</th><th>语言</th><th>国家/地区</th><th>地址</th><th>启用</th><th></th></tr></thead>
               <tbody id="source-rows"></tbody>
             </table>
           </div>
@@ -148,14 +248,31 @@
         </section>
 
         <section id="view-settings" class="view">
-          <div class="view-heading"><div><h2>采集设置</h2><p>Asia/Shanghai</p></div></div>
-          <form id="settings-form" class="settings-form">
-            <label>
-              <span>每日采集时间</span>
-              <input id="schedule-time" type="time" required />
-            </label>
-            <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存设置</span></button>
-          </form>
+          <div class="view-heading"><div><h2>系统设置</h2><p>采集调度与 DeepSeek 分析策略</p></div></div>
+          <div class="settings-section">
+            <div class="subsection-heading"><div><h3>采集调度</h3><p>Asia/Shanghai</p></div></div>
+            <form id="settings-form" class="settings-form">
+              <label>
+                <span>每日采集时间</span>
+                <input id="schedule-time" type="time" required />
+              </label>
+              <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存采集设置</span></button>
+            </form>
+          </div>
+          <div class="settings-section">
+            <div class="subsection-heading">
+              <div><h3>DeepSeek 分析</h3><p id="ai-settings-status">读取配置中</p></div>
+            </div>
+            <form id="ai-settings-form" class="ai-settings-form">
+              <label class="full"><span>企业业务边界</span><textarea id="ai-business-profile" rows="9" minlength="50" maxlength="10000" required></textarea></label>
+              <label><span>相关性阈值</span><input id="ai-threshold" type="number" min="0" max="100" required /></label>
+              <label><span>单批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /></label>
+              <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /></label>
+              <label class="switch-row"><span><strong>采集后自动分析</strong></span><input id="ai-auto-analyze" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
+              <label class="switch-row"><span><strong>分析后自动生成当天日报</strong></span><input id="ai-auto-report" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
+              <div class="form-actions full"><button class="button primary" type="submit"><i data-lucide="save"></i><span>保存 AI 设置</span></button></div>
+            </form>
+          </div>
         </section>
       </main>
     </div>
@@ -168,6 +285,7 @@
           <label><span>名称</span><input id="source-name" maxlength="100" required /></label>
           <label><span>类型</span><select id="source-mode"><option value="search">搜索型</option><option value="direct">直连型</option></select></label>
           <label><span>语言</span><input id="source-language" maxlength="30" placeholder="zh-CN" /></label>
+          <label><span>国家/地区</span><input id="source-country" maxlength="10" placeholder="CN" /></label>
           <label class="full"><span>Feed 地址</span><textarea id="source-url" rows="3" maxlength="2000" required placeholder="https://...q={query}"></textarea></label>
           <label class="switch-label"><span>启用</span><input id="source-active" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
         </div>
@@ -194,6 +312,19 @@
       <div id="run-summary" class="run-summary"></div>
       <div class="table-wrap modal-table">
         <table><thead><tr><th>RSS 源</th><th>关键词</th><th>状态</th><th>读取</th><th>时间窗外</th><th>命中</th><th>新增</th><th>错误</th></tr></thead><tbody id="run-detail-rows"></tbody></table>
+      </div>
+    </dialog>
+
+    <dialog id="report-dialog" class="modal report-modal">
+      <div class="modal-header"><h3 id="report-dialog-title">情报日报</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div id="report-detail" class="report-detail"></div>
+    </dialog>
+
+    <dialog id="ai-run-dialog" class="modal wide-modal">
+      <div class="modal-header"><h3 id="ai-run-dialog-title">AI 处理日志</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div id="ai-run-summary" class="run-summary"></div>
+      <div class="table-wrap modal-table">
+        <table class="ai-run-detail-table"><thead><tr><th>文章</th><th>全文</th><th>相关性审核</th><th>业务分析</th><th>结果</th><th>错误</th></tr></thead><tbody id="ai-run-detail-rows"></tbody></table>
       </div>
     </dialog>
 

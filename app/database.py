@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from .normalization import infer_country, normalize_publisher
+from .prompts import DEFAULT_BUSINESS_PROFILE
 from .query_builder import build_keyword_query
 
 
@@ -20,6 +22,7 @@ CREATE TABLE IF NOT EXISTS rss_sources (
     url_template TEXT NOT NULL,
     mode TEXT NOT NULL CHECK (mode IN ('search', 'direct')),
     language TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -44,6 +47,7 @@ CREATE TABLE IF NOT EXISTS articles (
     canonical_url TEXT,
     fingerprint TEXT NOT NULL UNIQUE,
     publisher TEXT NOT NULL DEFAULT '',
+    publisher_normalized TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL DEFAULT '',
     published_at TEXT NOT NULL,
     collected_at TEXT NOT NULL,
@@ -54,6 +58,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_canonical_url
 ON articles(canonical_url) WHERE canonical_url IS NOT NULL AND canonical_url <> '';
 CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_collected_at ON articles(collected_at DESC);
+
+CREATE TABLE IF NOT EXISTS article_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    rss_source_id INTEGER NOT NULL REFERENCES rss_sources(id) ON DELETE CASCADE,
+    feed_url TEXT NOT NULL DEFAULT '',
+    observed_url TEXT NOT NULL,
+    canonical_url TEXT NOT NULL DEFAULT '',
+    guid TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    categories TEXT NOT NULL DEFAULT '[]',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    UNIQUE(article_id, rss_source_id, canonical_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_sources_article_id
+ON article_sources(article_id);
+CREATE INDEX IF NOT EXISTS idx_article_sources_source_id
+ON article_sources(rss_source_id);
 
 CREATE TABLE IF NOT EXISTS article_keywords (
     article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
@@ -111,6 +136,177 @@ CREATE TABLE IF NOT EXISTS collection_run_details (
 CREATE INDEX IF NOT EXISTS idx_collection_run_details_run_id
 ON collection_run_details(run_id);
 
+CREATE TABLE IF NOT EXISTS ai_analysis_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_type TEXT NOT NULL CHECK (trigger_type IN ('manual', 'collection')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'success', 'partial', 'failed', 'interrupted')),
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    articles_total INTEGER NOT NULL DEFAULT 0,
+    articles_succeeded INTEGER NOT NULL DEFAULT 0,
+    articles_failed INTEGER NOT NULL DEFAULT 0,
+    relevant_count INTEGER NOT NULL DEFAULT 0,
+    irrelevant_count INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_analysis_runs_started_at
+ON ai_analysis_runs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS article_analyses (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('processing', 'success', 'failed')),
+    is_relevant INTEGER NOT NULL DEFAULT 0,
+    relevance_score INTEGER NOT NULL DEFAULT 0,
+    relevance_reason TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'other',
+    secondary_categories TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL DEFAULT '',
+    impact_direction TEXT NOT NULL DEFAULT 'neutral',
+    impact_score INTEGER NOT NULL DEFAULT 1,
+    impact_analysis TEXT NOT NULL DEFAULT '',
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    risk_factors TEXT NOT NULL DEFAULT '[]',
+    opportunities TEXT NOT NULL DEFAULT '[]',
+    recommended_actions TEXT NOT NULL DEFAULT '[]',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    confidence INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    analyzed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_analyses_relevance
+ON article_analyses(status, is_relevant, category);
+
+CREATE TABLE IF NOT EXISTS article_contents (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('processing', 'success', 'failed')),
+    requested_url TEXT NOT NULL DEFAULT '',
+    final_url TEXT NOT NULL DEFAULT '',
+    full_text TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    content_chars INTEGER NOT NULL DEFAULT 0,
+    http_status INTEGER NOT NULL DEFAULT 0,
+    content_type TEXT NOT NULL DEFAULT '',
+    extractor TEXT NOT NULL DEFAULT '',
+    fetched_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_contents_status
+ON article_contents(status, fetched_at);
+
+CREATE TABLE IF NOT EXISTS article_relevance_reviews (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('processing', 'success', 'failed')),
+    is_relevant INTEGER NOT NULL DEFAULT 0,
+    relevance_score INTEGER NOT NULL DEFAULT 0,
+    relevance_reason TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    confidence INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    reviewed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_relevance_reviews_result
+ON article_relevance_reviews(status, is_relevant, relevance_score);
+
+CREATE TABLE IF NOT EXISTS business_articles (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    analysis_status TEXT NOT NULL CHECK (analysis_status IN ('processing', 'success', 'failed')),
+    relevance_score INTEGER NOT NULL,
+    relevance_reason TEXT NOT NULL,
+    relevance_confidence INTEGER NOT NULL DEFAULT 0,
+    relevance_evidence TEXT NOT NULL DEFAULT '[]',
+    category TEXT NOT NULL DEFAULT 'other',
+    secondary_categories TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL DEFAULT '',
+    impact_direction TEXT NOT NULL DEFAULT 'neutral',
+    impact_score INTEGER NOT NULL DEFAULT 1,
+    impact_analysis TEXT NOT NULL DEFAULT '',
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    risk_factors TEXT NOT NULL DEFAULT '[]',
+    opportunities TEXT NOT NULL DEFAULT '[]',
+    recommended_actions TEXT NOT NULL DEFAULT '[]',
+    analysis_evidence TEXT NOT NULL DEFAULT '[]',
+    content_hash TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    accepted_at TEXT NOT NULL,
+    analyzed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_business_articles_analysis
+ON business_articles(analysis_status, category, risk_score DESC);
+
+CREATE TABLE IF NOT EXISTS ai_analysis_run_items (
+    run_id INTEGER NOT NULL REFERENCES ai_analysis_runs(id) ON DELETE CASCADE,
+    article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'success', 'failed')),
+    is_relevant INTEGER NOT NULL DEFAULT 0,
+    content_status TEXT NOT NULL DEFAULT 'pending',
+    relevance_status TEXT NOT NULL DEFAULT 'pending',
+    business_analysis_status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, article_id)
+);
+
+CREATE TABLE IF NOT EXISTS daily_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_date TEXT NOT NULL,
+    categories TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed', 'interrupted')),
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    executive_summary TEXT NOT NULL DEFAULT '',
+    risk_basis TEXT NOT NULL DEFAULT '',
+    key_developments TEXT NOT NULL DEFAULT '[]',
+    key_risks TEXT NOT NULL DEFAULT '[]',
+    opportunities TEXT NOT NULL DEFAULT '[]',
+    recommended_actions TEXT NOT NULL DEFAULT '[]',
+    watchlist TEXT NOT NULL DEFAULT '[]',
+    article_count INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_reports_date
+ON daily_reports(report_date DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS daily_report_articles (
+    report_id INTEGER NOT NULL REFERENCES daily_reports(id) ON DELETE CASCADE,
+    article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    PRIMARY KEY (report_id, article_id)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -128,6 +324,7 @@ DEFAULT_SOURCES = (
         ),
         "mode": "search",
         "language": "zh-CN",
+        "country": "CN",
         "active": True,
     },
     {
@@ -138,6 +335,7 @@ DEFAULT_SOURCES = (
         ),
         "mode": "search",
         "language": "en-US",
+        "country": "US",
         "active": True,
     },
     {
@@ -145,6 +343,7 @@ DEFAULT_SOURCES = (
         "url_template": "https://ec.europa.eu/newsroom/growth/feed?tpa_id=30111",
         "mode": "direct",
         "language": "en",
+        "country": "EU",
         "active": True,
     },
     {
@@ -155,6 +354,7 @@ DEFAULT_SOURCES = (
         ),
         "mode": "direct",
         "language": "en",
+        "country": "GB",
         "active": True,
     },
     {
@@ -162,6 +362,7 @@ DEFAULT_SOURCES = (
         "url_template": "https://www.gov.br/anvisa/pt-br/assuntos/noticias-anvisa/RSS",
         "mode": "direct",
         "language": "pt-BR",
+        "country": "BR",
         "active": True,
     },
     {
@@ -172,6 +373,7 @@ DEFAULT_SOURCES = (
         ),
         "mode": "direct",
         "language": "en",
+        "country": "CA",
         "active": True,
     },
     {
@@ -179,6 +381,7 @@ DEFAULT_SOURCES = (
         "url_template": "https://www.ecdc.europa.eu/en/taxonomy/term/1505/feed",
         "mode": "direct",
         "language": "en",
+        "country": "EU",
         "active": True,
     },
     {
@@ -186,6 +389,7 @@ DEFAULT_SOURCES = (
         "url_template": "https://policy.trade.ec.europa.eu/node/2/rss_en",
         "mode": "direct",
         "language": "en",
+        "country": "EU",
         "active": True,
     },
     {
@@ -193,6 +397,7 @@ DEFAULT_SOURCES = (
         "url_template": "https://www.wto.org/library/rss/latest_news_e.xml",
         "mode": "direct",
         "language": "en",
+        "country": "GLOBAL",
         "active": True,
     },
 )
@@ -241,6 +446,25 @@ class Database:
         now = utc_now_iso()
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            source_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(rss_sources)").fetchall()
+            }
+            if "country" not in source_columns:
+                connection.execute(
+                    "ALTER TABLE rss_sources ADD COLUMN country TEXT NOT NULL DEFAULT ''"
+                )
+            article_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(articles)").fetchall()
+            }
+            if "publisher_normalized" not in article_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE articles
+                    ADD COLUMN publisher_normalized TEXT NOT NULL DEFAULT ''
+                    """
+                )
             detail_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -254,6 +478,63 @@ class Database:
                     ADD COLUMN skipped_outside_window INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            ai_item_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(ai_analysis_run_items)"
+                ).fetchall()
+            }
+            for column in (
+                "content_status",
+                "relevance_status",
+                "business_analysis_status",
+            ):
+                if column not in ai_item_columns:
+                    connection.execute(
+                        f"""
+                        ALTER TABLE ai_analysis_run_items
+                        ADD COLUMN {column} TEXT NOT NULL DEFAULT 'pending'
+                        """  # noqa: S608
+                    )
+            source_rows = connection.execute(
+                "SELECT id, url_template, language, country FROM rss_sources"
+            ).fetchall()
+            for source_row in source_rows:
+                if not source_row["country"]:
+                    connection.execute(
+                        "UPDATE rss_sources SET country = ? WHERE id = ?",
+                        (
+                            infer_country(
+                                source_row["url_template"], source_row["language"]
+                            ),
+                            source_row["id"],
+                        ),
+                    )
+            article_rows = connection.execute(
+                "SELECT id, publisher, publisher_normalized FROM articles"
+            ).fetchall()
+            for article_row in article_rows:
+                normalized = normalize_publisher(article_row["publisher"])
+                if normalized != article_row["publisher_normalized"]:
+                    connection.execute(
+                        "UPDATE articles SET publisher_normalized = ? WHERE id = ?",
+                        (normalized, article_row["id"]),
+                    )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO article_sources
+                    (article_id, rss_source_id, feed_url, observed_url,
+                     canonical_url, guid, language, country, categories,
+                     first_seen_at, last_seen_at)
+                SELECT a.id, a.rss_source_id, '', a.url,
+                       COALESCE(a.canonical_url, a.url), '',
+                       COALESCE(s.language, ''), COALESCE(s.country, ''), '[]',
+                       a.collected_at, a.collected_at
+                FROM articles a
+                JOIN rss_sources s ON s.id = a.rss_source_id
+                WHERE a.rss_source_id IS NOT NULL
+                """
+            )
             connection.execute(
                 """
                 UPDATE collection_runs
@@ -261,6 +542,93 @@ class Database:
                     message = CASE
                         WHEN message = '' THEN '应用重启，运行被中断'
                         ELSE message
+                    END
+                WHERE status = 'running'
+                """,
+                (now,),
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_runs
+                SET status = 'interrupted', finished_at = ?,
+                    message = CASE
+                        WHEN message = '' THEN '应用重启，AI 分析被中断'
+                        ELSE message
+                    END
+                WHERE status = 'running'
+                """,
+                (now,),
+            )
+            connection.execute(
+                """
+                UPDATE article_analyses
+                SET status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，AI 分析被中断'
+                    ELSE error_message
+                END
+                WHERE status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE article_contents
+                SET status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，全文抓取被中断'
+                    ELSE error_message
+                END
+                WHERE status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE article_relevance_reviews
+                SET status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，相关性审核被中断'
+                    ELSE error_message
+                END
+                WHERE status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE business_articles
+                SET analysis_status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，业务分析被中断'
+                    ELSE error_message
+                END
+                WHERE analysis_status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'failed',
+                    content_status = CASE
+                        WHEN content_status = 'processing' THEN 'failed'
+                        ELSE content_status
+                    END,
+                    relevance_status = CASE
+                        WHEN relevance_status = 'processing' THEN 'failed'
+                        ELSE relevance_status
+                    END,
+                    business_analysis_status = CASE
+                        WHEN business_analysis_status = 'processing' THEN 'failed'
+                        ELSE business_analysis_status
+                    END,
+                    error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，AI 分析被中断'
+                    ELSE error_message
+                END
+                WHERE status IN ('pending', 'processing')
+                """
+            )
+            connection.execute(
+                """
+                UPDATE daily_reports
+                SET status = 'interrupted', updated_at = ?,
+                    error_message = CASE
+                        WHEN error_message = '' THEN '应用重启，日报生成被中断'
+                        ELSE error_message
                     END
                 WHERE status = 'running'
                 """,
@@ -274,14 +642,16 @@ class Database:
                     connection.execute(
                         """
                         INSERT INTO rss_sources
-                            (name, url_template, mode, language, active, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                            (name, url_template, mode, language, country,
+                             active, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             source["name"],
                             source["url_template"],
                             source["mode"],
                             source["language"],
+                            source["country"],
                             int(source["active"]),
                             now,
                             now,
@@ -325,6 +695,12 @@ class Database:
             defaults = {
                 "schedule_time": "08:00",
                 "timezone": "Asia/Shanghai",
+                "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
+                "ai_relevance_threshold": "70",
+                "ai_batch_size": "20",
+                "ai_content_max_chars": "30000",
+                "ai_auto_analyze": "false",
+                "ai_auto_report": "false",
             }
             for key, value in defaults.items():
                 connection.execute(
@@ -369,14 +745,17 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT INTO rss_sources
-                    (name, url_template, mode, language, active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (name, url_template, mode, language, country,
+                     active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
                     data["url_template"],
                     data["mode"],
                     data.get("language", ""),
+                    data.get("country")
+                    or infer_country(data["url_template"], data.get("language", "")),
                     int(data.get("active", True)),
                     now,
                     now,
@@ -390,7 +769,7 @@ class Database:
             cursor = connection.execute(
                 """
                 UPDATE rss_sources
-                SET name = ?, url_template = ?, mode = ?, language = ?,
+                SET name = ?, url_template = ?, mode = ?, language = ?, country = ?,
                     active = ?, updated_at = ?
                 WHERE id = ? AND archived = 0
                 """,
@@ -399,6 +778,8 @@ class Database:
                     data["url_template"],
                     data["mode"],
                     data.get("language", ""),
+                    data.get("country")
+                    or infer_country(data["url_template"], data.get("language", "")),
                     int(data.get("active", True)),
                     now,
                     source_id,
@@ -549,11 +930,17 @@ class Database:
         filters: list[str] = []
         parameters: list[Any] = []
         if query:
-            filters.append("(a.title LIKE ? OR a.summary LIKE ? OR a.publisher LIKE ?)")
+            filters.append(
+                "(a.title LIKE ? OR a.summary LIKE ? OR a.publisher LIKE ? "
+                "OR a.publisher_normalized LIKE ?)"
+            )
             term = f"%{query}%"
-            parameters.extend((term, term, term))
+            parameters.extend((term, term, term, term))
         if source_id is not None:
-            filters.append("a.rss_source_id = ?")
+            filters.append(
+                "EXISTS (SELECT 1 FROM article_sources axs "
+                "WHERE axs.article_id = a.id AND axs.rss_source_id = ?)"
+            )
             parameters.append(source_id)
         if keyword_id is not None:
             filters.append(
@@ -568,20 +955,89 @@ class Database:
             ).fetchone()[0]
             rows = connection.execute(
                 f"""
-                SELECT a.*, s.name AS feed_name,
-                       GROUP_CONCAT(DISTINCT k.name) AS keyword_names
+                SELECT a.*, s.name AS feed_name
                 FROM articles a
                 LEFT JOIN rss_sources s ON s.id = a.rss_source_id
-                LEFT JOIN article_keywords ak ON ak.article_id = a.id
-                LEFT JOIN keywords k ON k.id = ak.keyword_id
                 {where}
-                GROUP BY a.id
                 ORDER BY a.published_at DESC, a.id DESC
                 LIMIT ? OFFSET ?
                 """,  # noqa: S608
                 [*parameters, limit, offset],
             ).fetchall()
-        return {"total": int(total), "items": self.rows(rows)}
+            items = self.rows(rows)
+            article_ids = [item["id"] for item in items]
+            if not article_ids:
+                return {"total": int(total), "items": []}
+            placeholders = ",".join("?" for _ in article_ids)
+            source_rows = connection.execute(
+                f"""
+                SELECT axs.*, s.name AS source_name
+                FROM article_sources axs
+                JOIN rss_sources s ON s.id = axs.rss_source_id
+                WHERE axs.article_id IN ({placeholders})
+                ORDER BY axs.first_seen_at, axs.id
+                """,  # noqa: S608
+                article_ids,
+            ).fetchall()
+            keyword_rows = connection.execute(
+                f"""
+                SELECT ak.article_id, ak.keyword_id, ak.matched_terms,
+                       k.name AS keyword_name
+                FROM article_keywords ak
+                JOIN keywords k ON k.id = ak.keyword_id
+                WHERE ak.article_id IN ({placeholders})
+                ORDER BY k.name
+                """,  # noqa: S608
+                article_ids,
+            ).fetchall()
+
+        sources_by_article: dict[int, list[dict[str, Any]]] = {
+            article_id: [] for article_id in article_ids
+        }
+        for row in source_rows:
+            source = dict(row)
+            try:
+                source["categories"] = json.loads(source["categories"])
+            except (TypeError, json.JSONDecodeError):
+                source["categories"] = []
+            sources_by_article[source["article_id"]].append(source)
+
+        keywords_by_article: dict[int, list[dict[str, Any]]] = {
+            article_id: [] for article_id in article_ids
+        }
+        for row in keyword_rows:
+            keyword = dict(row)
+            try:
+                keyword["matched_terms"] = json.loads(keyword["matched_terms"])
+            except (TypeError, json.JSONDecodeError):
+                keyword["matched_terms"] = []
+            keywords_by_article[keyword["article_id"]].append(keyword)
+
+        for item in items:
+            sources = sources_by_article[item["id"]]
+            keywords = keywords_by_article[item["id"]]
+            item["sources"] = sources
+            item["source_names"] = list(
+                dict.fromkeys(source["source_name"] for source in sources)
+            )
+            item["languages"] = list(
+                dict.fromkeys(source["language"] for source in sources if source["language"])
+            )
+            item["countries"] = list(
+                dict.fromkeys(source["country"] for source in sources if source["country"])
+            )
+            item["categories"] = list(
+                dict.fromkeys(
+                    category
+                    for source in sources
+                    for category in source["categories"]
+                )
+            )
+            item["keywords"] = keywords
+            item["keyword_names"] = ",".join(
+                keyword["keyword_name"] for keyword in keywords
+            )
+        return {"total": int(total), "items": items}
 
     def article_count(self) -> int:
         with self.connect() as connection:
