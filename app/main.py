@@ -40,12 +40,18 @@ class SourcePayload(BaseModel):
     url_template: str = Field(min_length=8, max_length=2000)
     mode: Literal["search", "direct"]
     language: str = Field(default="", max_length=30)
+    country: str = Field(default="", max_length=10)
     active: bool = True
 
     @field_validator("name", "language")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("country")
+    @classmethod
+    def normalize_country(cls, value: str) -> str:
+        return value.strip().upper()
 
     @field_validator("url_template")
     @classmethod

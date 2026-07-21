@@ -157,10 +157,13 @@ async function loadArticles() {
     state.articleTotal = data.total;
     $("article-total").textContent = `共 ${data.total} 条`;
     $("article-rows").innerHTML = data.items.map((item) => {
-      const keywords = (item.keyword_names || "").split(",").filter(Boolean);
+      const keywords = item.keywords?.map((keyword) => keyword.keyword_name) || (item.keyword_names || "").split(",").filter(Boolean);
+      const sources = item.sources || [];
+      const sourceNames = item.source_names?.length ? item.source_names : [item.feed_name].filter(Boolean);
+      const metadata = [...(item.languages || []), ...(item.countries || []), ...(item.categories || []).slice(0, 3)];
       return `<tr>
         <td><a class="article-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.summary || "")}</span></td>
-        <td>${escapeHtml(item.publisher || "-")}<span class="cell-subtitle">${escapeHtml(item.feed_name || "-")}</span></td>
+        <td>${escapeHtml(item.publisher_normalized || item.publisher || "-")}<span class="cell-subtitle">${escapeHtml(sourceNames.join(" / ") || "-")}${sources.length > 1 ? ` · ${sources.length} 个来源` : ""}</span><span class="cell-meta">${escapeHtml(metadata.join(" · "))}</span></td>
         <td><div class="keyword-list">${keywords.map((name) => `<span class="tag">${escapeHtml(name)}</span>`).join("")}</div></td>
         <td>${formatFullTime(item.published_at)}</td>
         <td>${formatFullTime(item.collected_at)}</td>
@@ -216,7 +219,7 @@ function renderSources() {
   $("source-rows").innerHTML = state.sources.map((item) => `<tr>
     <td><strong>${escapeHtml(item.name)}</strong></td>
     <td><span class="tag">${item.mode === "search" ? "搜索型" : "直连型"}</span></td>
-    <td>${escapeHtml(item.language || "-")}</td><td class="url-cell" title="${escapeHtml(item.url_template)}">${escapeHtml(item.url_template)}</td>
+    <td>${escapeHtml(item.language || "-")}</td><td>${escapeHtml(item.country || "-")}</td><td class="url-cell" title="${escapeHtml(item.url_template)}">${escapeHtml(item.url_template)}</td>
     <td>${toggleMarkup("source", item)}</td>
     <td><div class="row-actions"><button class="icon-button source-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button source-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
   </tr>`).join("");
@@ -240,6 +243,7 @@ function openSourceDialog(item = null) {
   $("source-name").value = item?.name || "";
   $("source-mode").value = item?.mode || "search";
   $("source-language").value = item?.language || "";
+  $("source-country").value = item?.country || "";
   $("source-url").value = item?.url_template || "";
   $("source-active").checked = item?.active ?? true;
   $("source-dialog").showModal();
@@ -282,7 +286,7 @@ async function saveSource(event) {
   const id = $("source-id").value;
   const payload = {
     name: $("source-name").value.trim(), mode: $("source-mode").value,
-    language: $("source-language").value.trim(), url_template: $("source-url").value.trim(),
+    language: $("source-language").value.trim(), country: $("source-country").value.trim().toUpperCase(), url_template: $("source-url").value.trim(),
     active: $("source-active").checked,
   };
   try {
@@ -309,7 +313,7 @@ async function saveKeyword(event) {
 async function updateSourceActive(id, active) {
   const item = state.sources.find((source) => source.id === Number(id));
   if (!item) return;
-  await api(`/api/sources/${id}`, { method: "PUT", body: JSON.stringify({ name: item.name, url_template: item.url_template, mode: item.mode, language: item.language, active }) });
+  await api(`/api/sources/${id}`, { method: "PUT", body: JSON.stringify({ name: item.name, url_template: item.url_template, mode: item.mode, language: item.language, country: item.country || "", active }) });
   await Promise.all([loadCatalogs(), loadStatus()]);
 }
 

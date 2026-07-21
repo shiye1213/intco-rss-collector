@@ -68,6 +68,8 @@ python -m pytest -q
 
 URL 模板必须包含 `{query}`。采集时系统将自动生成并 URL 编码查询表达式。
 
+语言使用 BCP 47 风格代码，例如 `zh-CN`、`en-US`；国家/地区使用大写代码，例如 `CN`、`US`、`EU`。Google News 地址中的 `gl` 参数可以在国家字段留空时作为自动推断依据。
+
 ### 直连型 RSS
 
 填写固定 RSS/Atom 地址。系统下载一次 Feed，再分别匹配所有启用关键词组。

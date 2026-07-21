@@ -45,6 +45,8 @@
 | `limit` | integer | 返回数量，默认 50，最大 200 |
 | `offset` | integer | 分页偏移量 |
 
+每篇文章包含结构化的 `sources`、`keywords`、`languages`、`countries` 和 `categories` 字段。`sources` 中保存来源名称、Feed 地址、RSS 提供的文章链接、GUID、语言、国家、分类及首次/最后发现时间。
+
 ## RSS 源
 
 ### `GET /api/sources`
@@ -59,6 +61,7 @@
   "url_template": "https://news.google.com/rss/search?q={query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
   "mode": "search",
   "language": "zh-CN",
+  "country": "CN",
   "active": true
 }
 ```

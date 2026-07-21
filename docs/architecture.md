@@ -58,6 +58,7 @@ sequenceDiagram
 | `rss_sources` | RSS 源配置、类型、语言和启用状态 |
 | `keywords` | 关键词组、查询表达式和正文匹配词 |
 | `articles` | 新闻标题、链接、发布方、摘要和发布时间 |
+| `article_sources` | 文章的全部 RSS 来源、链接、GUID、语言、国家、分类及发现时间 |
 | `article_keywords` | 文章与命中关键词组的多对多关系 |
 | `collection_cursors` | 每个源和关键词组合的上次成功时间 |
 | `collection_runs` | 一次手动或定时采集的汇总日志 |
@@ -73,6 +74,8 @@ sequenceDiagram
 ### 去重
 
 系统先清理 URL 中的常见跟踪参数，再以规范化 URL 去重；同时计算“标题 + 发布方 + 发布日期”的 SHA-256 指纹，处理同一新闻使用不同跟踪链接的情况。
+
+文章主记录去重后，每次命中的 RSS 来源仍写入 `article_sources`。因此同一文章来自多个 Feed 时只产生一篇文章，但不会丢失来源证据。发布方经过 Unicode NFKC、空白和边界符号规范化；时间统一保存为 UTC，分类统一保存为 JSON 数组。
 
 ### 并发控制
 

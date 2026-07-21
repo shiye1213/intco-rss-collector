@@ -17,6 +17,7 @@ from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 from .database import Database, utc_now_iso
+from .normalization import normalize_categories, normalize_publisher
 
 
 USER_AGENT = "INTCO-RSS-Collector/1.0 (+internal market intelligence)"
@@ -46,6 +47,8 @@ class FeedItem:
     publisher: str
     summary: str
     published_at: datetime | None
+    guid: str = ""
+    categories: tuple[str, ...] = ()
 
 
 def strip_html(value: str) -> str:
@@ -63,8 +66,10 @@ def local_name(tag: str) -> str:
 
 def first_child_text(element: ElementTree.Element, names: tuple[str, ...]) -> str:
     for child in element:
-        if local_name(child.tag) in names and child.text:
-            return child.text.strip()
+        if local_name(child.tag) in names:
+            value = " ".join("".join(child.itertext()).split())
+            if value:
+                return value
     return ""
 
 
@@ -91,9 +96,19 @@ def parse_feed(xml_data: bytes) -> list[FeedItem]:
     for entry in entries:
         title = strip_html(first_child_text(entry, ("title",)))
         summary = strip_html(
-            first_child_text(entry, ("description", "summary", "content"))
+            first_child_text(entry, ("description", "summary", "content", "encoded"))
         )
-        publisher = strip_html(first_child_text(entry, ("source", "author")))
+        publisher = normalize_publisher(
+            strip_html(first_child_text(entry, ("source", "author", "creator")))
+        )
+        guid = strip_html(first_child_text(entry, ("guid", "id")))
+        categories = normalize_categories(
+            [
+                strip_html(child.attrib.get("term") or child.attrib.get("label") or child.text or "")
+                for child in entry
+                if local_name(child.tag) == "category"
+            ]
+        )
         link = ""
         for child in entry:
             if local_name(child.tag) != "link":
@@ -116,6 +131,8 @@ def parse_feed(xml_data: bytes) -> list[FeedItem]:
                     publisher=publisher,
                     summary=summary,
                     published_at=published,
+                    guid=guid,
+                    categories=tuple(categories),
                 )
             )
     return items
@@ -172,7 +189,7 @@ def article_fingerprint(item: FeedItem) -> str:
     payload = "|".join(
         (
             " ".join(item.title.casefold().split()),
-            " ".join(item.publisher.casefold().split()),
+            normalize_publisher(item.publisher).casefold(),
             published_date,
         )
     )
@@ -386,7 +403,7 @@ class Collector:
                 continue
             matched_count += 1
             article_id, inserted = self._upsert_article(
-                connection, item, int(source["id"]), run_started_at
+                connection, item, source, url, run_started_at
             )
             connection.execute(
                 """
@@ -436,11 +453,13 @@ class Collector:
     def _upsert_article(
         connection: sqlite3.Connection,
         item: FeedItem,
-        source_id: int,
+        source: dict[str, object],
+        feed_url: str,
         collected_at: datetime,
     ) -> tuple[int, bool]:
         canonical_url = canonicalize_url(item.url)
         fingerprint = article_fingerprint(item)
+        publisher_normalized = normalize_publisher(item.publisher)
         existing = connection.execute(
             """
             SELECT id FROM articles
@@ -454,32 +473,85 @@ class Collector:
                 """
                 UPDATE articles
                 SET summary = CASE WHEN length(?) > length(summary) THEN ? ELSE summary END,
-                    publisher = CASE WHEN publisher = '' THEN ? ELSE publisher END
+                    publisher = CASE WHEN publisher = '' THEN ? ELSE publisher END,
+                    publisher_normalized = CASE
+                        WHEN publisher_normalized = '' THEN ? ELSE publisher_normalized
+                    END
                 WHERE id = ?
                 """,
-                (item.summary, item.summary, item.publisher, existing["id"]),
+                (
+                    item.summary,
+                    item.summary,
+                    item.publisher,
+                    publisher_normalized,
+                    existing["id"],
+                ),
             )
-            return int(existing["id"]), False
-        cursor = connection.execute(
+            article_id = int(existing["id"])
+            inserted = False
+        else:
+            cursor = connection.execute(
+                """
+                INSERT INTO articles
+                    (title, url, canonical_url, fingerprint, publisher,
+                     publisher_normalized, summary, published_at, collected_at,
+                     rss_source_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.title,
+                    item.url,
+                    canonical_url,
+                    fingerprint,
+                    item.publisher,
+                    publisher_normalized,
+                    item.summary,
+                    iso_utc(item.published_at),
+                    iso_utc(collected_at),
+                    source["id"],
+                ),
+            )
+            article_id = int(cursor.lastrowid)
+            inserted = True
+
+        seen_at = iso_utc(collected_at)
+        connection.execute(
             """
-            INSERT INTO articles
-                (title, url, canonical_url, fingerprint, publisher, summary,
-                 published_at, collected_at, rss_source_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO article_sources
+                (article_id, rss_source_id, feed_url, observed_url,
+                 canonical_url, guid, language, country, categories,
+                 first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(article_id, rss_source_id, canonical_url) DO UPDATE SET
+                feed_url = excluded.feed_url,
+                observed_url = excluded.observed_url,
+                guid = CASE WHEN excluded.guid <> '' THEN excluded.guid ELSE guid END,
+                language = CASE
+                    WHEN excluded.language <> '' THEN excluded.language ELSE language
+                END,
+                country = CASE
+                    WHEN excluded.country <> '' THEN excluded.country ELSE country
+                END,
+                categories = CASE
+                    WHEN excluded.categories <> '[]' THEN excluded.categories ELSE categories
+                END,
+                last_seen_at = excluded.last_seen_at
             """,
             (
-                item.title,
+                article_id,
+                source["id"],
+                feed_url,
                 item.url,
                 canonical_url,
-                fingerprint,
-                item.publisher,
-                item.summary,
-                iso_utc(item.published_at),
-                iso_utc(collected_at),
-                source_id,
+                item.guid,
+                source.get("language", ""),
+                source.get("country", ""),
+                json.dumps(list(item.categories), ensure_ascii=False),
+                seen_at,
+                seen_at,
             ),
         )
-        return int(cursor.lastrowid), True
+        return article_id, inserted
 
     @staticmethod
     def _insert_detail(
