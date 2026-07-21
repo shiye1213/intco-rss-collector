@@ -8,6 +8,9 @@ const state = {
   aiOffset: 0,
   aiLimit: 50,
   aiTotal: 0,
+  reviewOffset: 0,
+  reviewLimit: 50,
+  reviewTotal: 0,
   aiBatchSize: 20,
   categories: {},
   wasRunning: false,
@@ -61,7 +64,7 @@ function formatFullTime(value) {
 }
 
 function statusLabel(status) {
-  const labels = { success: "成功", partial: "部分失败", failed: "失败", running: "运行中", interrupted: "已中断" };
+  const labels = { success: "成功", partial: "部分失败", failed: "失败", running: "运行中", interrupted: "已中断", pending: "待处理", processing: "处理中", skipped: "跳过" };
   return `<span class="status-chip status-${escapeHtml(status)}">${labels[status] || escapeHtml(status)}</span>`;
 }
 
@@ -83,8 +86,12 @@ function riskMarkup(level, score) {
 }
 
 function relevanceMarkup(relevant, score) {
-  const label = relevant ? "相关" : "无关";
+  const label = relevant ? "真相关" : "审核无关";
   return `<span class="relevance-chip ${relevant ? "relevant" : "irrelevant"}">${label} · ${Number(score) || 0}</span>`;
+}
+
+function formatChars(value) {
+  return `${Number(value || 0).toLocaleString("zh-CN")} 字符`;
 }
 
 function todayInShanghai() {
@@ -246,9 +253,11 @@ async function loadAIStatus() {
     state.categories = data.categories || {};
     fillCategoryOptions();
     $("ai-metric-pending").textContent = data.pending;
+    $("ai-metric-content-ready").textContent = data.content_ready;
+    $("ai-metric-content-failed").textContent = data.content_failed;
     $("ai-metric-relevant").textContent = data.relevant;
     $("ai-metric-irrelevant").textContent = data.irrelevant;
-    $("ai-metric-failed").textContent = data.failed;
+    $("ai-metric-analyzed").textContent = data.analyzed;
     $("ai-metric-threshold").textContent = data.relevance_threshold;
     const statusText = data.configured
       ? `${data.model} · ${data.analysis_running ? `分析任务 #${data.analysis_run_id} 运行中` : "已就绪"}`
@@ -257,13 +266,13 @@ async function loadAIStatus() {
     $("ai-settings-status").textContent = statusText;
     const analyzeButton = $("analyze-pending");
     analyzeButton.disabled = !data.configured || data.analysis_running || data.pending === 0;
-    analyzeButton.querySelector("span").textContent = data.analysis_running ? "正在分析" : "分析待处理文章";
+    analyzeButton.querySelector("span").textContent = data.analysis_running ? "正在处理" : "处理待办文章";
     const reportButton = $("generate-report");
     reportButton.disabled = !data.configured || data.report_running;
     reportButton.querySelector("span").textContent = data.report_running ? "正在生成" : "生成日报";
     if (state.wasAnalysisRunning && !data.analysis_running) {
-      await Promise.all([loadAIArticles(), loadAIRuns()]);
-      showToast("AI 分析任务已结束");
+      await Promise.all([loadAIArticles(), loadAIReviews(), loadAIRuns()]);
+      showToast("AI 处理任务已结束");
     }
     if (state.wasReportRunning && !data.report_running) {
       await loadReports();
@@ -277,12 +286,10 @@ async function loadAIStatus() {
 
 async function loadAIArticles() {
   const params = new URLSearchParams({ limit: state.aiLimit, offset: state.aiOffset });
-  const relevant = $("ai-relevant-filter").value;
   const category = $("ai-category-filter").value;
   let dateFrom = $("ai-date-from").value;
   const dateTo = $("ai-date-to").value;
   if (!dateFrom && dateTo) dateFrom = dateTo;
-  if (relevant) params.set("relevant", relevant);
   if (category) params.set("category", category);
   if (dateFrom) params.set("date_from", dateFrom);
   if (dateTo) params.set("date_to", dateTo);
@@ -290,10 +297,10 @@ async function loadAIArticles() {
     const data = await api(`/api/ai/articles?${params}`);
     state.aiTotal = data.total;
     $("ai-article-rows").innerHTML = data.items.map((item) => `<tr>
-      <td><a class="article-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.publisher || "-")} · ${formatFullTime(item.published_at)}</span></td>
-      <td>${relevanceMarkup(Boolean(item.is_relevant), item.relevance_score)}<span class="cell-meta">置信度 ${item.confidence}</span></td>
+      <td><a class="article-title" href="${escapeHtml(item.final_url || item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.publisher || "-")} · ${formatFullTime(item.published_at)}</span><span class="cell-meta">全文 ${formatChars(item.content_chars)}</span></td>
+      <td>${relevanceMarkup(true, item.relevance_score)}<span class="cell-meta">置信度 ${item.relevance_confidence}</span></td>
       <td><span class="tag">${escapeHtml(categoryLabel(item.category))}</span>${(item.secondary_categories || []).map((code) => `<span class="cell-meta">${escapeHtml(categoryLabel(code))}</span>`).join("")}</td>
-      <td><strong class="analysis-summary">${escapeHtml(item.summary || item.relevance_reason || "-")}</strong><span class="analysis-detail">${escapeHtml(item.impact_analysis || item.relevance_reason || "-")}</span></td>
+      <td><strong class="analysis-summary">${escapeHtml(item.summary || "-")}</strong><span class="analysis-detail">${escapeHtml(item.impact_analysis || "-")}</span></td>
       <td>${riskMarkup(item.risk_level, item.risk_score)}<span class="cell-meta">影响 ${item.impact_score} / 5</span></td>
       <td>${formatFullTime(item.analyzed_at)}<span class="cell-subtitle">${escapeHtml(item.model)}</span></td>
     </tr>`).join("");
@@ -303,6 +310,34 @@ async function loadAIArticles() {
     $("ai-page").textContent = `第 ${page} / ${pages} 页`;
     $("ai-prev").disabled = state.aiOffset === 0;
     $("ai-next").disabled = state.aiOffset + state.aiLimit >= data.total;
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function loadAIReviews() {
+  const params = new URLSearchParams({ limit: state.reviewLimit, offset: state.reviewOffset });
+  const relevant = $("ai-review-filter").value;
+  let dateFrom = $("ai-date-from").value;
+  const dateTo = $("ai-date-to").value;
+  if (!dateFrom && dateTo) dateFrom = dateTo;
+  if (relevant) params.set("relevant", relevant);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  try {
+    const data = await api(`/api/ai/reviews?${params}`);
+    state.reviewTotal = data.total;
+    $("ai-review-rows").innerHTML = data.items.map((item) => `<tr>
+      <td><a class="article-title" href="${escapeHtml(item.final_url || item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.publisher || "-")} · ${formatFullTime(item.published_at)}</span><span class="cell-meta">全文 ${formatChars(item.content_chars)}</span></td>
+      <td>${relevanceMarkup(Boolean(item.is_relevant), item.relevance_score)}<span class="cell-meta">置信度 ${item.confidence}</span></td>
+      <td><span class="analysis-detail expanded">${escapeHtml(item.relevance_reason || "-")}</span></td>
+      <td><span class="analysis-detail expanded">${escapeHtml((item.evidence || []).join("；") || "-")}</span></td>
+      <td>${formatFullTime(item.reviewed_at)}<span class="cell-subtitle">${escapeHtml(item.model)}</span></td>
+    </tr>`).join("");
+    $("ai-review-empty").classList.toggle("hidden", data.items.length > 0);
+    const page = Math.floor(state.reviewOffset / state.reviewLimit) + 1;
+    const pages = Math.max(1, Math.ceil(data.total / state.reviewLimit));
+    $("ai-review-page").textContent = `第 ${page} / ${pages} 页`;
+    $("ai-review-prev").disabled = state.reviewOffset === 0;
+    $("ai-review-next").disabled = state.reviewOffset + state.reviewLimit >= data.total;
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -316,13 +351,14 @@ async function loadAIRuns() {
       <td>${run.relevant_count} / ${run.irrelevant_count}</td>
       <td>${run.prompt_tokens + run.completion_tokens}<span class="cell-subtitle">输入 ${run.prompt_tokens} · 输出 ${run.completion_tokens}</span></td>
       <td>${formatFullTime(run.started_at)}</td>
+      <td><button class="icon-button ai-run-detail" data-id="${run.id}" type="button" title="查看处理明细"><i data-lucide="list-tree"></i></button></td>
     </tr>`).join("");
     $("ai-run-empty").classList.toggle("hidden", data.items.length > 0);
   } catch (error) { showToast(error.message, true); }
 }
 
 async function loadIntelligence() {
-  await Promise.all([loadAIStatus(), loadAIArticles(), loadAIRuns()]);
+  await Promise.all([loadAIStatus(), loadAIArticles(), loadAIReviews(), loadAIRuns()]);
   refreshIcons();
 }
 
@@ -332,10 +368,10 @@ async function startAIAnalysis() {
   try {
     const data = await api("/api/ai/analyze", {
       method: "POST",
-      body: JSON.stringify({ limit: state.aiBatchSize, force: false }),
+      body: JSON.stringify({ limit: state.aiBatchSize, force: false, refresh_content: false }),
     });
     state.wasAnalysisRunning = true;
-    showToast(`AI 分析任务 #${data.run_id} 已启动，共 ${data.article_count} 篇`);
+    showToast(`AI 处理任务 #${data.run_id} 已启动，共 ${data.article_count} 篇`);
     await loadAIStatus();
   } catch (error) {
     showToast(error.message, true);
@@ -398,7 +434,7 @@ async function openReportDetail(id) {
       ${reportList("业务机会", report.opportunities)}
       ${reportList("建议动作", report.recommended_actions)}
       ${reportList("后续监控", report.watchlist)}
-      ${report.articles?.length ? `<section class="report-block"><h4>关联新闻</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(article.title)}</span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
+      ${report.articles?.length ? `<section class="report-block"><h4>关联新闻</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(article.title)}</span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
     $("report-dialog").showModal();
   } catch (error) { showToast(error.message, true); }
 }
@@ -417,6 +453,31 @@ async function openRunDetail(id) {
       <td class="url-cell" title="${escapeHtml(detail.error_message)}">${escapeHtml(detail.error_message || "-")}</td>
     </tr>`).join("");
     $("run-dialog").showModal();
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function openAIRunDetail(id) {
+  try {
+    const run = await api(`/api/ai/runs/${id}`);
+    $("ai-run-dialog-title").textContent = `AI 处理日志 #${run.id}`;
+    $("ai-run-summary").innerHTML = [
+      ["状态", statusLabel(run.status)], ["文章", run.articles_total],
+      ["成功", run.articles_succeeded], ["失败", run.articles_failed],
+      ["Token", run.prompt_tokens + run.completion_tokens],
+    ].map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("");
+    $("ai-run-detail-rows").innerHTML = run.items.map((item) => {
+      const reviewed = item.relevance_status === "success";
+      return `<tr>
+        <td><a class="article-title" href="${escapeHtml(item.final_url || item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-meta">${item.content_chars ? formatChars(item.content_chars) : "尚无正文"}</span></td>
+        <td>${statusLabel(item.content_status)}</td>
+        <td>${statusLabel(item.relevance_status)}</td>
+        <td>${statusLabel(item.business_analysis_status)}</td>
+        <td>${reviewed ? relevanceMarkup(Boolean(item.is_relevant), item.relevance_score) : "-"}${item.category ? `<span class="cell-meta">${escapeHtml(categoryLabel(item.category))}</span>` : ""}</td>
+        <td><span class="analysis-detail expanded">${escapeHtml(item.error_message || "-")}</span></td>
+      </tr>`;
+    }).join("");
+    $("ai-run-dialog").showModal();
+    refreshIcons();
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -563,6 +624,7 @@ async function loadAISettings() {
     $("ai-business-profile").value = data.business_profile;
     $("ai-threshold").value = data.relevance_threshold;
     $("ai-batch-size").value = data.batch_size;
+    $("ai-content-max-chars").value = data.content_max_chars;
     $("ai-auto-analyze").checked = data.auto_analyze;
     $("ai-auto-report").checked = data.auto_report;
     state.aiBatchSize = data.batch_size;
@@ -575,6 +637,7 @@ async function saveAISettings(event) {
     business_profile: $("ai-business-profile").value.trim(),
     relevance_threshold: Number($("ai-threshold").value),
     batch_size: Number($("ai-batch-size").value),
+    content_max_chars: Number($("ai-content-max-chars").value),
     auto_analyze: $("ai-auto-analyze").checked,
     auto_report: $("ai-auto-report").checked,
   };
@@ -598,12 +661,14 @@ function bindEvents() {
   $("refresh-runs").addEventListener("click", loadRuns);
   $("analyze-pending").addEventListener("click", startAIAnalysis);
   $("refresh-ai").addEventListener("click", loadIntelligence);
-  $("ai-relevant-filter").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
   $("ai-category-filter").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
-  $("ai-date-from").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
-  $("ai-date-to").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
+  $("ai-date-from").addEventListener("change", () => { state.aiOffset = 0; state.reviewOffset = 0; Promise.all([loadAIArticles(), loadAIReviews()]); });
+  $("ai-date-to").addEventListener("change", () => { state.aiOffset = 0; state.reviewOffset = 0; Promise.all([loadAIArticles(), loadAIReviews()]); });
   $("ai-prev").addEventListener("click", () => { state.aiOffset = Math.max(0, state.aiOffset - state.aiLimit); loadAIArticles(); });
   $("ai-next").addEventListener("click", () => { state.aiOffset += state.aiLimit; loadAIArticles(); });
+  $("ai-review-filter").addEventListener("change", () => { state.reviewOffset = 0; loadAIReviews(); });
+  $("ai-review-prev").addEventListener("click", () => { state.reviewOffset = Math.max(0, state.reviewOffset - state.reviewLimit); loadAIReviews(); });
+  $("ai-review-next").addEventListener("click", () => { state.reviewOffset += state.reviewLimit; loadAIReviews(); });
   $("report-form").addEventListener("submit", generateReport);
   $("refresh-reports").addEventListener("click", loadReports);
   $("article-search").addEventListener("input", debounce(() => { state.articleOffset = 0; loadArticles(); }, 300));
@@ -626,6 +691,7 @@ function bindEvents() {
     if (!target) return;
     const id = target.dataset.id;
     if (target.classList.contains("run-detail")) openRunDetail(id);
+    if (target.classList.contains("ai-run-detail")) openAIRunDetail(id);
     if (target.classList.contains("report-detail-button")) openReportDetail(id);
     if (target.classList.contains("source-edit")) openSourceDialog(state.sources.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-edit")) openKeywordDialog(state.keywords.find((item) => item.id === Number(id)));

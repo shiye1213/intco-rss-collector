@@ -20,6 +20,7 @@ from .collector import (
     CollectionManager,
     Collector,
 )
+from .content import ArticleContentFetcher
 from .database import Database
 from .intelligence import (
     ArticleAnalysisManager,
@@ -29,7 +30,12 @@ from .intelligence import (
     IntelligenceRepository,
 )
 from .llm import DeepSeekClient, JSONLLMClient
-from .prompts import ARTICLE_PROMPT_VERSION, CATEGORY_LABELS, REPORT_PROMPT_VERSION
+from .prompts import (
+    BUSINESS_ANALYSIS_PROMPT_VERSION,
+    CATEGORY_LABELS,
+    RELEVANCE_PROMPT_VERSION,
+    REPORT_PROMPT_VERSION,
+)
 from .scheduler import DailyScheduler, next_scheduled_at, parse_schedule_time
 
 
@@ -113,6 +119,7 @@ class SettingsPayload(BaseModel):
 class AIAnalysisPayload(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
     force: bool = False
+    refresh_content: bool = False
     article_ids: list[int] | None = Field(
         default=None, min_length=1, max_length=100
     )
@@ -122,6 +129,7 @@ class AISettingsPayload(BaseModel):
     business_profile: str = Field(min_length=50, max_length=10000)
     relevance_threshold: int = Field(default=70, ge=0, le=100)
     batch_size: int = Field(default=20, ge=1, le=100)
+    content_max_chars: int = Field(default=30000, ge=2000, le=100000)
     auto_analyze: bool = False
     auto_report: bool = False
 
@@ -149,6 +157,7 @@ class ReportPayload(BaseModel):
 def create_app(
     database_path: Path | None = None,
     llm_client: JSONLLMClient | None = None,
+    content_fetcher: ArticleContentFetcher | None = None,
 ) -> FastAPI:
     database = Database(database_path or DEFAULT_DATABASE_PATH)
     collector = Collector(database)
@@ -156,7 +165,10 @@ def create_app(
     intelligence_repository = IntelligenceRepository(database)
     intelligence_client = llm_client or DeepSeekClient()
     analysis_manager = ArticleAnalysisManager(
-        database, intelligence_repository, intelligence_client
+        database,
+        intelligence_repository,
+        intelligence_client,
+        content_fetcher,
     )
     report_manager = DailyReportManager(
         database, intelligence_repository, intelligence_client
@@ -177,7 +189,7 @@ def create_app(
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
 
-    app = FastAPI(title="英科医疗 RSS 情报", version="1.1.0", lifespan=lifespan)
+    app = FastAPI(title="英科医疗 RSS 情报", version="1.2.0", lifespan=lifespan)
     app.state.database = database
     app.state.manager = manager
     app.state.scheduler = scheduler
@@ -341,7 +353,10 @@ def create_app(
                 "report_running": report_manager.running_report_id is not None,
                 "report_id": report_manager.running_report_id,
                 "categories": CATEGORY_LABELS,
-                "article_prompt_version": ARTICLE_PROMPT_VERSION,
+                "relevance_prompt_version": RELEVANCE_PROMPT_VERSION,
+                "business_analysis_prompt_version": (
+                    BUSINESS_ANALYSIS_PROMPT_VERSION
+                ),
                 "report_prompt_version": REPORT_PROMPT_VERSION,
                 "relevance_threshold": int(
                     settings.get("ai_relevance_threshold", "70")
@@ -365,7 +380,13 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         task = asyncio.create_task(
-            asyncio.to_thread(analysis_manager.execute, run_id, article_ids)
+            asyncio.to_thread(
+                analysis_manager.execute,
+                run_id,
+                article_ids,
+                force=payload.force,
+                refresh_content=payload.refresh_content,
+            )
         )
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
@@ -379,9 +400,15 @@ def create_app(
     def list_ai_runs(limit: int = Query(default=50, ge=1, le=200)):
         return {"items": intelligence_repository.list_analysis_runs(limit)}
 
+    @app.get("/api/ai/runs/{run_id}")
+    def get_ai_run(run_id: int):
+        run = intelligence_repository.get_analysis_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="AI 处理日志不存在")
+        return run
+
     @app.get("/api/ai/articles")
     def list_ai_articles(
-        relevant: bool | None = None,
         category: str = Query(default="", max_length=50),
         date_from: date | None = None,
         date_to: date | None = None,
@@ -392,9 +419,26 @@ def create_app(
             raise HTTPException(status_code=422, detail="未知 AI 分类")
         if date_from and date_to and date_to < date_from:
             raise HTTPException(status_code=422, detail="结束日期不能早于开始日期")
-        return intelligence_repository.list_analyses(
-            relevant=relevant,
+        return intelligence_repository.list_business_articles(
             category=category,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/ai/reviews")
+    def list_ai_reviews(
+        relevant: bool | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ):
+        if date_from and date_to and date_to < date_from:
+            raise HTTPException(status_code=422, detail="结束日期不能早于开始日期")
+        return intelligence_repository.list_reviews(
+            relevant=relevant,
             date_from=date_from,
             date_to=date_to,
             limit=limit,
@@ -408,6 +452,9 @@ def create_app(
             "business_profile": settings.get("ai_business_profile", ""),
             "relevance_threshold": int(settings.get("ai_relevance_threshold", "70")),
             "batch_size": int(settings.get("ai_batch_size", "20")),
+            "content_max_chars": int(
+                settings.get("ai_content_max_chars", "30000")
+            ),
             "auto_analyze": settings.get("ai_auto_analyze", "false") == "true",
             "auto_report": settings.get("ai_auto_report", "false") == "true",
         }
@@ -419,6 +466,9 @@ def create_app(
             "ai_relevance_threshold", str(payload.relevance_threshold)
         )
         database.set_setting("ai_batch_size", str(payload.batch_size))
+        database.set_setting(
+            "ai_content_max_chars", str(payload.content_max_chars)
+        )
         database.set_setting("ai_auto_analyze", str(payload.auto_analyze).lower())
         database.set_setting("ai_auto_report", str(payload.auto_report).lower())
         return payload.model_dump()

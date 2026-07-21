@@ -13,9 +13,11 @@ flowchart LR
     COL -->|"HTTP/HTTPS"| RSS["Google News 与其他 RSS 源"]
     COL --> PARSE["RSS/Atom XML 解析与过滤"]
     PARSE --> DB
-    CM -->|"采集完成回调"| AIM["AI 分析管理器"]
-    UI -->|"人工分析/日报"| AIM
-    AIM -->|"JSON Chat Completion"| DS["DeepSeek API"]
+    CM -->|"采集完成回调"| AIM["全文与 AI 处理管理器"]
+    UI -->|"人工处理/日报"| AIM
+    AIM --> FETCH["Google News 原文解析 + Trafilatura"]
+    FETCH -->|"HTTP/HTTPS"| WEB["出版社网页"]
+    AIM -->|"相关性审核 / 业务分析"| DS["DeepSeek API"]
     AIM --> PROMPT["业务边界与结构化 Prompt"]
     AIM --> DB
     AIM --> RM["日报管理器"]
@@ -31,12 +33,13 @@ flowchart LR
 |---|---|---|
 | Web/API | `app/main.py` | FastAPI 生命周期、接口、参数校验、静态文件服务 |
 | 采集器 | `app/collector.py` | Feed 下载、解析、匹配、时间过滤、去重和入库 |
+| 正文抓取 | `app/content.py` | Google News 原文地址解析、安全下载、正文抽取和清洗 |
 | 数据访问 | `app/database.py` | SQLite 表结构、迁移和数据访问方法 |
 | 调度器 | `app/scheduler.py` | 北京时间每日执行和下次执行时间计算 |
 | 查询构建 | `app/query_builder.py` | 将匹配词转换为 Google News 查询表达式 |
 | DeepSeek 客户端 | `app/llm.py` | API 鉴权、JSON 请求、响应和错误处理 |
-| Prompt | `app/prompts.py` | 企业边界、分类、相关性与日报 Prompt 版本 |
-| 情报流水线 | `app/intelligence.py` | AI 批次、结果校验、风险规则和日报持久化 |
+| Prompt | `app/prompts.py` | 相关性、业务分析与日报的独立 Prompt 及版本 |
+| 情报流水线 | `app/intelligence.py` | 全文、相关性门控、业务分析、批次日志和日报持久化 |
 | 前端 | `static/` | 采集、AI 情报、日报、配置和日志界面 |
 | 测试 | `tests/` | 采集、调度、AI 阈值、风险和日报测试 |
 
@@ -69,17 +72,29 @@ sequenceDiagram
     participant User as 用户或采集回调
     participant API as FastAPI
     participant Analysis as ArticleAnalysisManager
+    participant Publisher as 出版社网页
     participant DeepSeek as DeepSeek API
     participant DB as SQLite
     participant Report as DailyReportManager
 
     User->>API: 启动待处理文章分析
     API->>Analysis: 建立批次并后台执行
-    Analysis->>DB: 读取候选文章与企业设置
-    Analysis->>DeepSeek: 业务边界 + 新闻 + JSON Schema
-    DeepSeek-->>Analysis: 相关性、摘要、分类、影响、风险
+    Analysis->>DB: 读取 RSS 候选文章与企业设置
+    Analysis->>Publisher: 解析最终链接并抓取网页
+    Publisher-->>Analysis: HTML
+    Analysis->>Analysis: 抽取清洗 full_text
+    Analysis->>DB: 保存正文、哈希、最终链接或失败日志
+    Analysis->>DeepSeek: 第一次调用：业务边界 + full_text
+    DeepSeek-->>Analysis: 相关性、分数、理由、正文证据
     Analysis->>Analysis: Pydantic 校验与阈值门控
-    Analysis->>DB: 保存结果、错误、Token 和 Prompt 版本
+    alt 真相关且达到阈值
+        Analysis->>DB: 写入业务新闻待分析记录
+        Analysis->>DeepSeek: 第二次调用：full_text + 审核结果
+        DeepSeek-->>Analysis: 摘要、分类、影响、风险与动作
+        Analysis->>DB: 保存业务分析与审计字段
+    else 无关或低于阈值
+        Analysis->>DB: 保存审核记录，不写入业务新闻表
+    end
     User->>API: 按日期和分类生成日报
     API->>Report: 读取已审核相关新闻
     Report->>DeepSeek: 生成结构化日报
@@ -100,11 +115,14 @@ sequenceDiagram
 | `collection_runs` | 一次手动或定时采集的汇总日志 |
 | `collection_run_details` | 每个源和关键词组合的采集明细 |
 | `ai_analysis_runs` | AI 分析批次、状态、模型、Prompt 版本和 Token 用量 |
-| `ai_analysis_run_items` | 批次内每篇文章的执行状态与相关性结果 |
-| `article_analyses` | 文章相关性、摘要、分类、影响、风险和审计字段 |
+| `ai_analysis_run_items` | 批次内每篇文章的全文、相关性和业务分析阶段状态 |
+| `article_contents` | 出版社最终链接、清洗后正文、哈希、抓取状态与错误 |
+| `article_relevance_reviews` | 基于正文的相关性结果、理由、证据与调用审计字段 |
+| `business_articles` | 只保存真相关文章的摘要、分类、影响、风险和建议动作 |
+| `article_analyses` | 旧版兼容表；新流水线不再读取其结果 |
 | `daily_reports` | 按日期和分类生成的日报正文、风险和结构化列表 |
 | `daily_report_articles` | 日报与其依据文章的多对多关系 |
-| `app_settings` | 调度时间、时区和上次调度日期 |
+| `app_settings` | 调度时间、时区、业务边界、阈值、批量大小和自动化开关 |
 
 ## 6. 关键设计
 
@@ -128,7 +146,7 @@ sequenceDiagram
 
 ### AI 可信边界
 
-原始候选文章始终保留，AI 结果写入独立表。模型输出必须通过 Pydantic 结构校验；相关性还要通过可配置阈值，未通过的文章不能进入日报。Prompt 明确忽略新闻正文中的指令，所有判断只能使用输入证据。日报引用的文章 ID 必须属于本次输入，风险分数还执行确定性的文章最高风险下限。
+原始 RSS 候选文章始终保留。正文、相关性审核和最终业务新闻分别写入独立表；全文失败时不允许退回标题或 RSS 摘要进行审核。模型输出必须通过 Pydantic 结构校验，相关性还要通过可配置阈值，只有 `business_articles.analysis_status=success` 的记录才能进入日报。Prompt 明确忽略新闻正文中的指令，所有判断只能使用输入证据。日报引用的文章 ID 必须属于本次输入，风险分数还执行确定性的文章最高风险下限。
 
 ## 7. 生产化演进
 

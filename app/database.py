@@ -188,11 +188,86 @@ CREATE TABLE IF NOT EXISTS article_analyses (
 CREATE INDEX IF NOT EXISTS idx_article_analyses_relevance
 ON article_analyses(status, is_relevant, category);
 
+CREATE TABLE IF NOT EXISTS article_contents (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('processing', 'success', 'failed')),
+    requested_url TEXT NOT NULL DEFAULT '',
+    final_url TEXT NOT NULL DEFAULT '',
+    full_text TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    content_chars INTEGER NOT NULL DEFAULT 0,
+    http_status INTEGER NOT NULL DEFAULT 0,
+    content_type TEXT NOT NULL DEFAULT '',
+    extractor TEXT NOT NULL DEFAULT '',
+    fetched_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_contents_status
+ON article_contents(status, fetched_at);
+
+CREATE TABLE IF NOT EXISTS article_relevance_reviews (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('processing', 'success', 'failed')),
+    is_relevant INTEGER NOT NULL DEFAULT 0,
+    relevance_score INTEGER NOT NULL DEFAULT 0,
+    relevance_reason TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    confidence INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    reviewed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_relevance_reviews_result
+ON article_relevance_reviews(status, is_relevant, relevance_score);
+
+CREATE TABLE IF NOT EXISTS business_articles (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    analysis_status TEXT NOT NULL CHECK (analysis_status IN ('processing', 'success', 'failed')),
+    relevance_score INTEGER NOT NULL,
+    relevance_reason TEXT NOT NULL,
+    relevance_confidence INTEGER NOT NULL DEFAULT 0,
+    relevance_evidence TEXT NOT NULL DEFAULT '[]',
+    category TEXT NOT NULL DEFAULT 'other',
+    secondary_categories TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL DEFAULT '',
+    impact_direction TEXT NOT NULL DEFAULT 'neutral',
+    impact_score INTEGER NOT NULL DEFAULT 1,
+    impact_analysis TEXT NOT NULL DEFAULT '',
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    risk_factors TEXT NOT NULL DEFAULT '[]',
+    opportunities TEXT NOT NULL DEFAULT '[]',
+    recommended_actions TEXT NOT NULL DEFAULT '[]',
+    analysis_evidence TEXT NOT NULL DEFAULT '[]',
+    content_hash TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    accepted_at TEXT NOT NULL,
+    analyzed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_business_articles_analysis
+ON business_articles(analysis_status, category, risk_score DESC);
+
 CREATE TABLE IF NOT EXISTS ai_analysis_run_items (
     run_id INTEGER NOT NULL REFERENCES ai_analysis_runs(id) ON DELETE CASCADE,
     article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'success', 'failed')),
     is_relevant INTEGER NOT NULL DEFAULT 0,
+    content_status TEXT NOT NULL DEFAULT 'pending',
+    relevance_status TEXT NOT NULL DEFAULT 'pending',
+    business_analysis_status TEXT NOT NULL DEFAULT 'pending',
     error_message TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (run_id, article_id)
 );
@@ -403,6 +478,24 @@ class Database:
                     ADD COLUMN skipped_outside_window INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            ai_item_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(ai_analysis_run_items)"
+                ).fetchall()
+            }
+            for column in (
+                "content_status",
+                "relevance_status",
+                "business_analysis_status",
+            ):
+                if column not in ai_item_columns:
+                    connection.execute(
+                        f"""
+                        ALTER TABLE ai_analysis_run_items
+                        ADD COLUMN {column} TEXT NOT NULL DEFAULT 'pending'
+                        """  # noqa: S608
+                    )
             source_rows = connection.execute(
                 "SELECT id, url_template, language, country FROM rss_sources"
             ).fetchall()
@@ -478,8 +571,51 @@ class Database:
             )
             connection.execute(
                 """
-                UPDATE ai_analysis_run_items
+                UPDATE article_contents
                 SET status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，全文抓取被中断'
+                    ELSE error_message
+                END
+                WHERE status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE article_relevance_reviews
+                SET status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，相关性审核被中断'
+                    ELSE error_message
+                END
+                WHERE status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE business_articles
+                SET analysis_status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，业务分析被中断'
+                    ELSE error_message
+                END
+                WHERE analysis_status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'failed',
+                    content_status = CASE
+                        WHEN content_status = 'processing' THEN 'failed'
+                        ELSE content_status
+                    END,
+                    relevance_status = CASE
+                        WHEN relevance_status = 'processing' THEN 'failed'
+                        ELSE relevance_status
+                    END,
+                    business_analysis_status = CASE
+                        WHEN business_analysis_status = 'processing' THEN 'failed'
+                        ELSE business_analysis_status
+                    END,
+                    error_message = CASE
                     WHEN error_message = '' THEN '应用重启，AI 分析被中断'
                     ELSE error_message
                 END
@@ -562,6 +698,7 @@ class Database:
                 "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
                 "ai_relevance_threshold": "70",
                 "ai_batch_size": "20",
+                "ai_content_max_chars": "30000",
                 "ai_auto_analyze": "false",
                 "ai_auto_report": "false",
             }

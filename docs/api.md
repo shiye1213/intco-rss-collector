@@ -127,7 +127,7 @@
 
 ### `GET /api/ai/status`
 
-返回 DeepSeek 配置状态、模型、分析/日报运行状态、待处理与相关/无关数量、分类字典、阈值和 Prompt 版本。
+返回 DeepSeek 配置状态、模型、处理/日报运行状态，以及待处理、全文成功/失败、相关/无关、业务分析成功/失败数量、分类字典、阈值和三个 Prompt 版本。
 
 ### `POST /api/ai/analyze`
 
@@ -137,25 +137,35 @@
 {
   "limit": 20,
   "force": false,
+  "refresh_content": false,
   "article_ids": null
 }
 ```
 
-`force=true` 会重新分析已成功处理的文章。`article_ids` 可指定文章 ID，最多 100 个。未配置 `DEEPSEEK_API_KEY` 时返回 `503`，已有分析任务运行时返回 `409`。
+任务依次执行最终链接解析、网页正文抽取、相关性审核和真相关文章业务分析。`force=true` 会重新审核和分析已成功处理的文章；`refresh_content=true` 还会强制重新抓取网页正文。`article_ids` 可指定文章 ID，最多 100 个。未配置 `DEEPSEEK_API_KEY` 时返回 `503`，已有处理任务运行时返回 `409`。
 
 ### `GET /api/ai/articles`
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| `relevant` | boolean | 只看业务相关或无关结果 |
 | `category` | string | 固定 AI 分类代码 |
 | `date_from` | date | 新闻发布日期起点，北京时间 |
 | `date_to` | date | 新闻发布日期终点，北京时间 |
 | `limit` / `offset` | integer | 分页参数 |
 
+该接口只返回全文审核通过且业务分析成功的最终业务新闻，同时包含 `final_url`、`content_chars`、相关性、摘要、分类、影响和风险字段。
+
+### `GET /api/ai/reviews`
+
+返回成功完成的正文相关性审核记录。支持 `relevant`、`date_from`、`date_to`、`limit` 和 `offset`，用于审计真相关与审核无关的理由、证据、分数、模型及正文元数据。
+
 ### `GET /api/ai/runs?limit=50`
 
 返回 AI 分析批次、成功/失败数量、相关/无关数量、模型、Prompt 版本和 Token 用量。
+
+### `GET /api/ai/runs/{run_id}`
+
+返回单个处理批次及每篇文章的 `content_status`、`relevance_status`、`business_analysis_status`、最终链接、正文字符数和错误信息。
 
 ### `GET /api/ai/settings` 与 `PUT /api/ai/settings`
 
@@ -164,6 +174,7 @@
   "business_profile": "英科医疗业务边界……",
   "relevance_threshold": 70,
   "batch_size": 20,
+  "content_max_chars": 30000,
   "auto_analyze": false,
   "auto_report": false
 }
