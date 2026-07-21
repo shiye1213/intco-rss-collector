@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .normalization import infer_country, normalize_publisher
+from .prompts import DEFAULT_BUSINESS_PROFILE
 from .query_builder import build_keyword_query
 
 
@@ -134,6 +135,102 @@ CREATE TABLE IF NOT EXISTS collection_run_details (
 
 CREATE INDEX IF NOT EXISTS idx_collection_run_details_run_id
 ON collection_run_details(run_id);
+
+CREATE TABLE IF NOT EXISTS ai_analysis_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_type TEXT NOT NULL CHECK (trigger_type IN ('manual', 'collection')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'success', 'partial', 'failed', 'interrupted')),
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    articles_total INTEGER NOT NULL DEFAULT 0,
+    articles_succeeded INTEGER NOT NULL DEFAULT 0,
+    articles_failed INTEGER NOT NULL DEFAULT 0,
+    relevant_count INTEGER NOT NULL DEFAULT 0,
+    irrelevant_count INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_analysis_runs_started_at
+ON ai_analysis_runs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS article_analyses (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('processing', 'success', 'failed')),
+    is_relevant INTEGER NOT NULL DEFAULT 0,
+    relevance_score INTEGER NOT NULL DEFAULT 0,
+    relevance_reason TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'other',
+    secondary_categories TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL DEFAULT '',
+    impact_direction TEXT NOT NULL DEFAULT 'neutral',
+    impact_score INTEGER NOT NULL DEFAULT 1,
+    impact_analysis TEXT NOT NULL DEFAULT '',
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    risk_factors TEXT NOT NULL DEFAULT '[]',
+    opportunities TEXT NOT NULL DEFAULT '[]',
+    recommended_actions TEXT NOT NULL DEFAULT '[]',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    confidence INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    analyzed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_analyses_relevance
+ON article_analyses(status, is_relevant, category);
+
+CREATE TABLE IF NOT EXISTS ai_analysis_run_items (
+    run_id INTEGER NOT NULL REFERENCES ai_analysis_runs(id) ON DELETE CASCADE,
+    article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'success', 'failed')),
+    is_relevant INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, article_id)
+);
+
+CREATE TABLE IF NOT EXISTS daily_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_date TEXT NOT NULL,
+    categories TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed', 'interrupted')),
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    executive_summary TEXT NOT NULL DEFAULT '',
+    risk_basis TEXT NOT NULL DEFAULT '',
+    key_developments TEXT NOT NULL DEFAULT '[]',
+    key_risks TEXT NOT NULL DEFAULT '[]',
+    opportunities TEXT NOT NULL DEFAULT '[]',
+    recommended_actions TEXT NOT NULL DEFAULT '[]',
+    watchlist TEXT NOT NULL DEFAULT '[]',
+    article_count INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    raw_response TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_reports_date
+ON daily_reports(report_date DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS daily_report_articles (
+    report_id INTEGER NOT NULL REFERENCES daily_reports(id) ON DELETE CASCADE,
+    article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    PRIMARY KEY (report_id, article_id)
+);
 
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
@@ -357,6 +454,50 @@ class Database:
                 """,
                 (now,),
             )
+            connection.execute(
+                """
+                UPDATE ai_analysis_runs
+                SET status = 'interrupted', finished_at = ?,
+                    message = CASE
+                        WHEN message = '' THEN '应用重启，AI 分析被中断'
+                        ELSE message
+                    END
+                WHERE status = 'running'
+                """,
+                (now,),
+            )
+            connection.execute(
+                """
+                UPDATE article_analyses
+                SET status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，AI 分析被中断'
+                    ELSE error_message
+                END
+                WHERE status = 'processing'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE ai_analysis_run_items
+                SET status = 'failed', error_message = CASE
+                    WHEN error_message = '' THEN '应用重启，AI 分析被中断'
+                    ELSE error_message
+                END
+                WHERE status IN ('pending', 'processing')
+                """
+            )
+            connection.execute(
+                """
+                UPDATE daily_reports
+                SET status = 'interrupted', updated_at = ?,
+                    error_message = CASE
+                        WHEN error_message = '' THEN '应用重启，日报生成被中断'
+                        ELSE error_message
+                    END
+                WHERE status = 'running'
+                """,
+                (now,),
+            )
             source_count = connection.execute(
                 "SELECT COUNT(*) FROM rss_sources"
             ).fetchone()[0]
@@ -418,6 +559,11 @@ class Database:
             defaults = {
                 "schedule_time": "08:00",
                 "timezone": "Asia/Shanghai",
+                "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
+                "ai_relevance_threshold": "70",
+                "ai_batch_size": "20",
+                "ai_auto_analyze": "false",
+                "ai_auto_report": "false",
             }
             for key, value in defaults.items():
                 connection.execute(

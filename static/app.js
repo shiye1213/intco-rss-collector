@@ -5,7 +5,14 @@ const state = {
   articleOffset: 0,
   articleLimit: 50,
   articleTotal: 0,
+  aiOffset: 0,
+  aiLimit: 50,
+  aiTotal: 0,
+  aiBatchSize: 20,
+  categories: {},
   wasRunning: false,
+  wasAnalysisRunning: false,
+  wasReportRunning: false,
   toastTimer: null,
 };
 
@@ -62,6 +69,32 @@ function triggerLabel(trigger) {
   return trigger === "scheduled" ? "定时" : "手动";
 }
 
+function aiTriggerLabel(trigger) {
+  return trigger === "collection" ? "采集后自动" : "手动";
+}
+
+function categoryLabel(category) {
+  return state.categories[category] || category || "-";
+}
+
+function riskMarkup(level, score) {
+  const labels = { low: "低", medium: "中", high: "高", critical: "严重" };
+  return `<span class="risk-chip risk-${escapeHtml(level)}">${labels[level] || escapeHtml(level)} · ${Number(score) || 0}</span>`;
+}
+
+function relevanceMarkup(relevant, score) {
+  const label = relevant ? "相关" : "无关";
+  return `<span class="relevance-chip ${relevant ? "relevant" : "irrelevant"}">${label} · ${Number(score) || 0}</span>`;
+}
+
+function todayInShanghai() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
 function refreshIcons() {
   if (window.lucide) window.lucide.createIcons();
 }
@@ -80,9 +113,11 @@ function setView(view) {
   document.querySelectorAll(".view").forEach((section) => section.classList.toggle("active", section.id === `view-${view}`));
   if (view === "articles") loadArticles();
   if (view === "runs") loadRuns();
+  if (view === "intelligence") loadIntelligence();
+  if (view === "reports") loadReports();
   if (view === "sources") renderSources();
   if (view === "keywords") renderKeywords();
-  if (view === "settings") loadSettings();
+  if (view === "settings") Promise.all([loadSettings(), loadAISettings()]);
 }
 
 async function loadStatus() {
@@ -191,6 +226,180 @@ async function loadRuns() {
     </tr>`).join("");
     $("run-empty").classList.toggle("hidden", data.items.length > 0);
     refreshIcons();
+  } catch (error) { showToast(error.message, true); }
+}
+
+function fillCategoryOptions() {
+  ["ai-category-filter", "report-category"].forEach((id) => {
+    const select = $(id);
+    const current = select.value;
+    select.innerHTML = `<option value="">全部分类</option>${Object.entries(state.categories)
+      .map(([code, label]) => `<option value="${escapeHtml(code)}">${escapeHtml(label)}</option>`)
+      .join("")}`;
+    select.value = current;
+  });
+}
+
+async function loadAIStatus() {
+  try {
+    const data = await api("/api/ai/status");
+    state.categories = data.categories || {};
+    fillCategoryOptions();
+    $("ai-metric-pending").textContent = data.pending;
+    $("ai-metric-relevant").textContent = data.relevant;
+    $("ai-metric-irrelevant").textContent = data.irrelevant;
+    $("ai-metric-failed").textContent = data.failed;
+    $("ai-metric-threshold").textContent = data.relevance_threshold;
+    const statusText = data.configured
+      ? `${data.model} · ${data.analysis_running ? `分析任务 #${data.analysis_run_id} 运行中` : "已就绪"}`
+      : `${data.model} · API Key 未配置`;
+    $("ai-view-status").textContent = statusText;
+    $("ai-settings-status").textContent = statusText;
+    const analyzeButton = $("analyze-pending");
+    analyzeButton.disabled = !data.configured || data.analysis_running || data.pending === 0;
+    analyzeButton.querySelector("span").textContent = data.analysis_running ? "正在分析" : "分析待处理文章";
+    const reportButton = $("generate-report");
+    reportButton.disabled = !data.configured || data.report_running;
+    reportButton.querySelector("span").textContent = data.report_running ? "正在生成" : "生成日报";
+    if (state.wasAnalysisRunning && !data.analysis_running) {
+      await Promise.all([loadAIArticles(), loadAIRuns()]);
+      showToast("AI 分析任务已结束");
+    }
+    if (state.wasReportRunning && !data.report_running) {
+      await loadReports();
+      showToast("情报日报生成任务已结束");
+    }
+    state.wasAnalysisRunning = data.analysis_running;
+    state.wasReportRunning = data.report_running;
+    refreshIcons();
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function loadAIArticles() {
+  const params = new URLSearchParams({ limit: state.aiLimit, offset: state.aiOffset });
+  const relevant = $("ai-relevant-filter").value;
+  const category = $("ai-category-filter").value;
+  let dateFrom = $("ai-date-from").value;
+  const dateTo = $("ai-date-to").value;
+  if (!dateFrom && dateTo) dateFrom = dateTo;
+  if (relevant) params.set("relevant", relevant);
+  if (category) params.set("category", category);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  try {
+    const data = await api(`/api/ai/articles?${params}`);
+    state.aiTotal = data.total;
+    $("ai-article-rows").innerHTML = data.items.map((item) => `<tr>
+      <td><a class="article-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.publisher || "-")} · ${formatFullTime(item.published_at)}</span></td>
+      <td>${relevanceMarkup(Boolean(item.is_relevant), item.relevance_score)}<span class="cell-meta">置信度 ${item.confidence}</span></td>
+      <td><span class="tag">${escapeHtml(categoryLabel(item.category))}</span>${(item.secondary_categories || []).map((code) => `<span class="cell-meta">${escapeHtml(categoryLabel(code))}</span>`).join("")}</td>
+      <td><strong class="analysis-summary">${escapeHtml(item.summary || item.relevance_reason || "-")}</strong><span class="analysis-detail">${escapeHtml(item.impact_analysis || item.relevance_reason || "-")}</span></td>
+      <td>${riskMarkup(item.risk_level, item.risk_score)}<span class="cell-meta">影响 ${item.impact_score} / 5</span></td>
+      <td>${formatFullTime(item.analyzed_at)}<span class="cell-subtitle">${escapeHtml(item.model)}</span></td>
+    </tr>`).join("");
+    $("ai-article-empty").classList.toggle("hidden", data.items.length > 0);
+    const page = Math.floor(state.aiOffset / state.aiLimit) + 1;
+    const pages = Math.max(1, Math.ceil(data.total / state.aiLimit));
+    $("ai-page").textContent = `第 ${page} / ${pages} 页`;
+    $("ai-prev").disabled = state.aiOffset === 0;
+    $("ai-next").disabled = state.aiOffset + state.aiLimit >= data.total;
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function loadAIRuns() {
+  try {
+    const data = await api("/api/ai/runs?limit=50");
+    $("ai-run-rows").innerHTML = data.items.map((run) => `<tr>
+      <td>#${run.id}</td><td>${aiTriggerLabel(run.trigger_type)}</td><td>${statusLabel(run.status)}</td>
+      <td>${escapeHtml(run.model)}<span class="cell-subtitle">${escapeHtml(run.prompt_version)}</span></td>
+      <td>${run.articles_succeeded} / ${run.articles_total}<span class="cell-subtitle">失败 ${run.articles_failed}</span></td>
+      <td>${run.relevant_count} / ${run.irrelevant_count}</td>
+      <td>${run.prompt_tokens + run.completion_tokens}<span class="cell-subtitle">输入 ${run.prompt_tokens} · 输出 ${run.completion_tokens}</span></td>
+      <td>${formatFullTime(run.started_at)}</td>
+    </tr>`).join("");
+    $("ai-run-empty").classList.toggle("hidden", data.items.length > 0);
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function loadIntelligence() {
+  await Promise.all([loadAIStatus(), loadAIArticles(), loadAIRuns()]);
+  refreshIcons();
+}
+
+async function startAIAnalysis() {
+  const button = $("analyze-pending");
+  button.disabled = true;
+  try {
+    const data = await api("/api/ai/analyze", {
+      method: "POST",
+      body: JSON.stringify({ limit: state.aiBatchSize, force: false }),
+    });
+    state.wasAnalysisRunning = true;
+    showToast(`AI 分析任务 #${data.run_id} 已启动，共 ${data.article_count} 篇`);
+    await loadAIStatus();
+  } catch (error) {
+    showToast(error.message, true);
+    await loadAIStatus();
+  }
+}
+
+async function loadReports() {
+  try {
+    const data = await api("/api/reports?limit=100");
+    $("report-rows").innerHTML = data.items.map((report) => {
+      const categories = (report.categories || []).length
+        ? report.categories.map(categoryLabel).join("、") : "全部分类";
+      return `<tr>
+        <td><strong>${escapeHtml(report.title || `日报 #${report.id}`)}</strong><span class="cell-subtitle">#${report.id} · ${escapeHtml(report.model)}</span></td>
+        <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(categories)}</td><td>${report.article_count}</td>
+        <td>${riskMarkup(report.risk_level, report.risk_score)}</td><td>${statusLabel(report.status)}</td>
+        <td>${formatFullTime(report.updated_at)}</td>
+        <td><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button></td>
+      </tr>`;
+    }).join("");
+    $("report-empty").classList.toggle("hidden", data.items.length > 0);
+    refreshIcons();
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function generateReport(event) {
+  event.preventDefault();
+  const category = $("report-category").value;
+  try {
+    const data = await api("/api/reports", {
+      method: "POST",
+      body: JSON.stringify({
+        report_date: $("report-date").value,
+        categories: category ? [category] : [],
+      }),
+    });
+    state.wasReportRunning = true;
+    showToast(`日报 #${data.report_id} 已开始生成，共 ${data.article_count} 篇新闻`);
+    await Promise.all([loadAIStatus(), loadReports()]);
+  } catch (error) { showToast(error.message, true); }
+}
+
+function reportList(title, items) {
+  if (!items?.length) return "";
+  return `<section class="report-block"><h4>${escapeHtml(title)}</h4><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
+}
+
+async function openReportDetail(id) {
+  try {
+    const report = await api(`/api/reports/${id}`);
+    $("report-dialog-title").textContent = report.title || `情报日报 #${report.id}`;
+    const categoryScope = report.categories?.length
+      ? report.categories.map(categoryLabel).join("、") : "全部分类";
+    $("report-detail").innerHTML = `
+      <div class="report-meta"><span>${escapeHtml(report.report_date)}</span><span>${escapeHtml(categoryScope)}</span><span>${report.article_count} 篇新闻</span>${riskMarkup(report.risk_level, report.risk_score)}</div>
+      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p></section>
+      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p></article>`).join("")}</div></section>` : ""}
+      ${reportList("关键风险", report.key_risks)}
+      ${reportList("业务机会", report.opportunities)}
+      ${reportList("建议动作", report.recommended_actions)}
+      ${reportList("后续监控", report.watchlist)}
+      ${report.articles?.length ? `<section class="report-block"><h4>关联新闻</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(article.title)}</span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
+    $("report-dialog").showModal();
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -348,6 +557,35 @@ async function saveSettings(event) {
   } catch (error) { showToast(error.message, true); }
 }
 
+async function loadAISettings() {
+  try {
+    const data = await api("/api/ai/settings");
+    $("ai-business-profile").value = data.business_profile;
+    $("ai-threshold").value = data.relevance_threshold;
+    $("ai-batch-size").value = data.batch_size;
+    $("ai-auto-analyze").checked = data.auto_analyze;
+    $("ai-auto-report").checked = data.auto_report;
+    state.aiBatchSize = data.batch_size;
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function saveAISettings(event) {
+  event.preventDefault();
+  const payload = {
+    business_profile: $("ai-business-profile").value.trim(),
+    relevance_threshold: Number($("ai-threshold").value),
+    batch_size: Number($("ai-batch-size").value),
+    auto_analyze: $("ai-auto-analyze").checked,
+    auto_report: $("ai-auto-report").checked,
+  };
+  try {
+    const data = await api("/api/ai/settings", { method: "PUT", body: JSON.stringify(payload) });
+    state.aiBatchSize = data.batch_size;
+    await loadAIStatus();
+    showToast("AI 分析设置已保存");
+  } catch (error) { showToast(error.message, true); }
+}
+
 function debounce(fn, delay) {
   let timer;
   return (...args) => { window.clearTimeout(timer); timer = window.setTimeout(() => fn(...args), delay); };
@@ -358,6 +596,16 @@ function bindEvents() {
   $("collect-now").addEventListener("click", startCollection);
   $("refresh-articles").addEventListener("click", loadArticles);
   $("refresh-runs").addEventListener("click", loadRuns);
+  $("analyze-pending").addEventListener("click", startAIAnalysis);
+  $("refresh-ai").addEventListener("click", loadIntelligence);
+  $("ai-relevant-filter").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
+  $("ai-category-filter").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
+  $("ai-date-from").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
+  $("ai-date-to").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
+  $("ai-prev").addEventListener("click", () => { state.aiOffset = Math.max(0, state.aiOffset - state.aiLimit); loadAIArticles(); });
+  $("ai-next").addEventListener("click", () => { state.aiOffset += state.aiLimit; loadAIArticles(); });
+  $("report-form").addEventListener("submit", generateReport);
+  $("refresh-reports").addEventListener("click", loadReports);
   $("article-search").addEventListener("input", debounce(() => { state.articleOffset = 0; loadArticles(); }, 300));
   $("article-source-filter").addEventListener("change", () => { state.articleOffset = 0; loadArticles(); });
   $("article-keyword-filter").addEventListener("change", () => { state.articleOffset = 0; loadArticles(); });
@@ -370,6 +618,7 @@ function bindEvents() {
   $("keyword-terms").addEventListener("input", updateKeywordQueryPreview);
   $("keyword-terms").addEventListener("compositionend", updateKeywordQueryPreview);
   $("settings-form").addEventListener("submit", saveSettings);
+  $("ai-settings-form").addEventListener("submit", saveAISettings);
   document.querySelectorAll(".close-dialog").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
 
   document.body.addEventListener("click", (event) => {
@@ -377,6 +626,7 @@ function bindEvents() {
     if (!target) return;
     const id = target.dataset.id;
     if (target.classList.contains("run-detail")) openRunDetail(id);
+    if (target.classList.contains("report-detail-button")) openReportDetail(id);
     if (target.classList.contains("source-edit")) openSourceDialog(state.sources.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-edit")) openKeywordDialog(state.keywords.find((item) => item.id === Number(id)));
     if (target.classList.contains("source-delete")) archiveItem("sources", id);
@@ -393,10 +643,16 @@ function bindEvents() {
 
 async function initialize() {
   bindEvents();
+  $("report-date").value = todayInShanghai();
   refreshIcons();
-  try { await Promise.all([loadCatalogs(), loadStatus(), loadArticles(), loadRuns(), loadSettings()]); }
+  try {
+    await Promise.all([
+      loadCatalogs(), loadStatus(), loadArticles(), loadRuns(), loadSettings(),
+      loadAIStatus(), loadAISettings(), loadReports(),
+    ]);
+  }
   catch (error) { showToast(error.message, true); }
-  window.setInterval(loadStatus, 5000);
+  window.setInterval(() => Promise.allSettled([loadStatus(), loadAIStatus()]), 5000);
 }
 
 window.addEventListener("DOMContentLoaded", initialize);

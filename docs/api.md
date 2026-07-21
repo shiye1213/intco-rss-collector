@@ -123,6 +123,77 @@
 
 时间格式必须为 `HH:MM`，当前时区固定为 `Asia/Shanghai`。
 
+## AI 情报
+
+### `GET /api/ai/status`
+
+返回 DeepSeek 配置状态、模型、分析/日报运行状态、待处理与相关/无关数量、分类字典、阈值和 Prompt 版本。
+
+### `POST /api/ai/analyze`
+
+启动后台分析任务，返回 HTTP `202`：
+
+```json
+{
+  "limit": 20,
+  "force": false,
+  "article_ids": null
+}
+```
+
+`force=true` 会重新分析已成功处理的文章。`article_ids` 可指定文章 ID，最多 100 个。未配置 `DEEPSEEK_API_KEY` 时返回 `503`，已有分析任务运行时返回 `409`。
+
+### `GET /api/ai/articles`
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `relevant` | boolean | 只看业务相关或无关结果 |
+| `category` | string | 固定 AI 分类代码 |
+| `date_from` | date | 新闻发布日期起点，北京时间 |
+| `date_to` | date | 新闻发布日期终点，北京时间 |
+| `limit` / `offset` | integer | 分页参数 |
+
+### `GET /api/ai/runs?limit=50`
+
+返回 AI 分析批次、成功/失败数量、相关/无关数量、模型、Prompt 版本和 Token 用量。
+
+### `GET /api/ai/settings` 与 `PUT /api/ai/settings`
+
+```json
+{
+  "business_profile": "英科医疗业务边界……",
+  "relevance_threshold": 70,
+  "batch_size": 20,
+  "auto_analyze": false,
+  "auto_report": false
+}
+```
+
+自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 且当天存在已审核相关新闻时才会执行。
+
+## 情报日报
+
+### `POST /api/reports`
+
+按新闻发布日期和分类生成后台日报任务：
+
+```json
+{
+  "report_date": "2026-07-20",
+  "categories": ["market_demand"]
+}
+```
+
+`categories=[]` 表示全部分类。所选范围没有已通过相关性审核的新闻时返回 `422`。
+
+### `GET /api/reports?limit=50`
+
+返回已生成、运行中或失败的日报列表。
+
+### `GET /api/reports/{report_id}`
+
+返回日报结构化内容和全部依据文章，包括摘要、风险等级、关键进展、风险、机会、建议动作和监控清单。
+
 ## 错误约定
 
 接口错误统一返回 FastAPI 的 `detail` 字段，例如：
@@ -133,4 +204,4 @@
 }
 ```
 
-常见状态码：`404` 资源不存在、`409` 配置冲突或采集任务正在运行、`422` 参数校验失败、`500` 数据库错误。
+常见状态码：`404` 资源不存在、`409` 配置冲突或任务正在运行、`422` 参数或业务范围校验失败、`503` DeepSeek Key 未配置、`500` 数据库错误。

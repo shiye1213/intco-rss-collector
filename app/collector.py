@@ -603,6 +603,7 @@ class CollectionManager:
     def __init__(self, database: Database, collector: Collector) -> None:
         self.database = database
         self.collector = collector
+        self.on_complete: Callable[[], None] | None = None
         self._state_lock = threading.Lock()
         self._running_run_id: int | None = None
 
@@ -658,3 +659,9 @@ class CollectionManager:
             with self._state_lock:
                 if self._running_run_id == run_id:
                     self._running_run_id = None
+            if self.on_complete is not None:
+                try:
+                    self.on_complete()
+                except Exception:
+                    # AI follow-up failure must not alter the completed RSS run.
+                    pass
