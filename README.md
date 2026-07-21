@@ -49,6 +49,7 @@ python -m pytest -q
 
 ## 文档
 
+- [详细技术设计说明](docs/technical-design.md)
 - [项目说明](docs/project-overview.md)
 - [系统架构](docs/architecture.md)
 - [API 说明](docs/api.md)
