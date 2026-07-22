@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS keywords (
     name TEXT NOT NULL UNIQUE,
     query TEXT NOT NULL,
     match_terms TEXT NOT NULL,
+    context_terms TEXT NOT NULL DEFAULT '[]',
+    exclude_terms TEXT NOT NULL DEFAULT '[]',
+    lookback_days INTEGER NOT NULL DEFAULT 30,
     active INTEGER NOT NULL DEFAULT 1,
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -339,6 +342,17 @@ DEFAULT_SOURCES = (
         "active": True,
     },
     {
+        "name": "Google News 马来西亚英文",
+        "url_template": (
+            "https://news.google.com/rss/search?q={query}"
+            "&hl=en-MY&gl=MY&ceid=MY:en"
+        ),
+        "mode": "search",
+        "language": "en-MY",
+        "country": "MY",
+        "active": True,
+    },
+    {
         "name": "欧盟医疗器械标准",
         "url_template": "https://ec.europa.eu/newsroom/growth/feed?tpa_id=30111",
         "mode": "direct",
@@ -404,15 +418,180 @@ DEFAULT_SOURCES = (
 
 DEFAULT_KEYWORDS = (
     {
-        "name": "PE 手套",
+        "name": "医疗手套供需与价格（英文）",
         "match_terms": [
-            "PE手套",
-            "聚乙烯手套",
-            "一次性PE手套",
-            "polyethylene gloves",
-            "disposable PE gloves",
-            "PE disposable gloves",
+            "nitrile gloves",
+            "medical gloves",
+            "disposable gloves",
         ],
+        "context_terms": [
+            "price",
+            "demand",
+            "procurement",
+            "shortage",
+        ],
+        "exclude_terms": ["boxing", "football", "baseball"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "医疗手套供需与价格（中文）",
+        "match_terms": ["丁腈手套", "医用手套", "一次性手套"],
+        "context_terms": ["价格", "需求", "采购", "短缺", "产能"],
+        "exclude_terms": ["拳击", "橄榄球", "棒球"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "医疗手套贸易与法规",
+        "match_terms": [
+            "丁腈手套",
+            "医用手套",
+            "nitrile gloves",
+            "medical gloves",
+        ],
+        "context_terms": [
+            "关税",
+            "法规",
+            "进口",
+            "召回",
+            "tariff",
+            "regulation",
+            "import",
+            "recall",
+        ],
+        "exclude_terms": ["boxing", "football", "baseball"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "PE 与 PVC 手套（英文）",
+        "match_terms": [
+            "polyethylene gloves",
+            "vinyl gloves",
+            "disposable PE gloves",
+        ],
+        "context_terms": [
+            "price",
+            "demand",
+            "procurement",
+            "shortage",
+        ],
+        "exclude_terms": ["football", "NFL", "player exclusive", "boxing"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "PE 与 PVC 手套（中文）",
+        "match_terms": ["PE手套", "聚乙烯手套", "PVC手套"],
+        "context_terms": ["价格", "需求", "采购", "短缺", "法规"],
+        "exclude_terms": ["橄榄球", "足球", "拳击"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "马来西亚手套竞争对手",
+        "match_terms": [
+            "Top Glove",
+            "Hartalega",
+            "Kossan",
+            "Supermax",
+            "Sri Trang",
+        ],
+        "context_terms": [
+            "glove",
+            "capacity",
+            "expansion",
+            "factory",
+            "price",
+            "earnings",
+        ],
+        "exclude_terms": ["NBA", "movie", "prison"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "Medline 运营动态",
+        "match_terms": ["Medline"],
+        "context_terms": [
+            "glove",
+            "medical supplies",
+            "capacity",
+            "FDA",
+            "recall",
+            "distribution",
+            "warehouse",
+        ],
+        "exclude_terms": [
+            "shares",
+            "holdings",
+            "stake",
+            "securities",
+            "investors",
+        ],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "国内手套企业动态",
+        "match_terms": ["蓝帆医疗", "中红医疗"],
+        "context_terms": [
+            "产能",
+            "报价",
+            "订单",
+            "业绩",
+            "工厂",
+            "扩产",
+            "召回",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "手套原材料",
+        "match_terms": [
+            "NBR latex",
+            "nitrile butadiene rubber",
+            "PVC resin",
+            "丁腈胶乳",
+            "PVC树脂",
+        ],
+        "context_terms": [
+            "价格",
+            "供应",
+            "短缺",
+            "price",
+            "supply",
+            "shortage",
+            "export",
+        ],
+        "exclude_terms": ["training camp", "obituary"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "国际航运与物流（英文）",
+        "match_terms": [
+            "container freight",
+            "shipping rates",
+            "Red Sea shipping",
+        ],
+        "context_terms": [
+            "medical supplies",
+            "gloves",
+            "export manufacturing",
+        ],
+        "exclude_terms": ["cruise", "travel deal"],
+        "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "国际航运与物流（中文）",
+        "match_terms": ["集装箱运价", "海运费", "红海航运"],
+        "context_terms": ["医疗用品", "手套", "出口制造", "供应链"],
+        "exclude_terms": ["邮轮", "旅游"],
+        "lookback_days": 14,
         "active": True,
     },
 )
@@ -453,6 +632,22 @@ class Database:
             if "country" not in source_columns:
                 connection.execute(
                     "ALTER TABLE rss_sources ADD COLUMN country TEXT NOT NULL DEFAULT ''"
+                )
+            keyword_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(keywords)").fetchall()
+            }
+            if "context_terms" not in keyword_columns:
+                connection.execute(
+                    "ALTER TABLE keywords ADD COLUMN context_terms TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "exclude_terms" not in keyword_columns:
+                connection.execute(
+                    "ALTER TABLE keywords ADD COLUMN exclude_terms TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "lookback_days" not in keyword_columns:
+                connection.execute(
+                    "ALTER TABLE keywords ADD COLUMN lookback_days INTEGER NOT NULL DEFAULT 30"
                 )
             article_columns = {
                 row["name"]
@@ -634,56 +829,65 @@ class Database:
                 """,
                 (now,),
             )
-            source_count = connection.execute(
-                "SELECT COUNT(*) FROM rss_sources"
-            ).fetchone()[0]
-            if source_count == 0:
-                for source in DEFAULT_SOURCES:
-                    connection.execute(
-                        """
-                        INSERT INTO rss_sources
-                            (name, url_template, mode, language, country,
-                             active, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            source["name"],
-                            source["url_template"],
-                            source["mode"],
-                            source["language"],
-                            source["country"],
-                            int(source["active"]),
-                            now,
-                            now,
+            for source in DEFAULT_SOURCES:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO rss_sources
+                        (name, url_template, mode, language, country,
+                         active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source["name"],
+                        source["url_template"],
+                        source["mode"],
+                        source["language"],
+                        source["country"],
+                        int(source["active"]),
+                        now,
+                        now,
+                    ),
+                )
+            for keyword in DEFAULT_KEYWORDS:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO keywords
+                        (name, query, match_terms, context_terms,
+                         exclude_terms, lookback_days, active,
+                         created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        keyword["name"],
+                        build_keyword_query(
+                            keyword["match_terms"],
+                            context_terms=keyword["context_terms"],
+                            exclude_terms=keyword["exclude_terms"],
+                            lookback_days=keyword["lookback_days"],
                         ),
-                    )
-            keyword_count = connection.execute(
-                "SELECT COUNT(*) FROM keywords"
-            ).fetchone()[0]
-            if keyword_count == 0:
-                for keyword in DEFAULT_KEYWORDS:
-                    connection.execute(
-                        """
-                        INSERT INTO keywords
-                            (name, query, match_terms, active, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            keyword["name"],
-                            build_keyword_query(keyword["match_terms"]),
-                            json.dumps(keyword["match_terms"], ensure_ascii=False),
-                            int(keyword["active"]),
-                            now,
-                            now,
-                        ),
-                    )
+                        json.dumps(keyword["match_terms"], ensure_ascii=False),
+                        json.dumps(keyword["context_terms"], ensure_ascii=False),
+                        json.dumps(keyword["exclude_terms"], ensure_ascii=False),
+                        keyword["lookback_days"],
+                        int(keyword["active"]),
+                        now,
+                        now,
+                    ),
+                )
             keyword_rows = connection.execute(
-                "SELECT id, query, match_terms FROM keywords"
+                """
+                SELECT id, query, match_terms, context_terms,
+                       exclude_terms, lookback_days
+                FROM keywords
+                """
             ).fetchall()
             for keyword_row in keyword_rows:
                 try:
                     generated_query = build_keyword_query(
-                        json.loads(keyword_row["match_terms"])
+                        json.loads(keyword_row["match_terms"]),
+                        context_terms=json.loads(keyword_row["context_terms"]),
+                        exclude_terms=json.loads(keyword_row["exclude_terms"]),
+                        lookback_days=int(keyword_row["lookback_days"]),
                     )
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue
@@ -737,6 +941,8 @@ class Database:
         result = self.rows(rows)
         for item in result:
             item["match_terms"] = json.loads(item["match_terms"])
+            item["context_terms"] = json.loads(item["context_terms"])
+            item["exclude_terms"] = json.loads(item["exclude_terms"])
         return result
 
     def create_source(self, data: dict[str, Any]) -> int:
@@ -797,18 +1003,30 @@ class Database:
 
     def create_keyword(self, data: dict[str, Any]) -> int:
         now = utc_now_iso()
-        query = build_keyword_query(data["match_terms"])
+        context_terms = data.get("context_terms", [])
+        exclude_terms = data.get("exclude_terms", [])
+        lookback_days = int(data.get("lookback_days", 30))
+        query = build_keyword_query(
+            data["match_terms"],
+            context_terms=context_terms,
+            exclude_terms=exclude_terms,
+            lookback_days=lookback_days,
+        )
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO keywords
-                    (name, query, match_terms, active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (name, query, match_terms, context_terms, exclude_terms,
+                     lookback_days, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
                     query,
                     json.dumps(data["match_terms"], ensure_ascii=False),
+                    json.dumps(context_terms, ensure_ascii=False),
+                    json.dumps(exclude_terms, ensure_ascii=False),
+                    lookback_days,
                     int(data.get("active", True)),
                     now,
                     now,
@@ -818,18 +1036,30 @@ class Database:
 
     def update_keyword(self, keyword_id: int, data: dict[str, Any]) -> bool:
         now = utc_now_iso()
-        query = build_keyword_query(data["match_terms"])
+        context_terms = data.get("context_terms", [])
+        exclude_terms = data.get("exclude_terms", [])
+        lookback_days = int(data.get("lookback_days", 30))
+        query = build_keyword_query(
+            data["match_terms"],
+            context_terms=context_terms,
+            exclude_terms=exclude_terms,
+            lookback_days=lookback_days,
+        )
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE keywords
-                SET name = ?, query = ?, match_terms = ?, active = ?, updated_at = ?
+                SET name = ?, query = ?, match_terms = ?, context_terms = ?,
+                    exclude_terms = ?, lookback_days = ?, active = ?, updated_at = ?
                 WHERE id = ? AND archived = 0
                 """,
                 (
                     data["name"],
                     query,
                     json.dumps(data["match_terms"], ensure_ascii=False),
+                    json.dumps(context_terms, ensure_ascii=False),
+                    json.dumps(exclude_terms, ensure_ascii=False),
+                    lookback_days,
                     int(data.get("active", True)),
                     now,
                     keyword_id,

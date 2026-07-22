@@ -501,6 +501,7 @@ function renderKeywords() {
     <td><strong>${escapeHtml(item.name)}</strong></td>
     <td class="url-cell" title="${escapeHtml(item.query)}">${escapeHtml(item.query)}</td>
     <td><div class="keyword-list">${item.match_terms.slice(0, 5).map((term) => `<span class="tag">${escapeHtml(term)}</span>`).join("")}${item.match_terms.length > 5 ? `<span class="tag">+${item.match_terms.length - 5}</span>` : ""}</div></td>
+    <td><span class="cell-subtitle">信号 ${item.context_terms.length} 个 · 排除 ${item.exclude_terms.length} 个</span><span class="cell-meta">回溯 ${item.lookback_days} 天</span></td>
     <td>${toggleMarkup("keyword", item)}</td>
     <td><div class="row-actions"><button class="icon-button keyword-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button keyword-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
   </tr>`).join("");
@@ -524,31 +525,46 @@ function openKeywordDialog(item = null) {
   $("keyword-id").value = item?.id || "";
   $("keyword-name").value = item?.name || "";
   $("keyword-terms").value = item?.match_terms.join("\n") || "";
-  $("keyword-query").value = buildKeywordQuery(item?.match_terms || []);
+  $("keyword-context-terms").value = item?.context_terms.join("\n") || "";
+  $("keyword-exclude-terms").value = item?.exclude_terms.join("\n") || "";
+  $("keyword-lookback-days").value = item?.lookback_days || 30;
+  $("keyword-query").value = item?.query || "";
   $("keyword-active").checked = item?.active ?? true;
+  updateKeywordQueryPreview();
   $("keyword-dialog").showModal();
 }
 
-function parseKeywordTerms() {
-  return $("keyword-terms").value.split(/[\n,，]/).map((term) => term.trim()).filter(Boolean);
+function parseKeywordTerms(id) {
+  return $(id).value.split(/[\n,，]/).map((term) => term.trim()).filter(Boolean);
 }
 
-function buildKeywordQuery(terms) {
-  const seen = new Set();
-  const normalized = [];
-  terms.forEach((value) => {
-    const term = value.replaceAll('"', " ").trim().replace(/\s+/g, " ");
-    const key = term.toLocaleLowerCase();
-    if (term && !seen.has(key)) {
-      seen.add(key);
-      normalized.push(term);
-    }
-  });
-  return normalized.length ? `(${normalized.map((term) => `"${term}"`).join(" OR ")})` : "";
+function keywordStrategyPayload() {
+  return {
+    match_terms: parseKeywordTerms("keyword-terms"),
+    context_terms: parseKeywordTerms("keyword-context-terms"),
+    exclude_terms: parseKeywordTerms("keyword-exclude-terms"),
+    lookback_days: Number($("keyword-lookback-days").value || 30),
+  };
 }
 
-function updateKeywordQueryPreview() {
-  $("keyword-query").value = buildKeywordQuery(parseKeywordTerms());
+let keywordPreviewRevision = 0;
+
+async function updateKeywordQueryPreview() {
+  const payload = keywordStrategyPayload();
+  const revision = ++keywordPreviewRevision;
+  if (!payload.match_terms.length) {
+    $("keyword-query").value = "";
+    return;
+  }
+  try {
+    const data = await api("/api/keywords/preview", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    if (revision === keywordPreviewRevision) $("keyword-query").value = data.query;
+  } catch (error) {
+    if (revision === keywordPreviewRevision) $("keyword-query").value = error.message;
+  }
 }
 
 async function saveSource(event) {
@@ -570,8 +586,11 @@ async function saveSource(event) {
 async function saveKeyword(event) {
   event.preventDefault();
   const id = $("keyword-id").value;
-  const terms = parseKeywordTerms();
-  const payload = { name: $("keyword-name").value.trim(), query: buildKeywordQuery(terms), match_terms: terms, active: $("keyword-active").checked };
+  const payload = {
+    name: $("keyword-name").value.trim(),
+    ...keywordStrategyPayload(),
+    active: $("keyword-active").checked,
+  };
   try {
     await api(id ? `/api/keywords/${id}` : "/api/keywords", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("keyword-dialog").close();
@@ -590,7 +609,14 @@ async function updateSourceActive(id, active) {
 async function updateKeywordActive(id, active) {
   const item = state.keywords.find((keyword) => keyword.id === Number(id));
   if (!item) return;
-  await api(`/api/keywords/${id}`, { method: "PUT", body: JSON.stringify({ name: item.name, query: item.query, match_terms: item.match_terms, active }) });
+  await api(`/api/keywords/${id}`, { method: "PUT", body: JSON.stringify({
+    name: item.name,
+    match_terms: item.match_terms,
+    context_terms: item.context_terms,
+    exclude_terms: item.exclude_terms,
+    lookback_days: item.lookback_days,
+    active,
+  }) });
   await Promise.all([loadCatalogs(), loadStatus()]);
 }
 
@@ -655,6 +681,7 @@ function debounce(fn, delay) {
 }
 
 function bindEvents() {
+  const refreshKeywordPreview = debounce(updateKeywordQueryPreview, 200);
   document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
   $("collect-now").addEventListener("click", startCollection);
   $("refresh-articles").addEventListener("click", loadArticles);
@@ -680,8 +707,11 @@ function bindEvents() {
   $("add-keyword").addEventListener("click", () => openKeywordDialog());
   $("source-form").addEventListener("submit", saveSource);
   $("keyword-form").addEventListener("submit", saveKeyword);
-  $("keyword-terms").addEventListener("input", updateKeywordQueryPreview);
+  ["keyword-terms", "keyword-context-terms", "keyword-exclude-terms", "keyword-lookback-days"]
+    .forEach((id) => $(id).addEventListener("input", refreshKeywordPreview));
   $("keyword-terms").addEventListener("compositionend", updateKeywordQueryPreview);
+  $("keyword-context-terms").addEventListener("compositionend", updateKeywordQueryPreview);
+  $("keyword-exclude-terms").addEventListener("compositionend", updateKeywordQueryPreview);
   $("settings-form").addEventListener("submit", saveSettings);
   $("ai-settings-form").addEventListener("submit", saveAISettings);
   document.querySelectorAll(".close-dialog").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));

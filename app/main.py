@@ -36,6 +36,7 @@ from .prompts import (
     RELEVANCE_PROMPT_VERSION,
     REPORT_PROMPT_VERSION,
 )
+from .query_builder import build_keyword_query
 from .scheduler import DailyScheduler, next_scheduled_at, parse_schedule_time
 
 
@@ -81,24 +82,42 @@ class SourcePayload(BaseModel):
             raise ValueError("搜索型 RSS 地址必须包含 {query} 占位符")
 
 
-class KeywordPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    query: str = Field(default="", max_length=2000)
+class KeywordQueryPayload(BaseModel):
     match_terms: list[str] = Field(min_length=1, max_length=100)
-    active: bool = True
-
-    @field_validator("name", "query")
-    @classmethod
-    def strip_text(cls, value: str) -> str:
-        return value.strip()
+    context_terms: list[str] = Field(default_factory=list, max_length=100)
+    exclude_terms: list[str] = Field(default_factory=list, max_length=100)
+    lookback_days: int = Field(default=30, ge=1, le=365)
 
     @field_validator("match_terms")
     @classmethod
-    def normalize_terms(cls, values: list[str]) -> list[str]:
+    def normalize_match_terms(cls, values: list[str]) -> list[str]:
         cleaned = list(dict.fromkeys(value.strip() for value in values if value.strip()))
         if not cleaned:
             raise ValueError("至少需要一个正文匹配词")
         return cleaned
+
+    @field_validator("context_terms", "exclude_terms")
+    @classmethod
+    def normalize_optional_terms(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    def build_query(self) -> str:
+        return build_keyword_query(
+            self.match_terms,
+            context_terms=self.context_terms,
+            exclude_terms=self.exclude_terms,
+            lookback_days=self.lookback_days,
+        )
+
+
+class KeywordPayload(KeywordQueryPayload):
+    name: str = Field(min_length=1, max_length=100)
+    active: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
 
 
 class SettingsPayload(BaseModel):
@@ -301,6 +320,10 @@ def create_app(
     @app.get("/api/keywords")
     def list_keywords():
         return {"items": database.get_keywords()}
+
+    @app.post("/api/keywords/preview")
+    def preview_keyword_query(payload: KeywordQueryPayload):
+        return {"query": payload.build_query()}
 
     @app.post("/api/keywords", status_code=status.HTTP_201_CREATED)
     def create_keyword(payload: KeywordPayload):

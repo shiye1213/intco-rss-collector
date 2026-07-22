@@ -36,7 +36,7 @@ flowchart LR
 | 正文抓取 | `app/content.py` | Google News 原文地址解析、安全下载、正文抽取和清洗 |
 | 数据访问 | `app/database.py` | SQLite 表结构、迁移和数据访问方法 |
 | 调度器 | `app/scheduler.py` | 北京时间每日执行和下次执行时间计算 |
-| 查询构建 | `app/query_builder.py` | 将匹配词转换为 Google News 查询表达式 |
+| 查询构建 | `app/query_builder.py` | 统一生成主题词、业务信号、排除词和回溯窗口组成的 Google News 查询表达式 |
 | DeepSeek 客户端 | `app/llm.py` | API 鉴权、JSON 请求、响应和错误处理 |
 | Prompt | `app/prompts.py` | 相关性、业务分析与日报的独立 Prompt 及版本 |
 | 情报流水线 | `app/intelligence.py` | 全文、相关性门控、业务分析、批次日志和日报持久化 |
@@ -107,7 +107,7 @@ sequenceDiagram
 | 表 | 用途 |
 |---|---|
 | `rss_sources` | RSS 源配置、类型、语言和启用状态 |
-| `keywords` | 关键词组、查询表达式和正文匹配词 |
+| `keywords` | 关键词组、查询表达式、主题词、业务信号词、排除词和回溯天数 |
 | `articles` | 新闻标题、链接、发布方、摘要和发布时间 |
 | `article_sources` | 文章的全部 RSS 来源、链接、GUID、语言、国家、分类及发现时间 |
 | `article_keywords` | 文章与命中关键词组的多对多关系 |

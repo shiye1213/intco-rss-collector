@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.collector import (
     Collector,
     build_feed_url,
@@ -118,7 +120,63 @@ def test_keyword_query_is_generated_only_from_match_terms() -> None:
     assert "-football" not in query
 
 
-def test_first_run_uses_today_and_second_run_uses_cursor(tmp_path) -> None:
+def test_keyword_query_combines_subjects_signals_exclusions_and_recency() -> None:
+    query = build_keyword_query(
+        ["nitrile gloves", "medical gloves", "NITRILE GLOVES"],
+        context_terms=["tariff", "regulation", "Tariff"],
+        exclude_terms=["boxing gloves", "football", "FOOTBALL"],
+        lookback_days=30,
+    )
+
+    assert query == (
+        '("nitrile gloves" OR "medical gloves") '
+        'AND ("tariff" OR "regulation") '
+        '-"boxing gloves" -"football" when:30d'
+    )
+
+
+def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) -> None:
+    database = Database(tmp_path / "keyword-strategy.db")
+    database.initialize()
+    keyword_id = database.create_keyword(
+        {
+            "name": "测试医疗手套情报",
+            "match_terms": ["nitrile gloves", "medical gloves"],
+            "context_terms": ["tariff", "demand"],
+            "exclude_terms": ["boxing", "football"],
+            "lookback_days": 14,
+            "active": True,
+        }
+    )
+
+    keyword = next(item for item in database.get_keywords() if item["id"] == keyword_id)
+
+    assert keyword["context_terms"] == ["tariff", "demand"]
+    assert keyword["exclude_terms"] == ["boxing", "football"]
+    assert keyword["lookback_days"] == 14
+    assert keyword["query"] == (
+        '("nitrile gloves" OR "medical gloves") '
+        'AND ("tariff" OR "demand") -"boxing" -"football" when:14d'
+    )
+    feed_url = build_feed_url(
+        {"mode": "search", "url_template": "https://example.com/rss?q={query}"},
+        keyword,
+    )
+    assert "{query}" not in feed_url
+    assert "when%3A14d" in feed_url
+    assert "-%22boxing%22" in feed_url
+
+
+def test_keyword_query_rejects_oversized_google_expression() -> None:
+    with pytest.raises(ValueError, match="查询过长"):
+        build_keyword_query(
+            [f"very specific medical product phrase {index}" for index in range(20)],
+            context_terms=[f"business signal phrase {index}" for index in range(20)],
+            lookback_days=30,
+        )
+
+
+def test_second_run_uses_cursor_after_initial_collection(tmp_path) -> None:
     database = configured_database(tmp_path)
 
     def fake_fetch(_: str, __: float) -> bytes:
@@ -150,6 +208,30 @@ def test_first_run_uses_today_and_second_run_uses_cursor(tmp_path) -> None:
     assert second_result["items_matched"] == 0
     assert second_result["details"][0]["skipped_outside_window"] == 1
     assert database.article_count() == 1
+
+
+def test_new_keyword_uses_its_google_news_lookback_window(tmp_path) -> None:
+    database = configured_database(tmp_path)
+    keyword = database.get_keywords(active_only=True)[0]
+    database.update_keyword(
+        keyword["id"],
+        {
+            **keyword,
+            "lookback_days": 14,
+        },
+    )
+    collector = Collector(database, feed_fetcher=lambda _url, _timeout: RSS_XML)
+    started = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-07-21T16:00:00Z"
+    )
+
+    collector.collect(run_id, started)
+
+    result = database.get_run(run_id)
+    assert result is not None
+    assert result["items_inserted"] == 1
+    assert result["details"][0]["window_start"] == "2026-07-08T16:00:00Z"
 
 
 def test_failed_source_does_not_advance_cursor(tmp_path) -> None:

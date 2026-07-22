@@ -86,18 +86,24 @@
 
 ```json
 {
-  "name": "PE 手套",
-  "query": "",
+  "name": "一次性医疗手套",
   "match_terms": [
-    "PE手套",
-    "聚乙烯手套",
-    "polyethylene gloves"
+    "丁腈手套",
+    "nitrile gloves",
+    "medical gloves"
   ],
+  "context_terms": ["关税", "需求", "tariff", "demand", "capacity"],
+  "exclude_terms": ["boxing", "football", "baseball"],
+  "lookback_days": 30,
   "active": true
 }
 ```
 
-后端会忽略客户端传入的 `query` 内容，统一根据 `match_terms` 生成查询表达式。
+后端统一生成查询表达式，不接受客户端自定义 `query`。表达式格式为 `(主题词 OR …) AND (业务信号 OR …) -"排除词" when:30d`。表达式超过 200 字符时返回 `422`，应拆分成多个聚焦策略。
+
+### `POST /api/keywords/preview`
+
+请求体使用 `match_terms`、`context_terms`、`exclude_terms` 和 `lookback_days`，返回后端实际生成的 `query`，供页面实时预览。
 
 ### `PUT /api/keywords/{keyword_id}`
 

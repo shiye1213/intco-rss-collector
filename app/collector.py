@@ -7,7 +7,7 @@ import re
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Callable
@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from .database import Database, utc_now_iso
 from .normalization import normalize_categories, normalize_publisher
+from .query_builder import build_keyword_query
 
 
 USER_AGENT = "INTCO-RSS-Collector/1.0 (+internal market intelligence)"
@@ -201,7 +202,14 @@ def iso_utc(value: datetime) -> str:
 
 
 def start_of_local_day(now: datetime, timezone_name: str) -> datetime:
-    local = now.astimezone(ZoneInfo(timezone_name))
+    return start_of_local_lookback(now, timezone_name, 1)
+
+
+def start_of_local_lookback(
+    now: datetime, timezone_name: str, lookback_days: int
+) -> datetime:
+    days = max(1, min(365, int(lookback_days)))
+    local = now.astimezone(ZoneInfo(timezone_name)) - timedelta(days=days - 1)
     return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
 
 
@@ -221,7 +229,6 @@ class Collector:
         keywords = self.database.get_keywords(active_only=True)
         settings = self.database.get_settings()
         timezone_name = settings.get("timezone", "Asia/Shanghai")
-        first_window = start_of_local_day(run_started_at, timezone_name)
         end_iso = iso_utc(run_started_at)
 
         if not sources or not keywords:
@@ -247,6 +254,11 @@ class Collector:
                         totals["items_seen"] += len(feed_items)
                     except Exception as exc:
                         for keyword in keywords:
+                            first_window = start_of_local_lookback(
+                                run_started_at,
+                                timezone_name,
+                                int(keyword.get("lookback_days", 1)),
+                            )
                             window_start = self._window_start(
                                 connection, source["id"], keyword["id"], first_window
                             )
@@ -266,6 +278,11 @@ class Collector:
                         continue
 
                     for keyword in keywords:
+                        first_window = start_of_local_lookback(
+                            run_started_at,
+                            timezone_name,
+                            int(keyword.get("lookback_days", 1)),
+                        )
                         self._process_pair(
                             connection,
                             run_id,
@@ -281,10 +298,18 @@ class Collector:
                         connection.commit()
                 else:
                     for keyword in keywords:
-                        url = build_feed_url(source, keyword)
+                        first_window = start_of_local_lookback(
+                            run_started_at,
+                            timezone_name,
+                            int(keyword.get("lookback_days", 1)),
+                        )
                         window_start = self._window_start(
                             connection, source["id"], keyword["id"], first_window
                         )
+                        runtime_keyword = self._runtime_search_keyword(
+                            keyword, window_start, run_started_at
+                        )
+                        url = build_feed_url(source, runtime_keyword)
                         try:
                             feed_items = parse_feed(self.feed_fetcher(url, self.timeout))
                             totals["items_seen"] += len(feed_items)
@@ -347,6 +372,28 @@ class Collector:
                     run_id,
                 ),
             )
+
+    @staticmethod
+    def _runtime_search_keyword(
+        keyword: dict[str, object],
+        window_start: datetime,
+        run_started_at: datetime,
+    ) -> dict[str, object]:
+        elapsed_days = max(
+            1,
+            int((run_started_at - window_start).total_seconds() // 86400) + 1,
+        )
+        configured_days = int(keyword.get("lookback_days", 1))
+        lookback_days = min(365, max(configured_days, elapsed_days))
+        return {
+            **keyword,
+            "query": build_keyword_query(
+                list(keyword["match_terms"]),
+                context_terms=list(keyword.get("context_terms", [])),
+                exclude_terms=list(keyword.get("exclude_terms", [])),
+                lookback_days=lookback_days,
+            ),
+        }
 
     @staticmethod
     def _window_start(
@@ -620,9 +667,8 @@ class CollectionManager:
                 )
             started_at = datetime.now(UTC)
             settings = self.database.get_settings()
-            first_window = start_of_local_day(
-                started_at, settings.get("timezone", "Asia/Shanghai")
-            )
+            timezone_name = settings.get("timezone", "Asia/Shanghai")
+            first_window = start_of_local_day(started_at, timezone_name)
             active_sources = self.database.get_sources(active_only=True)
             active_keywords = self.database.get_keywords(active_only=True)
             cursor_values: list[datetime] = []
@@ -630,7 +676,7 @@ class CollectionManager:
                 with self.database.connect() as connection:
                     rows = connection.execute(
                         """
-                        SELECT c.last_collected_at
+                        SELECT c.last_collected_at, k.lookback_days
                         FROM rss_sources s
                         CROSS JOIN keywords k
                         LEFT JOIN collection_cursors c
@@ -640,7 +686,12 @@ class CollectionManager:
                         """
                     ).fetchall()
                     cursor_values = [
-                        parse_datetime(row["last_collected_at"]) or first_window
+                        parse_datetime(row["last_collected_at"])
+                        or start_of_local_lookback(
+                            started_at,
+                            timezone_name,
+                            int(row["lookback_days"]),
+                        )
                         for row in rows
                     ]
             global_start = min(cursor_values, default=first_window)
