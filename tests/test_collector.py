@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -11,7 +12,7 @@ from app.collector import (
     canonicalize_url,
     parse_feed,
 )
-from app.database import Database
+from app.database import DEFAULT_SOURCES, Database
 from app.query_builder import build_keyword_query
 
 
@@ -47,6 +48,11 @@ ATOM_XML = b"""<?xml version="1.0" encoding="utf-8"?>
     <summary>New polyethylene gloves guidance.</summary>
   </entry>
 </feed>
+"""
+
+
+EMPTY_RSS_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Empty</title></channel></rss>
 """
 
 
@@ -108,6 +114,16 @@ def test_build_search_url_and_canonicalize_tracking_parameters() -> None:
     )
 
 
+def test_default_sources_include_site_limited_malaysia_publishers() -> None:
+    sources = {item["name"]: item for item in DEFAULT_SOURCES}
+
+    the_star = sources["Google News 马来西亚 The Star"]
+    the_edge = sources["Google News 马来西亚 The Edge"]
+    assert "site%3Athestar.com.my+{query}" in the_star["url_template"]
+    assert "site%3Atheedgemalaysia.com+{query}" in the_edge["url_template"]
+    assert the_star["country"] == the_edge["country"] == "MY"
+
+
 def test_keyword_query_is_generated_only_from_match_terms() -> None:
     query = build_keyword_query(
         ["PE手套", "聚乙烯手套", "polyethylene gloves", "PE手套"]
@@ -133,6 +149,132 @@ def test_keyword_query_combines_subjects_signals_exclusions_and_recency() -> Non
         'AND ("tariff" OR "regulation") '
         '-"boxing gloves" -"football" when:30d'
     )
+
+
+def test_search_sources_receive_only_matching_language_terms(tmp_path) -> None:
+    database = Database(tmp_path / "language-routing.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": "Chinese search",
+            "url_template": "https://zh.example/rss?q={query}",
+            "mode": "search",
+            "language": "zh-CN",
+            "country": "CN",
+            "active": True,
+        }
+    )
+    database.create_source(
+        {
+            "name": "English search",
+            "url_template": "https://en.example/rss?q={query}",
+            "mode": "search",
+            "language": "en-US",
+            "country": "US",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Mixed gloves",
+            "match_terms": ["医用手套", "medical gloves"],
+            "context_terms": ["采购", "procurement"],
+            "exclude_terms": ["拳击", "boxing"],
+            "lookback_days": 14,
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Chinese only",
+            "match_terms": ["丁腈手套"],
+            "context_terms": ["价格"],
+            "exclude_terms": [],
+            "lookback_days": 14,
+            "active": True,
+        }
+    )
+    requested_urls: list[str] = []
+
+    def fake_fetch(url: str, _timeout: float) -> bytes:
+        requested_urls.append(url)
+        return EMPTY_RSS_XML
+
+    collector = Collector(database, feed_fetcher=fake_fetch)
+    started = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-07-21T16:00:00Z"
+    )
+
+    collector.collect(run_id, started)
+
+    result = database.get_run(run_id)
+    assert result is not None
+    assert result["tasks_total"] == 3
+    assert len(requested_urls) == 3
+    queries = [
+        ((urlsplit(url).hostname or ""), parse_qs(urlsplit(url).query)["q"][0])
+        for url in requested_urls
+    ]
+    chinese_queries = [query for host, query in queries if host == "zh.example"]
+    english_queries = [query for host, query in queries if host == "en.example"]
+    assert len(chinese_queries) == 2
+    assert len(english_queries) == 1
+    assert all("medical gloves" not in query for query in chinese_queries)
+    assert all("procurement" not in query for query in chinese_queries)
+    assert "医用手套" not in english_queries[0]
+    assert "采购" not in english_queries[0]
+
+
+def test_direct_source_matches_only_keywords_for_its_language(tmp_path) -> None:
+    database = Database(tmp_path / "direct-language-routing.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": "English direct",
+            "url_template": "https://en.example/feed.xml",
+            "mode": "direct",
+            "language": "en-US",
+            "country": "US",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Mixed gloves",
+            "match_terms": ["医用手套", "polyethylene gloves"],
+            "lookback_days": 14,
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Chinese only",
+            "match_terms": ["丁腈手套"],
+            "lookback_days": 14,
+            "active": True,
+        }
+    )
+    collector = Collector(database, feed_fetcher=lambda _url, _timeout: RSS_XML)
+    started = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-07-21T16:00:00Z"
+    )
+
+    collector.collect(run_id, started)
+
+    result = database.get_run(run_id)
+    assert result is not None
+    assert result["tasks_total"] == 1
+    assert result["items_inserted"] == 1
+    assert len(result["details"]) == 1
+    assert result["details"][0]["keyword_name"] == "Mixed gloves"
 
 
 def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) -> None:

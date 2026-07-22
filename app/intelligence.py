@@ -9,7 +9,12 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
 
-from .content import ArticleContentFetcher, ContentDocument, WebContentFetcher
+from .content import (
+    ArticleContentReader,
+    ArticleReference,
+    ContentDocument,
+    ContentFetchError,
+)
 from .database import Database, utc_now_iso
 from .llm import JSONLLMClient, LLMResult
 from .prompts import (
@@ -37,6 +42,10 @@ CategoryCode = Literal[
 ]
 RiskLevel = Literal["low", "medium", "high", "critical"]
 ImpactDirection = Literal["positive", "negative", "mixed", "neutral"]
+
+CONTENT_FETCH_MAX_ATTEMPTS = 3
+CONTENT_RETRY_BASE_MINUTES = 5
+CONTENT_RETRY_MAX_MINUTES = 24 * 60
 
 
 def _clean_string_list(values: list[str], *, limit: int = 8) -> list[str]:
@@ -142,6 +151,10 @@ class IntelligenceAlreadyRunningError(RuntimeError):
     pass
 
 
+class _ProviderRateLimited(RuntimeError):
+    """Stop a queue when a shared upstream provider rejects the batch."""
+
+
 class IntelligenceRepository:
     REVIEW_JSON_FIELDS = ("evidence",)
     BUSINESS_JSON_FIELDS = (
@@ -174,14 +187,28 @@ class IntelligenceRepository:
     @staticmethod
     def _candidate_condition() -> str:
         return """
-            ic.article_id IS NULL OR ic.status = 'failed'
-            OR rr.article_id IS NULL OR rr.status = 'failed'
-            OR rr.content_hash <> ic.content_hash
+            ic.article_id IS NULL
             OR (
-                rr.status = 'success' AND rr.is_relevant = 1
+                ic.status = 'failed'
+                AND ic.is_terminal = 0
+                AND ic.ignored_at IS NULL
                 AND (
-                    ba.article_id IS NULL OR ba.analysis_status = 'failed'
-                    OR ba.content_hash <> ic.content_hash
+                    ic.next_retry_at IS NULL
+                    OR datetime(ic.next_retry_at) <= datetime('now')
+                )
+            )
+            OR (
+                ic.status = 'success'
+                AND (
+                    rr.article_id IS NULL OR rr.status = 'failed'
+                    OR rr.content_hash <> ic.content_hash
+                    OR (
+                        rr.status = 'success' AND rr.is_relevant = 1
+                        AND (
+                            ba.article_id IS NULL OR ba.analysis_status = 'failed'
+                            OR ba.content_hash <> ic.content_hash
+                        )
+                    )
                 )
             )
         """
@@ -195,6 +222,17 @@ class IntelligenceRepository:
                     COUNT(*) AS total,
                     SUM(CASE WHEN ic.status = 'success' THEN 1 ELSE 0 END) AS content_ready,
                     SUM(CASE WHEN ic.status = 'failed' THEN 1 ELSE 0 END) AS content_failed,
+                    SUM(CASE WHEN ic.status = 'failed'
+                        AND ic.is_terminal = 0 AND ic.ignored_at IS NULL
+                        AND ic.next_retry_at IS NOT NULL
+                        AND datetime(ic.next_retry_at) > datetime('now')
+                        THEN 1 ELSE 0 END) AS content_retry_waiting,
+                    SUM(CASE WHEN ic.status = 'failed'
+                        AND ic.is_terminal = 1 AND ic.ignored_at IS NULL
+                        THEN 1 ELSE 0 END) AS content_final_failed,
+                    SUM(CASE WHEN ic.status = 'failed'
+                        AND ic.ignored_at IS NOT NULL
+                        THEN 1 ELSE 0 END) AS content_ignored,
                     SUM(CASE WHEN ic.status = 'success'
                         AND rr.status = 'success'
                         AND rr.content_hash = ic.content_hash
@@ -230,6 +268,9 @@ class IntelligenceRepository:
             "pending": int(row["pending"] or 0),
             "content_ready": int(row["content_ready"] or 0),
             "content_failed": int(row["content_failed"] or 0),
+            "content_retry_waiting": int(row["content_retry_waiting"] or 0),
+            "content_final_failed": int(row["content_final_failed"] or 0),
+            "content_ignored": int(row["content_ignored"] or 0),
             "relevant": int(row["relevant"] or 0),
             "irrelevant": int(row["irrelevant"] or 0),
             "review_failed": int(row["review_failed"] or 0),
@@ -269,7 +310,13 @@ class IntelligenceRepository:
                 LEFT JOIN article_relevance_reviews rr ON rr.article_id = a.id
                 LEFT JOIN business_articles ba ON ba.article_id = a.id
                 {where}
-                ORDER BY a.published_at, a.id
+                ORDER BY
+                    CASE
+                        WHEN ic.article_id IS NULL THEN 0
+                        WHEN ic.status = 'success' THEN 1
+                        ELSE 2
+                    END,
+                    a.published_at DESC, a.id DESC
                 {limit_clause}
                 """,  # noqa: S608
                 parameters,
@@ -383,7 +430,7 @@ class IntelligenceRepository:
                 VALUES (?, 'processing', ?, '')
                 ON CONFLICT(article_id) DO UPDATE SET
                     status = 'processing', requested_url = excluded.requested_url,
-                    error_message = ''
+                    next_retry_at = NULL, error_message = ''
                 """,
                 (article_id, requested_url),
             )
@@ -416,7 +463,9 @@ class IntelligenceRepository:
                     http_status = excluded.http_status,
                     content_type = excluded.content_type,
                     extractor = excluded.extractor,
-                    fetched_at = excluded.fetched_at, error_message = ''
+                    fetched_at = excluded.fetched_at, error_message = '',
+                    attempt_count = 0, failure_kind = '', next_retry_at = NULL,
+                    is_terminal = 0, ignored_at = NULL
                 """,
                 (
                     article_id,
@@ -452,22 +501,63 @@ class IntelligenceRepository:
             )
 
     def fail_content(
-        self, run_id: int, article_id: int, requested_url: str, message: str
+        self,
+        run_id: int,
+        article_id: int,
+        requested_url: str,
+        message: str,
+        *,
+        failure_kind: str,
+        retryable: bool,
     ) -> None:
-        now = utc_now_iso()
+        now_value = datetime.now(UTC)
+        now = now_value.isoformat().replace("+00:00", "Z")
         error = message[:2000]
         with self.database.connect() as connection:
+            existing = connection.execute(
+                "SELECT attempt_count FROM article_contents WHERE article_id = ?",
+                (article_id,),
+            ).fetchone()
+            attempt_count = int(existing["attempt_count"] if existing else 0) + 1
+            is_terminal = (not retryable) or (
+                attempt_count >= CONTENT_FETCH_MAX_ATTEMPTS
+            )
+            next_retry_at: str | None = None
+            if retryable and not is_terminal:
+                delay_minutes = min(
+                    CONTENT_RETRY_MAX_MINUTES,
+                    CONTENT_RETRY_BASE_MINUTES * (2 ** (attempt_count - 1)),
+                )
+                next_retry_at = (
+                    now_value + timedelta(minutes=delay_minutes)
+                ).isoformat().replace("+00:00", "Z")
             connection.execute(
                 """
                 INSERT INTO article_contents
-                    (article_id, status, requested_url, fetched_at, error_message)
-                VALUES (?, 'failed', ?, ?, ?)
+                    (article_id, status, requested_url, fetched_at, error_message,
+                     attempt_count, failure_kind, next_retry_at, is_terminal,
+                     ignored_at)
+                VALUES (?, 'failed', ?, ?, ?, ?, ?, ?, ?, NULL)
                 ON CONFLICT(article_id) DO UPDATE SET
                     status = 'failed', requested_url = excluded.requested_url,
                     fetched_at = excluded.fetched_at,
-                    error_message = excluded.error_message
+                    error_message = excluded.error_message,
+                    attempt_count = excluded.attempt_count,
+                    failure_kind = excluded.failure_kind,
+                    next_retry_at = excluded.next_retry_at,
+                    is_terminal = excluded.is_terminal,
+                    ignored_at = NULL
                 """,
-                (article_id, requested_url, now, error),
+                (
+                    article_id,
+                    requested_url,
+                    now,
+                    error,
+                    attempt_count,
+                    failure_kind[:100],
+                    next_retry_at,
+                    int(is_terminal),
+                ),
             )
             connection.execute(
                 """
@@ -479,6 +569,67 @@ class IntelligenceRepository:
                 """,
                 (error, run_id, article_id),
             )
+
+    def list_content_failures(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            total = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM article_contents WHERE status = 'failed'"
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                """
+                SELECT ic.*, a.title, a.url, a.publisher, a.published_at,
+                       CASE
+                           WHEN ic.ignored_at IS NOT NULL THEN 'ignored'
+                           WHEN ic.is_terminal = 1 THEN 'final_failed'
+                           WHEN ic.next_retry_at IS NOT NULL
+                                AND datetime(ic.next_retry_at) > datetime('now')
+                               THEN 'waiting'
+                           ELSE 'retry_ready'
+                       END AS disposition
+                FROM article_contents ic
+                JOIN articles a ON a.id = ic.article_id
+                WHERE ic.status = 'failed'
+                ORDER BY
+                    CASE
+                        WHEN ic.ignored_at IS NULL AND ic.is_terminal = 1 THEN 0
+                        WHEN ic.ignored_at IS NULL THEN 1
+                        ELSE 2
+                    END,
+                    ic.fetched_at DESC, ic.article_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows], "total": total}
+
+    def retry_content_failure(self, article_id: int) -> bool:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE article_contents
+                SET attempt_count = 0, failure_kind = '', next_retry_at = NULL,
+                    is_terminal = 0, ignored_at = NULL
+                WHERE article_id = ? AND status = 'failed'
+                """,
+                (article_id,),
+            )
+            return cursor.rowcount > 0
+
+    def ignore_content_failure(self, article_id: int) -> bool:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE article_contents
+                SET is_terminal = 1, next_retry_at = NULL, ignored_at = ?
+                WHERE article_id = ? AND status = 'failed'
+                """,
+                (utc_now_iso(), article_id),
+            )
+            return cursor.rowcount > 0
 
     def mark_relevance_processing(
         self,
@@ -797,6 +948,7 @@ class IntelligenceRepository:
         *,
         prompt_tokens: int,
         completion_tokens: int,
+        message: str = "",
     ) -> None:
         with self.database.connect() as connection:
             counts = connection.execute(
@@ -804,6 +956,8 @@ class IntelligenceRepository:
                 SELECT
                     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS succeeded,
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN status IN ('pending', 'processing')
+                        THEN 1 ELSE 0 END) AS pending,
                     SUM(CASE WHEN is_relevant = 1 THEN 1 ELSE 0 END) AS relevant,
                     SUM(CASE WHEN status = 'success' AND is_relevant = 0
                         THEN 1 ELSE 0 END) AS irrelevant,
@@ -815,9 +969,18 @@ class IntelligenceRepository:
             ).fetchone()
             succeeded = int(counts["succeeded"] or 0)
             failed = int(counts["failed"] or 0)
+            pending = int(counts["pending"] or 0)
             total = int(counts["total"] or 0)
-            status = "success" if failed == 0 else "failed" if succeeded == 0 else "partial"
-            message = "没有待处理文章" if total == 0 else ""
+            if pending:
+                status = "partial"
+            elif failed == 0:
+                status = "success"
+            elif succeeded == 0:
+                status = "failed"
+            else:
+                status = "partial"
+            if not message and total == 0:
+                message = "没有待处理文章"
             connection.execute(
                 """
                 UPDATE ai_analysis_runs
@@ -1170,12 +1333,12 @@ class ArticleAnalysisManager:
         database: Database,
         repository: IntelligenceRepository,
         client: JSONLLMClient,
-        content_fetcher: ArticleContentFetcher | None = None,
+        content_reader: ArticleContentReader,
     ) -> None:
         self.database = database
         self.repository = repository
         self.client = client
-        self.content_fetcher = content_fetcher or WebContentFetcher()
+        self.content_reader = content_reader
         self._state_lock = threading.Lock()
         self._running_run_id: int | None = None
 
@@ -1192,6 +1355,8 @@ class ArticleAnalysisManager:
         force: bool = False,
         article_ids: list[int] | None = None,
     ) -> tuple[int, list[int]]:
+        if not self.content_reader.configured:
+            raise ValueError("尚未配置 OPENAI_API_KEY")
         if not self.client.configured:
             raise ValueError("尚未配置 DEEPSEEK_API_KEY")
         with self._state_lock:
@@ -1216,6 +1381,8 @@ class ArticleAnalysisManager:
         force: bool = False,
         article_ids: list[int] | None = None,
     ) -> tuple[int, list[int]]:
+        if not self.content_reader.configured:
+            raise ValueError("尚未配置 OPENAI_API_KEY")
         if not self.client.configured:
             raise ValueError("尚未配置 DEEPSEEK_API_KEY")
         batch_size = max(1, min(100, batch_size))
@@ -1281,12 +1448,14 @@ class ArticleAnalysisManager:
                     )
                     with self._state_lock:
                         self._running_run_id = active_run_id
-                self._execute_run(
+                should_continue = self._execute_run(
                     active_run_id,
                     batch,
                     force=force,
                     refresh_content=refresh_content,
                 )
+                if not should_continue:
+                    break
         finally:
             with self._state_lock:
                 if self._running_run_id == active_run_id:
@@ -1299,9 +1468,11 @@ class ArticleAnalysisManager:
         *,
         force: bool = False,
         refresh_content: bool = False,
-    ) -> None:
+    ) -> bool:
         prompt_tokens = 0
         completion_tokens = 0
+        should_continue = True
+        run_message = ""
         try:
             settings = self.database.get_settings()
             business_profile = settings.get("ai_business_profile", "")
@@ -1321,11 +1492,16 @@ class ArticleAnalysisManager:
                         run_id, article_id, "文章不存在"
                     )
                     continue
-                content = self._get_or_fetch_content(
-                    run_id,
-                    article,
-                    refresh_content=refresh_content,
-                )
+                try:
+                    content = self._get_or_read_content(
+                        run_id,
+                        article,
+                        refresh_content=refresh_content,
+                    )
+                except _ProviderRateLimited as exc:
+                    should_continue = False
+                    run_message = str(exc)
+                    break
                 if content is None:
                     continue
 
@@ -1444,9 +1620,11 @@ class ArticleAnalysisManager:
                 run_id,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                message=run_message,
             )
+        return should_continue
 
-    def _get_or_fetch_content(
+    def _get_or_read_content(
         self,
         run_id: int,
         article: dict[str, Any],
@@ -1463,18 +1641,48 @@ class ArticleAnalysisManager:
         self.repository.mark_content_processing(
             run_id, article_id, requested_url
         )
-        errors: list[str] = []
-        for url in urls:
-            try:
-                document = self.content_fetcher.fetch(url)
-                self.repository.save_content(run_id, article_id, document)
-                return self.repository.get_content(article_id)
-            except Exception as exc:
-                errors.append(f"{url}: {type(exc).__name__}: {exc}")
-        message = "全文抓取失败: " + " | ".join(errors or ["没有可用文章地址"])
+        try:
+            document = self.content_reader.read(
+                ArticleReference(
+                    title=str(article.get("title") or ""),
+                    publisher=str(article.get("publisher") or ""),
+                    urls=tuple(urls),
+                )
+            )
+            self.repository.save_content(run_id, article_id, document)
+            return self.repository.get_content(article_id)
+        except Exception as exc:
+            message = f"大模型网页读取失败: {type(exc).__name__}: {exc}"
+            if isinstance(exc, ContentFetchError):
+                failure_kind = exc.failure_kind
+                retryable = exc.retryable
+            else:
+                failure_kind = "unexpected"
+                retryable = True
         self.repository.fail_content(
-            run_id, article_id, requested_url, message
+            run_id,
+            article_id,
+            requested_url,
+            message,
+            failure_kind=failure_kind,
+            retryable=retryable,
         )
+        if failure_kind == "openai_http_429":
+            raise _ProviderRateLimited(
+                "CCTQ/OpenAI 网页读取限流，本批次已暂停；剩余文章保留为待处理"
+            )
+        if failure_kind == "openai_web_search_unavailable":
+            raise _ProviderRateLimited(
+                "CCTQ/OpenAI 网页搜索服务不可用，本批次已暂停；剩余文章保留为待处理"
+            )
+        if failure_kind == "llm_http_429":
+            raise _ProviderRateLimited(
+                "DeepSeek 网页读取限流，本批次已暂停；剩余文章保留为待处理"
+            )
+        if failure_kind == "llm_web_search_unavailable":
+            raise _ProviderRateLimited(
+                "DeepSeek 网页搜索服务不可用，本批次已暂停；剩余文章保留为待处理"
+            )
         return None
 
     @staticmethod
@@ -1656,7 +1864,10 @@ class AutomaticIntelligenceWorkflow:
         settings = self.database.get_settings()
         if settings.get("ai_auto_analyze", "false").lower() != "true":
             return
-        if not self.analysis_manager.client.configured:
+        if (
+            not self.analysis_manager.client.configured
+            or not self.analysis_manager.content_reader.configured
+        ):
             return
         try:
             limit = max(1, min(100, int(settings.get("ai_batch_size", "20"))))

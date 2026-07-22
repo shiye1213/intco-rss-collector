@@ -26,7 +26,7 @@
 - 关键词组管理与 Google News 查询表达式自动生成。
 - 每日定时采集与手动采集。
 - 增量时间窗、失败恢复、URL/指纹去重和多来源追踪。
-- Google News 聚合链接解析、出版社网页下载和正文清洗。
+- CCTQ 的 GPT-5.4 mini 通过 OpenAI Responses API 兼容接口和内置网页搜索直接读取并保存新闻正文。
 - DeepSeek 两阶段处理：相关性审核、业务情报分析。
 - AI 批次日志、阶段状态、Token 和 Prompt 版本记录。
 - 按日期和分类生成及保存日报。
@@ -37,7 +37,7 @@
 - 多用户账号、角色权限和单点登录。
 - 历史任意日期范围补采。
 - 邮件、企业微信、钉钉等推送渠道。
-- JavaScript 浏览器渲染抓取和付费墙绕过。
+- OpenAI 网页搜索无法读取的登录墙、付费墙和受限网页兜底。
 - 分布式任务队列、多实例调度和高可用数据库。
 
 ## 3. 技术栈与选型理由
@@ -50,13 +50,13 @@
 | Web 服务器 | Uvicorn | 本地 ASGI 服务 | 与 FastAPI 原生配合，开发启动简单，满足当前单进程 MVP |
 | 数据库 | SQLite | 配置、文章、游标、日志、AI 结果和日报 | 无需独立数据库服务，便于本地开发和演示；事务足以支持当前低并发单机工作流 |
 | RSS 解析 | Python 标准库 ElementTree | RSS 2.0 和 Atom XML 解析 | 当前 Feed 字段有限，标准库可控且减少依赖；解析逻辑可以直接兼容不同命名空间 |
-| 网络请求 | Python 标准库 urllib | Feed、网页和 DeepSeek HTTP 请求 | 当前请求模式简单，避免再引入 HTTP 客户端依赖；所有超时、状态和错误路径由项目统一控制 |
-| 正文抽取 | Trafilatura 2.x | HTML 主体提取、样板内容清理 | 面向新闻和通用网页正文抽取，可过滤导航、页脚等噪声，显著优于把完整 HTML 直接发送给模型 |
+| 网络请求 | Python 标准库 urllib | Feed、OpenAI 和 DeepSeek HTTP 请求 | 当前请求模式简单，避免再引入 HTTP 客户端依赖；项目不直接请求新闻网页 |
+| 正文读取 | CCTQ Responses API + `gpt-5.4-mini` + `web_search` | 服务器端打开候选链接并返回正文 | 使用已验证能转发内置网页搜索的低成本模型；项目校验 `web_search_call`、成功标记、正文长度和最终 URL |
 | 大模型 | DeepSeek JSON Chat Completion | 相关性审核、业务分析和日报 | 支持结构化 JSON 输出，便于通过 Pydantic 强约束；模型名、地址和超时可用环境变量替换 |
 | 前端 | HTML、CSS、原生 JavaScript | 管理界面、筛选、日志和设置 | 当前页面规模较小，无需构建链和 Node 运行时，克隆后即可启动；减少 MVP 的依赖与部署复杂度 |
 | 图标 | Lucide | 操作按钮和导航图标 | 图标语义一致，避免维护手写 SVG |
 | 测试 | pytest | 采集、调度、正文、AI 门控和日报测试 | Python 生态成熟，fixture 和临时目录适合测试 SQLite 及依赖注入 |
-| 配置 | python-dotenv | 读取 `.env` 中的 DeepSeek 配置 | 将密钥与代码、数据库分离，便于每位开发者使用独立本地配置 |
+| 配置 | python-dotenv | 读取 `.env` 中的 OpenAI 与 DeepSeek 配置 | 将密钥与代码、数据库分离，便于每位开发者使用独立本地配置 |
 
 ### 3.1 为什么当前不使用 PostgreSQL
 
@@ -64,7 +64,7 @@ SQLite 能让团队在没有额外服务的情况下直接运行项目，适合�
 
 ### 3.2 为什么当前不使用 Celery、Redis 或消息队列
 
-当前采集和 AI 任务由单个 Web 进程内的后台线程执行，调度量较小。立即引入消息队列会增加部署和排障成本。生产化时必须把采集、全文抓取和 AI 调用迁移到独立 worker，并使用持久化队列提供重试、超时、并发控制和任务可观测性。
+当前采集和 AI 任务由单个 Web 进程内的后台线程执行，调度量较小。立即引入消息队列会增加部署和排障成本。生产化时必须把采集、全文读取和 AI 调用迁移到独立 worker，并使用持久化队列提供重试、超时、并发控制和任务可观测性。
 
 ### 3.3 为什么采用两次模型调用
 
@@ -84,11 +84,10 @@ flowchart LR
 
     Collection -->|"可选完成回调"| Pipeline["ArticleAnalysisManager"]
     API --> Pipeline
-    Pipeline --> Resolver["GoogleNewsURLResolver"]
-    Resolver --> Publisher["出版社网页"]
-    Publisher --> Extractor["Trafilatura 正文抽取"]
-    Extractor --> DB
-    Pipeline -->|"相关性 JSON"| DeepSeek["DeepSeek API"]
+    Pipeline --> Reader["OpenAIWebContentReader"]
+    Reader -->|"Responses API web_search"| OpenAI["CCTQ / OpenAI API"]
+    Reader --> DB
+    Pipeline -->|"相关性 JSON"| DeepSeek
     Pipeline -->|"业务分析 JSON"| DeepSeek
     Pipeline --> DB
 
@@ -109,10 +108,11 @@ flowchart LR
 | `app/query_builder.py` | 统一生成主题词、业务信号、排除词和回溯窗口组成的 Google News 查询表达式 |
 | `app/normalization.py` | 发布方、分类和国家字段规范化 |
 | `app/scheduler.py` | Asia/Shanghai 每日调度和下次运行时间计算 |
-| `app/content.py` | URL 安全校验、Google News 原文解析、网页下载、正文提取和哈希 |
-| `app/llm.py` | DeepSeek 鉴权、JSON 请求、响应解析、Token 用量和错误封装 |
+| `app/content.py` | 正文读取接口、文章引用、正文文档、错误分类和 URL 安全校验 |
+| `app/llm.py` | OpenAI Responses API 网页读取、DeepSeek JSON 对话、联网证据与正文完整性校验 |
 | `app/prompts.py` | 企业业务边界、相关性 Prompt、业务分析 Prompt 和日报 Prompt |
 | `app/intelligence.py` | 三阶段处理状态机、阈值门控、业务结果、风险规则和日报持久化 |
+| `app/maintenance.py` | 清理范围预览、运行中保护、SQLite 备份和删除事务 |
 | `static/index.html` | 页面语义结构和对话框 |
 | `static/app.js` | API 调用、状态管理、筛选、分页和页面交互 |
 | `static/styles.css` | 桌面、平板和移动端响应式样式 |
@@ -126,8 +126,9 @@ flowchart LR
 2. 前端调用 `/api/keywords/preview`，由后端实时返回查询表达式。
 3. 保存时后端再次调用 `build_keyword_query()`，不接受客户端自由查询内容。
 4. 表达式格式为 `("主题1" OR "主题2") AND ("信号1" OR "信号2") -"噪声" when:30d`。组内是 `OR`，主题组与业务信号组之间使用显式 `AND`。
-5. Google News 对超长复合查询处理不稳定，查询模块将表达式限制为 200 字符；超过时要求拆成多个更聚焦的关键词组。
-5. 搜索型 RSS 源把表达式 URL 编码后替换到 `{query}`；直连型 RSS 源使用固定地址。
+5. 采集器根据来源的 `language` 切片主题词、业务信号词和排除词：`zh-*` 使用中文词，`en-*` 使用英文词；缺少对应语言主题词时跳过该组合，混合词组分别生成两种查询。
+6. Google News 对超长复合查询处理不稳定，查询模块将表达式限制为 200 字符；超过时要求拆成多个更聚焦的关键词组。
+7. 搜索型 RSS 源把来源专用表达式 URL 编码后替换到 `{query}`；直连型 RSS 源使用固定地址，但仅用同语言关键词匹配内容。
 
 这样可以保证“页面显示、数据库保存、实际请求”使用同一套规则，避免客户端篡改或版本不一致。
 
@@ -175,9 +176,12 @@ sequenceDiagram
 flowchart TD
     Candidate["articles 中的 RSS 候选"] --> Snapshot["锁定本次全部待办快照"]
     Snapshot --> Batch["按 ai_batch_size 连续分批"]
-    Batch --> Fetch["解析最终 URL 并抓取网页"]
-    Fetch -->|"失败"| FetchError["article_contents.failed + 批次错误"]
-    Fetch -->|"成功"| Content["清洗正文 + SHA-256"]
+    Batch --> Read["GPT-5.4 mini web_search 读取正文"]
+    Read -->|"瞬时失败"| Backoff["指数退避，最多 3 次"]
+    Backoff -->|"到期"| Read
+    Backoff -->|"达到上限"| FetchError["最终失败"]
+    Read -->|"无联网证据/正文不完整"| FetchError
+    Read -->|"成功"| Content["模型读取正文 + SHA-256"]
     Content --> Review["第一次 DeepSeek：仅相关性审核"]
     Review -->|"调用或校验失败"| ReviewError["article_relevance_reviews.failed"]
     Review --> Gate{"is_relevant 且分数达到阈值?"}
@@ -193,10 +197,13 @@ flowchart TD
 
 - RSS 标题和摘要只用于候选匹配，不用于 AI 最终判断。
 - 一次手动点击或自动分析会锁定启动时的全部待办，按批次连续运行，无需用户重复触发。
-- 单篇失败不阻断后续文章；失败项在当前快照中只尝试一次，并保留为下一次可重试待办。
-- Google News 链接先解析为出版社 URL，再抓取页面。
+- 普通单篇失败不阻断后续文章；OpenAI 网页读取 HTTP 429 或网页搜索调用失败属于来源级故障，会暂停当前队列。瞬时全文错误跨任务按 5、10 分钟退避，最多尝试 3 次。
+- 冷却中、最终失败和已忽略文章不计入待办；尚未读取正文的新文章优先于历史失败重试。
+- 失败列表展示错误分类、次数和下一次重试时间，并提供立即重试与忽略入口。
+- 候选链接、标题和发布方一次性交给 CCTQ 的 GPT-5.4 mini 内置 `web_search`；请求强制 `tool_choice=required`，只有响应包含已完成的 `web_search_call`、模型返回成功且正文达到最低长度时才写库。
+- AI 情报页在任务运行期间每 2 秒同步状态、失败列表和运行记录，任务结束后再刷新审核与分析结果。
 - 全文失败时不退回 RSS 摘要，防止证据标准不一致。
-- 完整清洗正文保存在数据库；发送模型时按 `ai_content_max_chars` 截断，默认 30000 字符。
+- 大模型读取到的正文保存在数据库；发送相关性模型时按 `ai_content_max_chars` 截断，默认 30000 字符。
 - 相关性审核保存正文哈希；正文变化后旧审核不再视为当前结果。
 - 低于系统阈值时，即使模型返回 `is_relevant=true`，后端也按无关处理并在理由中记录阈值判断。
 - 只有业务分析成功且正文哈希仍一致的记录才会出现在最终业务新闻列表。
@@ -247,7 +254,7 @@ erDiagram
 
 | 表 | 说明 |
 |---|---|
-| `article_contents` | 请求地址、出版社最终地址、正文、哈希、字符数、HTTP 状态、抽取器和错误 |
+| `article_contents` | 请求/最终地址、正文、哈希、HTTP 状态、错误分类、尝试次数、退避、终态和忽略时间 |
 | `article_relevance_reviews` | 相关性、分数、理由、证据、置信度、正文哈希、模型、Prompt 和 Token |
 | `business_articles` | 只保存真相关文章；包含摘要、分类、影响、风险、机会、动作和正文哈希 |
 | `ai_analysis_runs` | 一次 AI 处理批次的状态、数量、模型、Prompt 组合和 Token 汇总 |
@@ -322,13 +329,13 @@ AI 任务启动时先查询并固定当前待办文章 ID，随后按 `ai_batch_
 - `.env.example` 只保存变量名和非敏感示例，不能填写真实 Key。
 - 每位开发者使用自己的本地 `.env`，团队仓库不分发共享密钥。
 
-### 10.2 网页抓取安全
+### 10.2 大模型网页读取安全
 
 - 只接受 HTTP/HTTPS URL。
-- DNS 解析后拒绝本机、内网和保留 IP。
-- 每次重定向重新校验目标 URL，降低 SSRF 风险。
-- 限制下载大小、请求超时、Content-Type 和最小正文长度。
-- Google News 解析后再次验证出版社 URL。
+- 不在项目进程内下载或解析新闻 HTML；只调用 OpenAI Responses API 的内置网页搜索工具。
+- URL 在发送前拒绝本机、内网和保留 IP 字面量，最终链接返回后再次校验。
+- 必须同时存在服务器工具调用和网页搜索结果，防止模型未联网时按标题补写。
+- 模型明确返回失败、只有摘要或正文低于最小长度时不保存正文。
 
 ### 10.3 Prompt 注入防护
 
@@ -362,13 +369,18 @@ FastAPI 在 `/docs` 自动提供 OpenAPI 调试页面。详细参数和响应见
 
 ## 12. 配置与运行
 
-### 12.1 DeepSeek 环境变量
+### 12.1 模型环境变量
 
 ```dotenv
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_TIMEOUT=90
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://www.cctq.ai/v1
+OPENAI_WEB_MODEL=gpt-5.4-mini
+OPENAI_WEB_TIMEOUT=180
+OPENAI_WEB_MAX_OUTPUT_TOKENS=32000
 ```
 
 修改 `.env` 后必须重启进程，因为客户端在应用创建时读取配置。
@@ -392,8 +404,9 @@ DEEPSEEK_TIMEOUT=90
 - 关键词回溯窗口、首次/后续采集时间窗和独立游标。
 - URL、文章指纹和多来源去重。
 - 定时调度计算。
-- Google News 原文 RPC 响应解析。
-- Trafilatura 正文抽取和导航噪声排除。
+- 中英文关键词按来源语言切片，搜索型与直连型来源均不执行跨语言组合。
+- OpenAI Responses API 请求、`web_search_call` 证据校验和 HTTP 429 队列熔断。
+- 大模型网页读取成功、未联网、网页不可用、正文不完整和无效 JSON 路径。
 - 内网 URL 拒绝。
 - 全文失败不得调用模型。
 - 相关性阈值不得进入业务表或触发第二次调用。
@@ -446,8 +459,8 @@ flowchart LR
 
 ## 15. 已知限制与风险
 
-- Google News 原文解析依赖非公开网页 RPC，协议变化时需要维护解析器。
-- 动态渲染、登录墙、付费墙和强反爬站点可能无法获得正文。
+- 正文读取依赖 OpenAI 内置网页搜索的可用性、覆盖范围和计费策略。
+- 登录墙、付费墙、搜索引擎未收录页面仍可能无法获得正文。
 - 模型判断存在误判可能，需要持续建设人工标注评估集。
 - 当前 `article_relevance_reviews` 和 `business_articles` 保存最新结果，不是完整版本历史。
 - 日报保留依据文章关系，但后续若业务结果被重新审核，历史分析字段不是完全不可变快照。
@@ -461,13 +474,13 @@ flowchart LR
 - 增加人工复核状态、备注和纠错入口。
 - 建立相关/无关标注数据集和 Prompt 回归评估。
 - 增加来源可信度、语言和国家维度。
-- 为失败网页增加合规的浏览器渲染抓取兜底。
+- 增加其他合规的模型原生网页读取适配器作为备选。
 
 ### 阶段二：增强团队协作
 
 - 增加账号、角色和操作审计。
 - 支持日报导出、邮件和企业消息推送。
-- 增加历史补采和单篇重新抓取/审核功能。
+- 增加历史补采和单篇重新读取/审核功能。
 - 保存 AI 结果版本和不可变日报快照。
 
 ### 阶段三：生产化

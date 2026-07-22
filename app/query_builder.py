@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import re
+
 
 MAX_GOOGLE_NEWS_QUERY_CHARS = 200
+_HAN_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_LATIN_CHARACTER = re.compile(r"[A-Za-z]")
 
 
 def _normalize_terms(values: list[str]) -> list[str]:
@@ -53,3 +57,64 @@ def build_keyword_query(
             f"（当前 {len(query)} 字符，上限 {MAX_GOOGLE_NEWS_QUERY_CHARS}）"
         )
     return query
+
+
+def localize_keyword_for_source(
+    keyword: dict[str, object],
+    source_language: str,
+) -> dict[str, object] | None:
+    """Return the source-language slice of one keyword strategy.
+
+    Chinese and English sources receive only terms written for their language.
+    A source without language metadata remains backward compatible, while a
+    source explicitly marked as another language is skipped until matching
+    terms for that language can be represented.
+    """
+    language = source_language.strip().casefold().split("-", 1)[0]
+    if not language:
+        return dict(keyword)
+    if language not in {"zh", "en"}:
+        return None
+
+    match_terms = _terms_for_language(keyword.get("match_terms", []), language)
+    if not match_terms:
+        return None
+    context_terms = _terms_for_language(
+        keyword.get("context_terms", []), language
+    )
+    exclude_terms = _terms_for_language(
+        keyword.get("exclude_terms", []), language
+    )
+    lookback_days = int(keyword.get("lookback_days", 30))
+    return {
+        **keyword,
+        "match_terms": match_terms,
+        "context_terms": context_terms,
+        "exclude_terms": exclude_terms,
+        "query": build_keyword_query(
+            match_terms,
+            context_terms=context_terms,
+            exclude_terms=exclude_terms,
+            lookback_days=lookback_days,
+        ),
+    }
+
+
+def _terms_for_language(values: object, language: str) -> list[str]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    selected: list[str] = []
+    for value in values:
+        term = str(value).strip()
+        term_language = _term_language(term)
+        if term and (term_language == language or term_language is None):
+            selected.append(term)
+    return selected
+
+
+def _term_language(term: str) -> str | None:
+    if _HAN_CHARACTER.search(term):
+        return "zh"
+    if _LATIN_CHARACTER.search(term):
+        return "en"
+    return None

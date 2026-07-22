@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from app.content import ContentDocument, ContentFetchError, validate_public_http_url
+from app.content import (
+    ArticleReference,
+    ContentDocument,
+    ContentFetchError,
+    validate_public_http_url,
+)
 from app.database import Database
 from app.intelligence import (
     ArticleAnalysisManager,
@@ -44,12 +49,15 @@ class FakeLLMClient:
 
 
 class FakeContentFetcher:
+    configured = True
+    model = "gpt-5.4-mini-test"
+
     def __init__(self, responses: list[ContentDocument | Exception]) -> None:
         self.responses = list(responses)
         self.calls: list[str] = []
 
-    def fetch(self, url: str) -> ContentDocument:
-        self.calls.append(url)
+    def read(self, article: ArticleReference) -> ContentDocument:
+        self.calls.append(article.urls[0])
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -182,12 +190,12 @@ def test_full_text_gate_only_analyzes_and_stores_relevant_articles(tmp_path) -> 
     boxing_text = "拳击运动员将在新赛季使用经过认证的比赛手套。" * 30
     content_fetcher = FakeContentFetcher(
         [
-            content_document("https://example.com/medical-gloves", medical_text),
             content_document("https://example.com/boxing-gloves", boxing_text),
+            content_document("https://example.com/medical-gloves", medical_text),
         ]
     )
     client = FakeLLMClient(
-        [relevant_review(), business_analysis(), irrelevant_review()]
+        [irrelevant_review(), relevant_review(), business_analysis()]
     )
     repository = IntelligenceRepository(database)
     manager = ArticleAnalysisManager(
@@ -197,12 +205,12 @@ def test_full_text_gate_only_analyzes_and_stores_relevant_articles(tmp_path) -> 
     run_id, article_ids = manager.prepare(limit=20)
     manager.execute(run_id, article_ids)
 
-    assert article_ids == [relevant_id, irrelevant_id]
+    assert article_ids == [irrelevant_id, relevant_id]
     assert len(content_fetcher.calls) == 2
     assert len(client.calls) == 3
-    assert medical_text in client.calls[0][1]
+    assert boxing_text in client.calls[0][1]
     assert medical_text in client.calls[1][1]
-    assert boxing_text in client.calls[2][1]
+    assert medical_text in client.calls[2][1]
     reviews = repository.list_reviews()
     assert reviews["total"] == 2
     assert {item["is_relevant"] for item in reviews["items"]} == {0, 1}
@@ -258,7 +266,7 @@ def test_relevance_threshold_blocks_business_storage_and_second_call(tmp_path) -
     assert repository.list_business_articles()["total"] == 0
 
 
-def test_full_text_failure_stops_before_llm_and_remains_retryable(tmp_path) -> None:
+def test_model_web_read_failure_stops_before_relevance_review(tmp_path) -> None:
     database = Database(tmp_path / "fetch-failure.db")
     database.initialize()
     article_id = create_article(
@@ -269,7 +277,13 @@ def test_full_text_failure_stops_before_llm_and_remains_retryable(tmp_path) -> N
     )
     client = FakeLLMClient([])
     content_fetcher = FakeContentFetcher(
-        [ContentFetchError("正文抽取结果过短")]
+        [
+                ContentFetchError(
+                    "大模型返回正文过短",
+                    failure_kind="llm_incomplete_content",
+                retryable=False,
+            )
+        ]
     )
     repository = IntelligenceRepository(database)
     manager = ArticleAnalysisManager(
@@ -280,15 +294,166 @@ def test_full_text_failure_stops_before_llm_and_remains_retryable(tmp_path) -> N
     manager.execute(run_id, article_ids)
 
     assert client.calls == []
-    assert repository.get_content(article_id)["status"] == "failed"
+    content = repository.get_content(article_id)
+    assert content["status"] == "failed"
+    assert content["attempt_count"] == 1
+    assert content["failure_kind"] == "llm_incomplete_content"
+    assert content["next_retry_at"] is None
+    assert content["is_terminal"] == 1
     assert repository.list_reviews()["total"] == 0
     assert repository.list_business_articles()["total"] == 0
-    assert repository.status()["pending"] == 1
+    assert repository.status()["pending"] == 0
+    assert repository.status()["content_final_failed"] == 1
     run = repository.get_analysis_run(run_id)
     assert run is not None
     assert run["status"] == "failed"
     assert run["items"][0]["content_status"] == "failed"
-    assert "全文抓取失败" in run["items"][0]["error_message"]
+    assert "大模型网页读取失败" in run["items"][0]["error_message"]
+
+
+def test_startup_removes_empty_legacy_failures_for_model_reread(tmp_path) -> None:
+    database = Database(tmp_path / "legacy-content-failure.db")
+    database.initialize()
+    article_id = create_article(
+        database,
+        slug="legacy-rate-limit",
+        title="旧抓取失败记录",
+        summary="候选摘要",
+    )
+    legacy_success_id = create_article(
+        database,
+        slug="legacy-success",
+        title="旧脚本正文记录",
+        summary="候选摘要",
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO article_contents
+                (article_id, status, requested_url, attempt_count,
+                 failure_kind, is_terminal, error_message)
+            VALUES (?, 'failed', 'https://news.example/legacy', 3,
+                    'http_429', 1, '旧 Google News 解析失败')
+            """,
+            (article_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO article_contents
+                (article_id, status, requested_url, final_url, full_text,
+                 content_hash, content_chars, http_status, content_type, extractor)
+            VALUES (?, 'success', 'https://news.example/old',
+                    'https://publisher.example/old', '旧脚本正文',
+                    'legacy-hash', 5, 200, 'text/html', 'trafilatura')
+            """,
+            (legacy_success_id,),
+        )
+
+    database.initialize()
+
+    repository = IntelligenceRepository(database)
+    assert repository.get_content(article_id) is None
+    assert repository.get_content(legacy_success_id) is None
+    assert set(repository.candidate_article_ids(limit=20)) == {
+        article_id,
+        legacy_success_id,
+    }
+
+
+def test_transient_content_failure_has_bounded_backoff_and_manual_actions(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "bounded-retry.db")
+    database.initialize()
+    article_id = create_article(
+        database,
+        slug="temporarily-unavailable",
+        title="暂时无法抓取的文章",
+        summary="候选摘要",
+    )
+    repository = IntelligenceRepository(database)
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([]),
+        FakeContentFetcher(
+            [
+                ContentFetchError(
+                    "网络超时", failure_kind="network", retryable=True
+                )
+                for _ in range(3)
+            ]
+        ),
+    )
+
+    for attempt in range(3):
+        run_id, article_ids = manager.prepare(
+            limit=20,
+            force=attempt > 0,
+            article_ids=[article_id],
+        )
+        manager.execute(run_id, article_ids)
+
+    content = repository.get_content(article_id)
+    assert content["attempt_count"] == 3
+    assert content["failure_kind"] == "network"
+    assert content["is_terminal"] == 1
+    assert content["next_retry_at"] is None
+    assert repository.status()["pending"] == 0
+    assert repository.status()["content_final_failed"] == 1
+    assert repository.candidate_article_ids(limit=20) == []
+
+    assert repository.retry_content_failure(article_id)
+    content = repository.get_content(article_id)
+    assert content["attempt_count"] == 0
+    assert content["is_terminal"] == 0
+    assert content["ignored_at"] is None
+    assert repository.candidate_article_ids(limit=20) == [article_id]
+
+    assert repository.ignore_content_failure(article_id)
+    assert repository.status()["content_ignored"] == 1
+    assert repository.candidate_article_ids(limit=20) == []
+
+
+def test_new_article_is_not_blocked_by_content_failure_backoff(tmp_path) -> None:
+    database = Database(tmp_path / "new-before-retry.db")
+    database.initialize()
+    failed_id = create_article(
+        database,
+        slug="old-failed",
+        title="旧失败文章",
+        summary="候选摘要",
+        published_at="2026-07-19T00:00:00Z",
+    )
+    repository = IntelligenceRepository(database)
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([]),
+        FakeContentFetcher(
+            [
+                ContentFetchError(
+                    "网络超时", failure_kind="network", retryable=True
+                )
+            ]
+        ),
+    )
+    run_id, article_ids = manager.prepare(limit=20)
+    manager.execute(run_id, article_ids)
+    assert article_ids == [failed_id]
+
+    new_id = create_article(
+        database,
+        slug="new-candidate",
+        title="刚采集的新文章",
+        summary="候选摘要",
+        published_at="2026-07-22T00:00:00Z",
+    )
+
+    assert repository.candidate_article_ids(limit=1) == [new_id]
+    status = repository.status()
+    assert status["pending"] == 1
+    assert status["content_retry_waiting"] == 1
 
 
 def test_failed_content_refresh_hides_stale_review_and_business_result(
@@ -398,7 +563,7 @@ def test_analysis_queue_drains_all_pending_articles_across_batches(tmp_path) -> 
                 f"https://example.com/pending-{index}",
                 f"与企业业务无关的测试正文 {index}" * 30,
             )
-            for index in range(5)
+            for index in reversed(range(5))
         ]
     )
     manager = ArticleAnalysisManager(
@@ -411,7 +576,7 @@ def test_analysis_queue_drains_all_pending_articles_across_batches(tmp_path) -> 
     first_run_id, queued_ids = manager.prepare_queue(batch_size=2)
     manager.execute_queue(first_run_id, queued_ids, batch_size=2)
 
-    assert queued_ids == article_ids
+    assert queued_ids == list(reversed(article_ids))
     assert len(content_fetcher.calls) == 5
     assert repository.status()["pending"] == 0
     assert manager.running_run_id is None
@@ -436,12 +601,14 @@ def test_analysis_queue_attempts_failed_article_only_once_per_click(tmp_path) ->
     repository = IntelligenceRepository(database)
     content_fetcher = FakeContentFetcher(
         [
-            ContentFetchError("正文抓取结果过短"),
+            ContentFetchError(
+                "网络超时", failure_kind="network", retryable=True
+            ),
             content_document(
                 "https://example.com/retry-1", "无关测试正文 1" * 30
             ),
             content_document(
-                "https://example.com/retry-2", "无关测试正文 2" * 30
+                "https://example.com/retry-0", "无关测试正文 0" * 30
             ),
         ]
     )
@@ -455,14 +622,134 @@ def test_analysis_queue_attempts_failed_article_only_once_per_click(tmp_path) ->
     first_run_id, queued_ids = manager.prepare_queue(batch_size=2)
     manager.execute_queue(first_run_id, queued_ids, batch_size=2)
 
-    assert queued_ids == article_ids
+    assert queued_ids == list(reversed(article_ids))
     assert len(content_fetcher.calls) == 3
-    assert content_fetcher.calls.count("https://example.com/retry-0") == 1
-    assert repository.status()["pending"] == 1
+    assert content_fetcher.calls.count("https://example.com/retry-2") == 1
+    assert repository.status()["pending"] == 0
+    assert repository.status()["content_retry_waiting"] == 1
     assert manager.running_run_id is None
     runs = repository.list_analysis_runs()
     assert len(runs) == 2
     assert [run["status"] for run in runs] == ["success", "partial"]
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "failure_message", "expected_run_message"),
+    [
+        (
+            "openai_http_429",
+            "CCTQ/OpenAI 网页读取返回 HTTP 429",
+            "CCTQ/OpenAI 网页读取限流",
+        ),
+        (
+            "openai_web_search_unavailable",
+            "CCTQ/OpenAI 网页搜索不可用",
+            "CCTQ/OpenAI 网页搜索服务不可用",
+        ),
+    ],
+)
+def test_analysis_queue_stops_after_content_provider_failure(
+    tmp_path,
+    failure_kind: str,
+    failure_message: str,
+    expected_run_message: str,
+) -> None:
+    database = Database(tmp_path / "analysis-rate-limit.db")
+    database.initialize()
+    article_ids = [
+        create_article(
+            database,
+            slug=f"rate-limited-{index}",
+            title=f"待处理文章 {index}",
+            summary="候选摘要",
+        )
+        for index in range(3)
+    ]
+    repository = IntelligenceRepository(database)
+    content_fetcher = FakeContentFetcher(
+        [
+            ContentFetchError(
+                failure_message,
+                failure_kind=failure_kind,
+                retryable=True,
+            ),
+            content_document(
+                "https://example.com/rate-limited-1", "不应抓取正文 1" * 30
+            ),
+            content_document(
+                "https://example.com/rate-limited-0", "不应抓取正文 0" * 30
+            ),
+        ]
+    )
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review(), irrelevant_review()]),
+        content_fetcher,
+    )
+
+    first_run_id, queued_ids = manager.prepare_queue(batch_size=2)
+    manager.execute_queue(first_run_id, queued_ids, batch_size=2)
+
+    assert queued_ids == list(reversed(article_ids))
+    assert content_fetcher.calls == [
+        f"https://example.com/rate-limited-{len(article_ids) - 1}"
+    ]
+    assert repository.status()["pending"] == 2
+    assert repository.status()["content_retry_waiting"] == 1
+    runs = repository.list_analysis_runs()
+    assert len(runs) == 1
+    assert runs[0]["status"] == "partial"
+    assert expected_run_message in runs[0]["message"]
+    run = repository.get_analysis_run(first_run_id)
+    assert run is not None
+    assert [item["status"] for item in run["items"]] == ["pending", "failed"]
+
+
+def test_analysis_queue_continues_after_one_article_is_unavailable(tmp_path) -> None:
+    database = Database(tmp_path / "publisher-rate-limit.db")
+    database.initialize()
+    create_article(
+        database,
+        slug="publisher-rate-limited",
+        title="出版社限流文章",
+        summary="候选摘要",
+    )
+    create_article(
+        database,
+        slug="publisher-success",
+        title="后续文章",
+        summary="候选摘要",
+    )
+    repository = IntelligenceRepository(database)
+    content_fetcher = FakeContentFetcher(
+        [
+            ContentFetchError(
+                "DeepSeek 未取得该文章正文",
+                failure_kind="llm_web_unavailable",
+                retryable=True,
+            ),
+            content_document(
+                "https://example.com/publisher-rate-limited",
+                "无关测试正文" * 30,
+            ),
+        ]
+    )
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review()]),
+        content_fetcher,
+    )
+
+    run_id, queued_ids = manager.prepare_queue(batch_size=2)
+    manager.execute_queue(run_id, queued_ids, batch_size=2)
+
+    assert len(content_fetcher.calls) == 2
+    run = repository.get_analysis_run(run_id)
+    assert run is not None
+    assert run["status"] == "partial"
+    assert run["message"] == ""
 
 
 def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:

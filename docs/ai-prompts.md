@@ -4,8 +4,8 @@
 
 RSS 标题和摘要只负责形成候选文章，不能直接作为 AI 业务判断依据。每篇候选文章严格按以下顺序处理：
 
-1. 解析 Google News 等聚合链接，获得出版社最终地址。
-2. 下载网页并使用 Trafilatura 抽取、清洗正文，将完整清洗文本及其 SHA-256 哈希保存到 `article_contents`。
+1. 将 Google News 等候选链接、标题和发布方交给 CCTQ 的 `gpt-5.4-mini`，并强制调用 OpenAI Responses 兼容接口的内置 `web_search`。
+2. 仅在响应包含实际网页搜索证据、模型确认成功且正文达到最低长度时，将正文及其 SHA-256 哈希保存到 `article_contents`；项目不下载或解析新闻 HTML。
 3. 第一次模型调用只判断 `full_text` 是否与英科医疗业务真正相关。
 4. 模型必须返回 `is_relevant=true`，且 `relevance_score` 达到配置阈值，文章才写入 `business_articles`。
 5. 第二次模型调用只对这些真相关文章生成摘要、分类、影响、风险、机会和建议动作。

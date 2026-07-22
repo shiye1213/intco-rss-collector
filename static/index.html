@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>英科医疗 RSS 情报</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260721-4" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260722-1" />
     <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script defer src="/static/app.js?v=20260721-4"></script>
+    <script defer src="/static/app.js?v=20260722-1"></script>
   </head>
   <body>
     <header class="app-header">
@@ -136,12 +136,26 @@
           </div>
           <div class="ai-summary" aria-label="AI 分析概览">
             <div><span>待处理</span><strong id="ai-metric-pending">0</strong></div>
-            <div><span>全文成功</span><strong id="ai-metric-content-ready">0</strong></div>
-            <div><span>全文失败</span><strong id="ai-metric-content-failed">0</strong></div>
+            <div><span>正文读取成功</span><strong id="ai-metric-content-ready">0</strong></div>
+            <div><span>正文读取失败</span><strong id="ai-metric-content-failed">0</strong></div>
+            <div><span>等待重试</span><strong id="ai-metric-retry-waiting">0</strong></div>
+            <div><span>最终失败</span><strong id="ai-metric-final-failed">0</strong></div>
+            <div><span>已忽略</span><strong id="ai-metric-ignored">0</strong></div>
             <div><span>真相关</span><strong id="ai-metric-relevant">0</strong></div>
             <div><span>审核无关</span><strong id="ai-metric-irrelevant">0</strong></div>
             <div><span>分析完成</span><strong id="ai-metric-analyzed">0</strong></div>
             <div><span>相关性阈值</span><strong id="ai-metric-threshold">70</strong></div>
+          </div>
+          <div class="subsection-heading compact-heading">
+            <div><h3>全文读取失败</h3><p>查看大模型网页读取错误、重试次数和下一次自动重试时间</p></div>
+            <button id="refresh-content-failures" class="icon-button" type="button" title="刷新失败列表"><i data-lucide="rotate-cw"></i></button>
+          </div>
+          <div class="table-wrap">
+            <table class="content-failure-table">
+              <thead><tr><th>文章</th><th>状态</th><th>错误分类</th><th>重试</th><th>错误原因</th><th>操作</th></tr></thead>
+              <tbody id="content-failure-rows"></tbody>
+            </table>
+            <div id="content-failure-empty" class="empty-state hidden">暂无全文读取失败记录</div>
           </div>
           <div class="subsection-heading compact-heading">
             <div><h3>已确认业务新闻</h3><p>全文审核通过并已完成业务分析</p></div>
@@ -236,7 +250,7 @@
 
         <section id="view-keywords" class="view">
           <div class="view-heading">
-            <div><h2>关键词</h2><p>主题词 × 业务信号 − 歧义噪声</p></div>
+            <div><h2>关键词</h2><p>主题词 × 业务信号 − 歧义噪声；系统按 RSS 源语言自动拆分中英文词</p></div>
             <button id="add-keyword" class="button primary" type="button"><i data-lucide="plus"></i><span>新增关键词组</span></button>
           </div>
           <div class="table-wrap">
@@ -272,6 +286,17 @@
               <label class="switch-row"><span><strong>分析后自动生成当天日报</strong></span><input id="ai-auto-report" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
               <div class="form-actions full"><button class="button primary" type="submit"><i data-lucide="save"></i><span>保存 AI 设置</span></button></div>
             </form>
+          </div>
+          <div class="settings-section danger-zone">
+            <div class="subsection-heading">
+              <div><h3>数据清理</h3><p>执行前自动备份数据库；采集、AI 分析或日报运行时禁止清理</p></div>
+            </div>
+            <form id="cleanup-form" class="cleanup-form">
+              <label><span>清理范围</span><select id="cleanup-scope"><option value="failed_records">错误数据</option><option value="history">指定日期前的历史数据</option><option value="all_collected">全部采集数据与运行日志</option></select></label>
+              <label id="cleanup-before-label" class="hidden"><span>清理此日期之前</span><input id="cleanup-before" type="date" /></label>
+              <div class="cleanup-actions"><button id="preview-cleanup" class="button secondary" type="button"><i data-lucide="scan-search"></i><span>预览影响</span></button><button id="execute-cleanup" class="button danger-action" type="submit"><i data-lucide="trash-2"></i><span>备份并清理</span></button></div>
+            </form>
+            <div id="cleanup-preview" class="cleanup-preview muted">尚未预览</div>
           </div>
         </section>
       </main>

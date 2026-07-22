@@ -20,7 +20,7 @@ from .collector import (
     CollectionManager,
     Collector,
 )
-from .content import ArticleContentFetcher
+from .content import ArticleContentReader
 from .database import Database
 from .intelligence import (
     ArticleAnalysisManager,
@@ -29,7 +29,13 @@ from .intelligence import (
     IntelligenceAlreadyRunningError,
     IntelligenceRepository,
 )
-from .llm import DeepSeekClient, JSONLLMClient
+from .llm import DeepSeekClient, JSONLLMClient, OpenAIWebContentReader
+from .maintenance import (
+    CleanupBusyError,
+    CleanupConfirmationError,
+    CleanupError,
+    CleanupService,
+)
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
     CATEGORY_LABELS,
@@ -174,24 +180,42 @@ class ReportPayload(BaseModel):
         )
 
 
+class CleanupPayload(BaseModel):
+    scope: Literal["failed_records", "history", "all_collected"]
+    before: date | None = None
+    confirmation: str = Field(min_length=1, max_length=20)
+
+
 def create_app(
     database_path: Path | None = None,
     llm_client: JSONLLMClient | None = None,
-    content_fetcher: ArticleContentFetcher | None = None,
+    content_reader: ArticleContentReader | None = None,
 ) -> FastAPI:
     database = Database(database_path or DEFAULT_DATABASE_PATH)
     collector = Collector(database)
     manager = CollectionManager(database, collector)
     intelligence_repository = IntelligenceRepository(database)
     intelligence_client = llm_client or DeepSeekClient()
+    intelligence_content_reader = content_reader or OpenAIWebContentReader()
     analysis_manager = ArticleAnalysisManager(
         database,
         intelligence_repository,
         intelligence_client,
-        content_fetcher,
+        intelligence_content_reader,
     )
     report_manager = DailyReportManager(
         database, intelligence_repository, intelligence_client
+    )
+    cleanup_service = CleanupService(
+        database,
+        backup_dir=database.path.parent / "backups",
+        is_busy=lambda: any(
+            (
+                manager.running_run_id is not None,
+                analysis_manager.running_run_id is not None,
+                report_manager.running_report_id is not None,
+            )
+        ),
     )
     automatic_workflow = AutomaticIntelligenceWorkflow(
         database, analysis_manager, report_manager, intelligence_repository
@@ -209,13 +233,14 @@ def create_app(
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
 
-    app = FastAPI(title="英科医疗 RSS 情报", version="1.2.0", lifespan=lifespan)
+    app = FastAPI(title="英科医疗 RSS 情报", version="1.3.0", lifespan=lifespan)
     app.state.database = database
     app.state.manager = manager
     app.state.scheduler = scheduler
     app.state.intelligence_repository = intelligence_repository
     app.state.analysis_manager = analysis_manager
     app.state.report_manager = report_manager
+    app.state.cleanup_service = cleanup_service
 
     @app.middleware("http")
     async def disable_frontend_cache(request: Request, call_next):
@@ -370,8 +395,19 @@ def create_app(
         settings = database.get_settings()
         result.update(
             {
-                "configured": intelligence_client.configured,
+                "configured": (
+                    intelligence_client.configured
+                    and intelligence_content_reader.configured
+                ),
                 "model": intelligence_client.model,
+                "analysis_model": intelligence_client.model,
+                "report_configured": intelligence_client.configured,
+                "content_reader_configured": (
+                    intelligence_content_reader.configured
+                ),
+                "content_reader_model": getattr(
+                    intelligence_content_reader, "model", "custom-content-reader"
+                ),
                 "analysis_running": analysis_manager.running_run_id is not None,
                 "analysis_run_id": analysis_manager.running_run_id,
                 "report_running": report_manager.running_report_id is not None,
@@ -450,6 +486,47 @@ def create_app(
             raise HTTPException(status_code=404, detail="AI 处理日志不存在")
         return run
 
+    @app.get("/api/ai/content-failures")
+    def list_content_failures(
+        limit: int = Query(default=100, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ):
+        return intelligence_repository.list_content_failures(
+            limit=limit, offset=offset
+        )
+
+    @app.post(
+        "/api/ai/content-failures/{article_id}/retry",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def retry_content_failure(article_id: int):
+        if analysis_manager.running_run_id is not None:
+            raise HTTPException(status_code=409, detail="AI 处理任务正在运行")
+        if not intelligence_repository.retry_content_failure(article_id):
+            raise HTTPException(status_code=404, detail="全文失败记录不存在")
+        try:
+            run_id, article_ids = analysis_manager.prepare(
+                limit=1, article_ids=[article_id]
+            )
+        except IntelligenceAlreadyRunningError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        task = asyncio.create_task(
+            asyncio.to_thread(analysis_manager.execute, run_id, article_ids)
+        )
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return {"run_id": run_id, "article_id": article_id, "status": "running"}
+
+    @app.post("/api/ai/content-failures/{article_id}/ignore")
+    def ignore_content_failure(article_id: int):
+        if analysis_manager.running_run_id is not None:
+            raise HTTPException(status_code=409, detail="AI 处理任务正在运行")
+        if not intelligence_repository.ignore_content_failure(article_id):
+            raise HTTPException(status_code=404, detail="全文失败记录不存在")
+        return {"article_id": article_id, "status": "ignored"}
+
     @app.get("/api/ai/articles")
     def list_ai_articles(
         category: str = Query(default="", max_length=50),
@@ -515,6 +592,31 @@ def create_app(
         database.set_setting("ai_auto_analyze", str(payload.auto_analyze).lower())
         database.set_setting("ai_auto_report", str(payload.auto_report).lower())
         return payload.model_dump()
+
+    @app.get("/api/maintenance/cleanup-preview")
+    def preview_cleanup(
+        scope: Literal["failed_records", "history", "all_collected"],
+        before: date | None = None,
+    ):
+        try:
+            return cleanup_service.preview(
+                scope, before=before.isoformat() if before else None
+            )
+        except CleanupError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/maintenance/cleanup")
+    def execute_cleanup(payload: CleanupPayload):
+        try:
+            return cleanup_service.execute(
+                payload.scope,
+                before=payload.before.isoformat() if payload.before else None,
+                confirmation=payload.confirmation,
+            )
+        except CleanupBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (CleanupConfirmationError, CleanupError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/reports", status_code=status.HTTP_202_ACCEPTED)
     async def create_daily_report(payload: ReportPayload):

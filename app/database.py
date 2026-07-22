@@ -203,7 +203,12 @@ CREATE TABLE IF NOT EXISTS article_contents (
     content_type TEXT NOT NULL DEFAULT '',
     extractor TEXT NOT NULL DEFAULT '',
     fetched_at TEXT,
-    error_message TEXT NOT NULL DEFAULT ''
+    error_message TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    failure_kind TEXT NOT NULL DEFAULT '',
+    next_retry_at TEXT,
+    is_terminal INTEGER NOT NULL DEFAULT 0,
+    ignored_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_article_contents_status
@@ -345,6 +350,30 @@ DEFAULT_SOURCES = (
         "name": "Google News 马来西亚英文",
         "url_template": (
             "https://news.google.com/rss/search?q={query}"
+            "&hl=en-MY&gl=MY&ceid=MY:en"
+        ),
+        "mode": "search",
+        "language": "en-MY",
+        "country": "MY",
+        "active": True,
+    },
+    {
+        "name": "Google News 马来西亚 The Star",
+        "url_template": (
+            "https://news.google.com/rss/search?"
+            "q=site%3Athestar.com.my+{query}"
+            "&hl=en-MY&gl=MY&ceid=MY:en"
+        ),
+        "mode": "search",
+        "language": "en-MY",
+        "country": "MY",
+        "active": True,
+    },
+    {
+        "name": "Google News 马来西亚 The Edge",
+        "url_template": (
+            "https://news.google.com/rss/search?"
+            "q=site%3Atheedgemalaysia.com+{query}"
             "&hl=en-MY&gl=MY&ceid=MY:en"
         ),
         "mode": "search",
@@ -660,6 +689,24 @@ class Database:
                     ADD COLUMN publisher_normalized TEXT NOT NULL DEFAULT ''
                     """
                 )
+            content_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(article_contents)"
+                ).fetchall()
+            }
+            content_migrations = {
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "failure_kind": "TEXT NOT NULL DEFAULT ''",
+                "next_retry_at": "TEXT",
+                "is_terminal": "INTEGER NOT NULL DEFAULT 0",
+                "ignored_at": "TEXT",
+            }
+            for column, definition in content_migrations.items():
+                if column not in content_columns:
+                    connection.execute(
+                        f"ALTER TABLE article_contents ADD COLUMN {column} {definition}"
+                    )
             detail_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -744,6 +791,40 @@ class Database:
             )
             connection.execute(
                 """
+                UPDATE article_contents
+                SET attempt_count = 0, next_retry_at = NULL,
+                    is_terminal = 0, ignored_at = NULL,
+                    failure_kind = 'llm_migration_pending',
+                    error_message = '正文读取方式已切换为 OpenAI 网页搜索，等待重新读取'
+                WHERE status = 'failed'
+                  AND (
+                    failure_kind LIKE 'http_%'
+                    OR failure_kind IN (
+                        'network', 'dns', 'resolver', 'extraction',
+                        'content_type', 'too_large'
+                    )
+                  )
+                """
+            )
+            connection.execute(
+                """
+                DELETE FROM article_contents
+                WHERE status = 'failed'
+                  AND content_hash = ''
+                  AND full_text = ''
+                  AND failure_kind = 'llm_migration_pending'
+                """
+            )
+            connection.execute(
+                """
+                DELETE FROM article_contents
+                WHERE status = 'success'
+                  AND extractor <> ''
+                  AND extractor <> 'openai-web-search'
+                """
+            )
+            connection.execute(
+                """
                 UPDATE ai_analysis_runs
                 SET status = 'interrupted', finished_at = ?,
                     message = CASE
@@ -768,7 +849,7 @@ class Database:
                 """
                 UPDATE article_contents
                 SET status = 'failed', error_message = CASE
-                    WHEN error_message = '' THEN '应用重启，全文抓取被中断'
+                    WHEN error_message = '' THEN '应用重启，大模型全文读取被中断'
                     ELSE error_message
                 END
                 WHERE status = 'processing'

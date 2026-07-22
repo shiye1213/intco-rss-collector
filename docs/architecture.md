@@ -15,14 +15,16 @@ flowchart LR
     PARSE --> DB
     CM -->|"采集完成回调"| AIM["全文与 AI 处理管理器"]
     UI -->|"人工处理/日报"| AIM
-    AIM --> FETCH["Google News 原文解析 + Trafilatura"]
-    FETCH -->|"HTTP/HTTPS"| WEB["出版社网页"]
-    AIM -->|"相关性审核 / 业务分析"| DS["DeepSeek API"]
+    AIM --> READER["大模型 URL 正文读取器"]
+    READER -->|"服务器端 web_search"| DS["DeepSeek API"]
+    AIM -->|"相关性审核 / 业务分析"| DS
     AIM --> PROMPT["业务边界与结构化 Prompt"]
     AIM --> DB
     AIM --> RM["日报管理器"]
     RM -->|"JSON Chat Completion"| DS
     RM --> DB
+    UI -->|"预览 / 确认清理"| MAINT["数据维护模块"]
+    MAINT -->|"先备份再删除"| DB
 ```
 
 当前采用单体架构，Web 接口、调度器和采集器运行在同一个 Python 进程中，适合本地开发和 MVP 验证。
@@ -32,14 +34,15 @@ flowchart LR
 | 模块 | 文件 | 职责 |
 |---|---|---|
 | Web/API | `app/main.py` | FastAPI 生命周期、接口、参数校验、静态文件服务 |
-| 采集器 | `app/collector.py` | Feed 下载、解析、匹配、时间过滤、去重和入库 |
-| 正文抓取 | `app/content.py` | Google News 原文地址解析、安全下载、正文抽取和清洗 |
+| 采集器 | `app/collector.py` | 来源与关键词语言路由、Feed 下载、解析、匹配、时间过滤、去重和入库 |
+| 正文读取接口 | `app/content.py` | 文章引用、正文文档、失败分类和外部 URL 安全校验 |
 | 数据访问 | `app/database.py` | SQLite 表结构、迁移和数据访问方法 |
 | 调度器 | `app/scheduler.py` | 北京时间每日执行和下次执行时间计算 |
-| 查询构建 | `app/query_builder.py` | 统一生成主题词、业务信号、排除词和回溯窗口组成的 Google News 查询表达式 |
-| DeepSeek 客户端 | `app/llm.py` | API 鉴权、JSON 请求、响应和错误处理 |
+| 查询构建 | `app/query_builder.py` | 统一生成查询表达式，并按 `zh-*`/`en-*` 来源切分中英文词组 |
+| AI 客户端 | `app/llm.py` | OpenAI 网页读取、DeepSeek JSON 分析、联网证据校验、正文完整性校验和错误处理 |
 | Prompt | `app/prompts.py` | 相关性、业务分析与日报的独立 Prompt 及版本 |
 | 情报流水线 | `app/intelligence.py` | 全文、相关性门控、业务分析、批次日志和日报持久化 |
+| 数据维护 | `app/maintenance.py` | 分层清理预览、运行中保护、SQLite 备份和事务删除 |
 | 前端 | `static/` | 采集、AI 情报、日报、配置和日志界面 |
 | 测试 | `tests/` | 采集、调度、AI 阈值、风险和日报测试 |
 
@@ -72,7 +75,7 @@ sequenceDiagram
     participant User as 用户或采集回调
     participant API as FastAPI
     participant Analysis as ArticleAnalysisManager
-    participant Publisher as 出版社网页
+    participant OpenAI as CCTQ Responses API
     participant DeepSeek as DeepSeek API
     participant DB as SQLite
     participant Report as DailyReportManager
@@ -80,10 +83,10 @@ sequenceDiagram
     User->>API: 启动待处理文章分析
     API->>Analysis: 建立批次并后台执行
     Analysis->>DB: 读取 RSS 候选文章与企业设置
-    Analysis->>Publisher: 解析最终链接并抓取网页
-    Publisher-->>Analysis: HTML
-    Analysis->>Analysis: 抽取清洗 full_text
-    Analysis->>DB: 保存正文、哈希、最终链接或失败日志
+    Analysis->>OpenAI: 候选链接 + 标题 + 发布方，强制内置 web_search
+    OpenAI-->>Analysis: web_search_call + 最终链接 + 正文或失败原因
+    Analysis->>Analysis: 校验实际联网证据、success 和正文长度
+    Analysis->>DB: 保存正文、哈希、最终链接或读取失败日志
     Analysis->>DeepSeek: 第一次调用：业务边界 + full_text
     DeepSeek-->>Analysis: 相关性、分数、理由、正文证据
     Analysis->>Analysis: Pydantic 校验与阈值门控
@@ -116,7 +119,7 @@ sequenceDiagram
 | `collection_run_details` | 每个源和关键词组合的采集明细 |
 | `ai_analysis_runs` | AI 分析批次、状态、模型、Prompt 版本和 Token 用量 |
 | `ai_analysis_run_items` | 批次内每篇文章的全文、相关性和业务分析阶段状态 |
-| `article_contents` | 出版社最终链接、清洗后正文、哈希、抓取状态与错误 |
+| `article_contents` | 出版社最终链接、正文、哈希、错误分类、尝试次数、退避时间、最终失败与忽略状态 |
 | `article_relevance_reviews` | 基于正文的相关性结果、理由、证据与调用审计字段 |
 | `business_articles` | 只保存真相关文章的摘要、分类、影响、风险和建议动作 |
 | `article_analyses` | 旧版兼容表；新流水线不再读取其结果 |
@@ -147,6 +150,12 @@ sequenceDiagram
 ### AI 可信边界
 
 原始 RSS 候选文章始终保留。正文、相关性审核和最终业务新闻分别写入独立表；全文失败时不允许退回标题或 RSS 摘要进行审核。模型输出必须通过 Pydantic 结构校验，相关性还要通过可配置阈值，只有 `business_articles.analysis_status=success` 的记录才能进入日报。Prompt 明确忽略新闻正文中的指令，所有判断只能使用输入证据。日报引用的文章 ID 必须属于本次输入，风险分数还执行确定性的文章最高风险下限。
+
+### 有界重试与数据维护
+
+全文读取错误由 `ContentFetchError` 分类为 OpenAI 网络/HTTP、搜索服务不可用、未实际联网、单篇网页不可用、正文不完整或响应格式错误。瞬时错误跨任务按指数退避并最多尝试 3 次；首次 OpenAI HTTP 429 或网页搜索调用失败触发来源级熔断，当前批次停止，未开始的文章保持待办。达到上限的错误进入最终失败，已忽略记录不再进入待办。候选排序优先处理尚未读取的新文章，再处理后续 AI 阶段，最后处理到期重试。
+
+`CleanupService` 是清理能力的唯一接口：同一套范围规则同时用于预览和执行；执行要求确认词、检查三个任务管理器均空闲，并使用 SQLite Online Backup 生成恢复副本后才删除数据。
 
 ## 7. 生产化演进
 

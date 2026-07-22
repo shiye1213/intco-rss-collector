@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from .database import Database, utc_now_iso
 from .normalization import normalize_categories, normalize_publisher
-from .query_builder import build_keyword_query
+from .query_builder import build_keyword_query, localize_keyword_for_source
 
 
 USER_AGENT = "INTCO-RSS-Collector/1.0 (+internal market intelligence)"
@@ -235,8 +235,30 @@ class Collector:
             self.database.fail_run(run_id, "没有启用的 RSS 源或关键词")
             return
 
+        routed_sources: list[tuple[dict[str, object], list[dict[str, object]]]] = []
+        for source in sources:
+            source_keywords = [
+                routed
+                for keyword in keywords
+                if (
+                    routed := localize_keyword_for_source(
+                        keyword, str(source.get("language", ""))
+                    )
+                )
+                is not None
+            ]
+            if source_keywords:
+                routed_sources.append((source, source_keywords))
+
+        if not routed_sources:
+            self.database.fail_run(run_id, "没有语言匹配的 RSS 源与关键词组合")
+            return
+
         totals = {
-            "tasks_total": len(sources) * len(keywords),
+            "tasks_total": sum(
+                len(source_keywords)
+                for _source, source_keywords in routed_sources
+            ),
             "tasks_succeeded": 0,
             "tasks_failed": 0,
             "items_seen": 0,
@@ -246,14 +268,14 @@ class Collector:
         }
 
         with self.database.connect() as connection:
-            for source in sources:
+            for source, source_keywords in routed_sources:
                 if source["mode"] == "direct":
-                    url = build_feed_url(source, keywords[0])
+                    url = build_feed_url(source, source_keywords[0])
                     try:
                         feed_items = parse_feed(self.feed_fetcher(url, self.timeout))
                         totals["items_seen"] += len(feed_items)
                     except Exception as exc:
-                        for keyword in keywords:
+                        for keyword in source_keywords:
                             first_window = start_of_local_lookback(
                                 run_started_at,
                                 timezone_name,
@@ -277,7 +299,7 @@ class Collector:
                         connection.commit()
                         continue
 
-                    for keyword in keywords:
+                    for keyword in source_keywords:
                         first_window = start_of_local_lookback(
                             run_started_at,
                             timezone_name,
@@ -297,7 +319,7 @@ class Collector:
                         )
                         connection.commit()
                 else:
-                    for keyword in keywords:
+                    for keyword in source_keywords:
                         first_window = start_of_local_lookback(
                             run_started_at,
                             timezone_name,

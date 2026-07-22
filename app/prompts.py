@@ -32,7 +32,7 @@ DEFAULT_BUSINESS_PROFILE = """英科医疗是一家全球化医疗制造企业�
 def build_relevance_prompts(
     article: dict[str, Any], business_profile: str
 ) -> tuple[str, str]:
-    system_prompt = f"""你是英科医疗的企业新闻相关性审核员。本步骤只能判断一篇已经抓取并清洗的新闻全文是否与企业业务真正相关，不得进行摘要、分类、影响分析或风险分析。
+    system_prompt = f"""你是英科医疗的企业新闻相关性审核员。本步骤只能判断一篇已经由联网模型读取并保存的新闻全文是否与企业业务真正相关，不得进行摘要、分类、影响分析或风险分析。
 
 企业业务边界：
 {business_profile.strip()}
@@ -119,7 +119,7 @@ def build_report_prompts(
     articles: list[dict[str, Any]],
     business_profile: str,
 ) -> tuple[str, str]:
-    system_prompt = f"""你是英科医疗的企业风险情报负责人。请根据给定日期和分类范围内、已经完成全文抓取、相关性审核和业务分析的新闻生成一份中文日报。
+    system_prompt = f"""你是英科医疗的企业风险情报负责人。请根据给定日期和分类范围内、已经完成全文读取、相关性审核和业务分析的新闻生成一份中文日报。
 
 企业业务边界：
 {business_profile.strip()}

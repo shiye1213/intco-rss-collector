@@ -99,7 +99,7 @@
 }
 ```
 
-后端统一生成查询表达式，不接受客户端自定义 `query`。表达式格式为 `(主题词 OR …) AND (业务信号 OR …) -"排除词" when:30d`。表达式超过 200 字符时返回 `422`，应拆分成多个聚焦策略。
+后端统一生成查询表达式，不接受客户端自定义 `query`。表达式格式为 `(主题词 OR …) AND (业务信号 OR …) -"排除词" when:30d`。表达式超过 200 字符时返回 `422`，应拆分成多个聚焦策略。采集时再依据 RSS 源的 `language` 切片：`zh-*` 只使用含汉字的词，`en-*` 只使用英文词；混合词组会分别生成中文和英文请求，无对应语言主题词的组合不会执行。
 
 ### `POST /api/keywords/preview`
 
@@ -149,9 +149,9 @@
 }
 ```
 
-默认 `process_all=true`：启动时锁定当时的全部待办文章，并以 `limit` 指定的单批大小连续执行，直到该待办快照全部尝试完成；批次切换不需要再次调用接口。单篇失败不会阻断后续批次，也不会在本次任务内重复尝试，失败项会保留为待办供下次重试。设置 `process_all=false` 可保留旧行为，只处理最多 `limit` 篇。
+默认 `process_all=true`：启动时锁定当时的全部可执行待办文章，并以 `limit` 指定的单批大小连续执行，直到该待办快照全部尝试完成；批次切换不需要再次调用接口。单篇失败不会阻断后续批次，也不会在本次任务内重复尝试。瞬时全文错误按 5、10 分钟指数退避，最多尝试 3 次；永久错误和达到上限的错误进入最终失败，不再扭曲待办数量。设置 `process_all=false` 可只处理最多 `limit` 篇。
 
-任务依次执行最终链接解析、网页正文抽取、相关性审核和真相关文章业务分析。`force=true` 会重新审核和分析已成功处理的文章；`refresh_content=true` 还会强制重新抓取网页正文。`article_ids` 可指定文章 ID，最多 100 个。未配置 `DEEPSEEK_API_KEY` 时返回 `503`，已有处理任务运行时返回 `409`。
+任务依次执行 CCTQ GPT-5.4 mini 内置网页搜索读取、DeepSeek 相关性审核和真相关文章业务分析。`force=true` 会重新审核和分析已成功处理的文章；`refresh_content=true` 还会强制让 GPT 重新读取网页正文。`article_ids` 可指定文章 ID，最多 100 个。未配置 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 时返回 `503`，已有处理任务运行时返回 `409`。
 
 响应中的 `article_count` 是本次锁定的文章总数，`batch_size` 是每个日志批次的文章上限。每个批次分别写入 `ai_analysis_runs`，便于查看阶段状态与 Token 用量。
 
@@ -178,6 +178,18 @@
 
 返回单个处理批次及每篇文章的 `content_status`、`relevance_status`、`business_analysis_status`、最终链接、正文字符数和错误信息。
 
+### `GET /api/ai/content-failures`
+
+返回全文读取失败列表，包括文章、错误分类、尝试次数、下一次重试时间、最终失败/等待重试/已忽略状态和错误原因。支持 `limit`、`offset`。
+
+### `POST /api/ai/content-failures/{article_id}/retry`
+
+重置该文章的退避与尝试次数并立即启动单篇 AI 处理任务。已有 AI 任务运行时返回 `409`，未配置 DeepSeek 时返回 `503`。
+
+### `POST /api/ai/content-failures/{article_id}/ignore`
+
+将失败文章标为已忽略，不再进入自动待办。已有 AI 任务运行时返回 `409`。
+
 ### `GET /api/ai/settings` 与 `PUT /api/ai/settings`
 
 ```json
@@ -192,6 +204,24 @@
 ```
 
 自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 且当天存在已审核相关新闻时才会执行。
+
+## 数据维护
+
+### `GET /api/maintenance/cleanup-preview`
+
+参数 `scope` 可选 `failed_records`、`history`、`all_collected`。`history` 必须同时传入 `before=YYYY-MM-DD`。返回将删除的文章、采集日志、AI 日志和日报数量，不修改数据。
+
+### `POST /api/maintenance/cleanup`
+
+```json
+{
+  "scope": "history",
+  "before": "2026-04-01",
+  "confirmation": "DELETE"
+}
+```
+
+必须精确提交 `confirmation=DELETE`。系统在删除前自动将 SQLite 备份到 `data/backups/`；采集、AI 分析或日报任务运行中返回 `409`。配置表、RSS 源和关键词组不在清理范围内。
 
 ## 情报日报
 

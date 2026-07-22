@@ -16,6 +16,8 @@ const state = {
   wasRunning: false,
   wasAnalysisRunning: false,
   wasReportRunning: false,
+  pollInFlight: false,
+  cleanupPreview: null,
   toastTimer: null,
 };
 
@@ -64,7 +66,7 @@ function formatFullTime(value) {
 }
 
 function statusLabel(status) {
-  const labels = { success: "成功", partial: "部分失败", failed: "失败", running: "运行中", interrupted: "已中断", pending: "待处理", processing: "处理中", skipped: "跳过" };
+  const labels = { success: "成功", partial: "部分失败", failed: "失败", running: "运行中", interrupted: "已中断", pending: "待处理", processing: "处理中", skipped: "跳过", waiting: "等待重试", retry_ready: "可重试", final_failed: "最终失败", ignored: "已忽略" };
   return `<span class="status-chip status-${escapeHtml(status)}">${labels[status] || escapeHtml(status)}</span>`;
 }
 
@@ -100,6 +102,13 @@ function todayInShanghai() {
   }).formatToParts(new Date());
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}-${value.month}-${value.day}`;
+}
+
+function daysAgoInShanghai(days) {
+  const target = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(target);
 }
 
 function refreshIcons() {
@@ -255,23 +264,33 @@ async function loadAIStatus() {
     $("ai-metric-pending").textContent = data.pending;
     $("ai-metric-content-ready").textContent = data.content_ready;
     $("ai-metric-content-failed").textContent = data.content_failed;
+    $("ai-metric-retry-waiting").textContent = data.content_retry_waiting;
+    $("ai-metric-final-failed").textContent = data.content_final_failed;
+    $("ai-metric-ignored").textContent = data.content_ignored;
     $("ai-metric-relevant").textContent = data.relevant;
     $("ai-metric-irrelevant").textContent = data.irrelevant;
     $("ai-metric-analyzed").textContent = data.analyzed;
     $("ai-metric-threshold").textContent = data.relevance_threshold;
-    const statusText = data.configured
-      ? `${data.model} · ${data.analysis_running ? `分析任务 #${data.analysis_run_id} 运行中` : "已就绪"}`
-      : `${data.model} · API Key 未配置`;
+    const readerStatus = data.content_reader_configured
+      ? data.content_reader_model
+      : `${data.content_reader_model}（OPENAI_API_KEY 未配置）`;
+    const analysisStatus = data.report_configured
+      ? data.analysis_model
+      : `${data.analysis_model}（DEEPSEEK_API_KEY 未配置）`;
+    const taskStatus = data.analysis_running
+      ? ` · 分析任务 #${data.analysis_run_id} 运行中`
+      : "";
+    const statusText = `正文读取 ${readerStatus} · 内容分析 ${analysisStatus}${taskStatus}`;
     $("ai-view-status").textContent = statusText;
     $("ai-settings-status").textContent = statusText;
     const analyzeButton = $("analyze-pending");
     analyzeButton.disabled = !data.configured || data.analysis_running || data.pending === 0;
     analyzeButton.querySelector("span").textContent = data.analysis_running ? "正在处理" : "处理全部待办";
     const reportButton = $("generate-report");
-    reportButton.disabled = !data.configured || data.report_running;
+    reportButton.disabled = !data.report_configured || data.report_running;
     reportButton.querySelector("span").textContent = data.report_running ? "正在生成" : "生成日报";
     if (state.wasAnalysisRunning && !data.analysis_running) {
-      await Promise.all([loadAIArticles(), loadAIReviews(), loadAIRuns()]);
+      await Promise.all([loadAIArticles(), loadAIReviews(), loadAIRuns(), loadContentFailures()]);
       showToast("AI 处理任务已结束");
     }
     if (state.wasReportRunning && !data.report_running) {
@@ -281,6 +300,80 @@ async function loadAIStatus() {
     state.wasAnalysisRunning = data.analysis_running;
     state.wasReportRunning = data.report_running;
     refreshIcons();
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function pollLiveState() {
+  if (state.pollInFlight) return;
+  state.pollInFlight = true;
+  try {
+    await Promise.allSettled([loadStatus(), loadAIStatus()]);
+    if (state.view === "intelligence" && state.wasAnalysisRunning) {
+      await Promise.allSettled([loadContentFailures(), loadAIRuns()]);
+    }
+  } finally {
+    state.pollInFlight = false;
+  }
+}
+
+function contentFailureKindLabel(kind) {
+  const labels = {
+    network: "网络错误", dns: "域名解析", resolver: "Google News 解析",
+    extraction: "正文抽取", content_type: "内容类型", too_large: "页面过大",
+    invalid_url: "地址无效", unsafe_url: "地址安全", no_url: "无可用地址",
+    http_429: "访问限流 (HTTP 429)", http_403: "访问受限 (HTTP 403)",
+    llm_web_unavailable: "大模型网页读取不可用",
+    llm_web_search_unavailable: "DeepSeek 网页搜索服务不可用",
+    llm_no_web_evidence: "大模型未实际联网",
+    llm_incomplete_content: "大模型正文不完整",
+    llm_invalid_response: "大模型返回格式错误",
+    llm_network: "DeepSeek 连接错误", llm_http_429: "DeepSeek 限流 (HTTP 429)",
+    llm_migration_pending: "等待大模型重新读取",
+    openai_not_configured: "CCTQ/OpenAI API Key 未配置",
+    openai_web_unavailable: "GPT 网页读取不可用",
+    openai_web_search_unavailable: "CCTQ/OpenAI 网页搜索服务不可用",
+    openai_no_web_evidence: "GPT 未实际执行网页搜索",
+    openai_incomplete_content: "GPT 返回正文不完整",
+    openai_incomplete_response: "CCTQ/OpenAI 响应未完成",
+    openai_invalid_response: "CCTQ/OpenAI 返回格式错误",
+    openai_network: "CCTQ/OpenAI 连接错误",
+    openai_http_429: "CCTQ/OpenAI 限流 (HTTP 429)",
+    unexpected: "程序异常", unknown: "未分类",
+  };
+  return String(kind || "unknown").split("+").map((item) => labels[item] || item).join(" / ");
+}
+
+async function loadContentFailures() {
+  try {
+    const data = await api("/api/ai/content-failures?limit=100");
+    $("content-failure-rows").innerHTML = data.items.map((item) => `<tr>
+      <td><a class="article-title" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.publisher || "-")} · ${formatFullTime(item.published_at)}</span></td>
+      <td>${statusLabel(item.disposition)}</td>
+      <td>${escapeHtml(contentFailureKindLabel(item.failure_kind))}</td>
+      <td>${item.attempt_count} / 3<span class="cell-subtitle">${item.next_retry_at ? `下次 ${formatFullTime(item.next_retry_at)}` : "不再自动重试"}</span></td>
+      <td><span class="analysis-detail expanded">${escapeHtml(item.error_message || "-")}</span></td>
+      <td><div class="row-actions"><button class="icon-button content-retry" data-id="${item.article_id}" type="button" title="立即重试"><i data-lucide="rotate-cw"></i></button><button class="icon-button danger-button content-ignore" data-id="${item.article_id}" type="button" title="忽略" ${item.disposition === "ignored" ? "disabled" : ""}><i data-lucide="circle-slash-2"></i></button></div></td>
+    </tr>`).join("");
+    $("content-failure-empty").classList.toggle("hidden", data.items.length > 0);
+    refreshIcons();
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function retryContentFailure(articleId) {
+  try {
+    const data = await api(`/api/ai/content-failures/${articleId}/retry`, { method: "POST" });
+    state.wasAnalysisRunning = true;
+    showToast(`文章 #${articleId} 已启动重试，任务 #${data.run_id}`);
+    await Promise.all([loadAIStatus(), loadContentFailures()]);
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function ignoreContentFailure(articleId) {
+  if (!window.confirm("确定忽略这篇文章的全文读取失败吗？它将不再进入自动待办。")) return;
+  try {
+    await api(`/api/ai/content-failures/${articleId}/ignore`, { method: "POST" });
+    showToast(`文章 #${articleId} 已忽略`);
+    await Promise.all([loadAIStatus(), loadContentFailures()]);
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -358,7 +451,7 @@ async function loadAIRuns() {
 }
 
 async function loadIntelligence() {
-  await Promise.all([loadAIStatus(), loadAIArticles(), loadAIReviews(), loadAIRuns()]);
+  await Promise.all([loadAIStatus(), loadContentFailures(), loadAIArticles(), loadAIReviews(), loadAIRuns()]);
   refreshIcons();
 }
 
@@ -675,6 +768,61 @@ async function saveAISettings(event) {
   } catch (error) { showToast(error.message, true); }
 }
 
+function cleanupQuery() {
+  const scope = $("cleanup-scope").value;
+  const before = scope === "history" ? $("cleanup-before").value : "";
+  if (scope === "history" && !before) throw new Error("请选择历史数据截止日期");
+  const params = new URLSearchParams({ scope });
+  if (before) params.set("before", before);
+  return { scope, before, params };
+}
+
+function renderCleanupPreview(data) {
+  state.cleanupPreview = data;
+  $("cleanup-preview").textContent = `预计删除：文章 ${data.articles} 条、采集日志 ${data.collection_runs} 条、AI 日志 ${data.ai_analysis_runs} 条、日报 ${data.daily_reports} 条。`;
+}
+
+async function previewCleanup() {
+  try {
+    const { params } = cleanupQuery();
+    const data = await api(`/api/maintenance/cleanup-preview?${params}`);
+    renderCleanupPreview(data);
+  } catch (error) { showToast(error.message, true); }
+}
+
+function syncCleanupFields() {
+  const isHistory = $("cleanup-scope").value === "history";
+  $("cleanup-before-label").classList.toggle("hidden", !isHistory);
+  $("cleanup-before").required = isHistory;
+  state.cleanupPreview = null;
+  $("cleanup-preview").textContent = "尚未预览";
+}
+
+async function executeCleanup(event) {
+  event.preventDefault();
+  try {
+    const { scope, before, params } = cleanupQuery();
+    const preview = await api(`/api/maintenance/cleanup-preview?${params}`);
+    renderCleanupPreview(preview);
+    if (preview.total_records === 0) {
+      showToast("当前范围没有可清理的数据");
+      return;
+    }
+    const confirmation = window.prompt(
+      `将删除 ${preview.total_records} 条主记录，并先自动备份数据库。请输入 DELETE 确认：`,
+    );
+    if (confirmation === null) return;
+    const result = await api("/api/maintenance/cleanup", {
+      method: "POST",
+      body: JSON.stringify({ scope, before: before || null, confirmation }),
+    });
+    showToast(`清理完成，备份：${result.backup_path}`);
+    state.cleanupPreview = null;
+    $("cleanup-preview").textContent = `清理完成；备份文件：${result.backup_path}`;
+    await Promise.all([loadStatus(), loadArticles(), loadRuns(), loadIntelligence(), loadReports()]);
+  } catch (error) { showToast(error.message, true); }
+}
+
 function debounce(fn, delay) {
   let timer;
   return (...args) => { window.clearTimeout(timer); timer = window.setTimeout(() => fn(...args), delay); };
@@ -688,6 +836,7 @@ function bindEvents() {
   $("refresh-runs").addEventListener("click", loadRuns);
   $("analyze-pending").addEventListener("click", startAIAnalysis);
   $("refresh-ai").addEventListener("click", loadIntelligence);
+  $("refresh-content-failures").addEventListener("click", loadContentFailures);
   $("ai-category-filter").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });
   $("ai-date-from").addEventListener("change", () => { state.aiOffset = 0; state.reviewOffset = 0; Promise.all([loadAIArticles(), loadAIReviews()]); });
   $("ai-date-to").addEventListener("change", () => { state.aiOffset = 0; state.reviewOffset = 0; Promise.all([loadAIArticles(), loadAIReviews()]); });
@@ -714,6 +863,9 @@ function bindEvents() {
   $("keyword-exclude-terms").addEventListener("compositionend", updateKeywordQueryPreview);
   $("settings-form").addEventListener("submit", saveSettings);
   $("ai-settings-form").addEventListener("submit", saveAISettings);
+  $("cleanup-scope").addEventListener("change", syncCleanupFields);
+  $("preview-cleanup").addEventListener("click", previewCleanup);
+  $("cleanup-form").addEventListener("submit", executeCleanup);
   document.querySelectorAll(".close-dialog").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
 
   document.body.addEventListener("click", (event) => {
@@ -727,6 +879,8 @@ function bindEvents() {
     if (target.classList.contains("keyword-edit")) openKeywordDialog(state.keywords.find((item) => item.id === Number(id)));
     if (target.classList.contains("source-delete")) archiveItem("sources", id);
     if (target.classList.contains("keyword-delete")) archiveItem("keywords", id);
+    if (target.classList.contains("content-retry")) retryContentFailure(id);
+    if (target.classList.contains("content-ignore")) ignoreContentFailure(id);
   });
 
   document.body.addEventListener("change", async (event) => {
@@ -740,6 +894,8 @@ function bindEvents() {
 async function initialize() {
   bindEvents();
   $("report-date").value = todayInShanghai();
+  $("cleanup-before").value = daysAgoInShanghai(90);
+  syncCleanupFields();
   refreshIcons();
   try {
     await Promise.all([
@@ -748,7 +904,7 @@ async function initialize() {
     ]);
   }
   catch (error) { showToast(error.message, true); }
-  window.setInterval(() => Promise.allSettled([loadStatus(), loadAIStatus()]), 5000);
+  window.setInterval(pollLiveState, 2000);
 }
 
 window.addEventListener("DOMContentLoaded", initialize);
