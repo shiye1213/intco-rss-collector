@@ -861,6 +861,45 @@ def test_analysis_queue_continues_after_one_article_is_unavailable(tmp_path) -> 
     assert run["message"] == ""
 
 
+def test_delete_pending_articles_preserves_completed_analysis(tmp_path) -> None:
+    database = Database(tmp_path / "delete-pending.db")
+    database.initialize()
+    completed_id = create_article(
+        database,
+        slug="completed-analysis",
+        title="已完成审核文章",
+        summary="候选摘要",
+    )
+    pending_id = create_article(
+        database,
+        slug="pending-analysis",
+        title="等待处理文章",
+        summary="候选摘要",
+    )
+    repository = IntelligenceRepository(database)
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review()]),
+        FakeContentFetcher(
+            [content_document("https://example.com/completed-analysis", "无关测试正文" * 30)]
+        ),
+    )
+    run_id, article_ids = manager.prepare(limit=1, article_ids=[completed_id])
+    manager.execute(run_id, article_ids)
+
+    assert repository.status()["pending"] == 1
+    assert repository.delete_pending_articles() == 1
+
+    with database.connect() as connection:
+        remaining_ids = {
+            int(row["id"]) for row in connection.execute("SELECT id FROM articles")
+        }
+    assert remaining_ids == {completed_id}
+    assert pending_id not in remaining_ids
+    assert repository.status()["pending"] == 0
+
+
 def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     article = {
         "article_id": 1,

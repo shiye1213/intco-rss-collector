@@ -151,6 +151,67 @@ def test_keyword_query_combines_subjects_signals_exclusions_and_recency() -> Non
     )
 
 
+def test_initialize_migrates_keyword_categories_and_supports_assignment(tmp_path) -> None:
+    database_path = tmp_path / "legacy-keywords.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                query TEXT NOT NULL,
+                match_terms TEXT NOT NULL,
+                context_terms TEXT NOT NULL DEFAULT '[]',
+                exclude_terms TEXT NOT NULL DEFAULT '[]',
+                lookback_days INTEGER NOT NULL DEFAULT 30,
+                active INTEGER NOT NULL DEFAULT 1,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO keywords
+                (name, query, match_terms, created_at, updated_at)
+            VALUES
+                ('旧关键词', '\"tariff\"', '[\"tariff\"]',
+                 '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z');
+            """
+        )
+
+    database = Database(database_path)
+    database.initialize()
+
+    categories = database.get_keyword_categories()
+    assert [item["name"] for item in categories] == [
+        "贸易政策",
+        "关税调整",
+        "行业法规",
+    ]
+    legacy_keyword = next(
+        item for item in database.get_keywords() if item["name"] == "旧关键词"
+    )
+    assert legacy_keyword["category_id"] is None
+    assert legacy_keyword["category_name"] is None
+
+    updated = database.update_keyword(
+        legacy_keyword["id"],
+        {
+            "name": "旧关键词",
+            "category_id": categories[1]["id"],
+            "match_terms": ["tariff"],
+            "context_terms": [],
+            "exclude_terms": [],
+            "lookback_days": 30,
+            "active": True,
+        },
+    )
+
+    assert updated
+    assigned = next(
+        item for item in database.get_keywords() if item["id"] == legacy_keyword["id"]
+    )
+    assert assigned["category_name"] == "关税调整"
+
+
 def test_search_sources_receive_only_matching_language_terms(tmp_path) -> None:
     database = Database(tmp_path / "language-routing.db")
     database.initialize()

@@ -2,6 +2,8 @@ const state = {
   view: "articles",
   sources: [],
   keywords: [],
+  keywordCategories: [],
+  keywordCategoryId: "all",
   articleOffset: 0,
   articleLimit: 50,
   articleTotal: 0,
@@ -178,9 +180,12 @@ async function startCollection() {
 }
 
 async function loadCatalogs() {
-  const [sourceData, keywordData] = await Promise.all([api("/api/sources"), api("/api/keywords")]);
+  const [sourceData, keywordData, categoryData] = await Promise.all([
+    api("/api/sources"), api("/api/keywords"), api("/api/keyword-categories"),
+  ]);
   state.sources = sourceData.items;
   state.keywords = keywordData.items;
+  state.keywordCategories = categoryData.items;
   fillFilters();
   renderSources();
   renderKeywords();
@@ -301,6 +306,7 @@ async function loadAIStatus() {
     pauseButton.classList.toggle("hidden", !data.analysis_running);
     pauseButton.disabled = data.analysis_pause_requested;
     pauseButton.querySelector("span").textContent = data.analysis_pause_requested ? "正在暂停" : "暂停处理";
+    $("clear-pending").disabled = data.analysis_running || data.report_running || data.pending === 0;
     const reportButton = $("generate-report");
     reportButton.disabled = !data.report_configured || data.report_running;
     reportButton.querySelector("span").textContent = data.report_running ? "正在生成" : "生成日报";
@@ -505,6 +511,32 @@ async function pauseAIAnalysis() {
   }
 }
 
+async function clearPendingArticles() {
+  const pending = Number($("ai-metric-pending").textContent || 0);
+  if (!pending) return;
+  if (!window.confirm(`确定删除当前全部 ${pending} 条待处理信息吗？已完成分析的信息不会删除。`)) return;
+  const confirmation = window.prompt("此操作不可撤销。请输入 DELETE 再次确认：");
+  if (confirmation === null) return;
+  if (confirmation !== "DELETE") {
+    showToast("确认文字不正确，未执行删除", true);
+    return;
+  }
+  const button = $("clear-pending");
+  button.disabled = true;
+  try {
+    const result = await api("/api/ai/pending/clear", {
+      method: "POST",
+      body: JSON.stringify({ confirmation }),
+    });
+    state.articleOffset = 0;
+    showToast(`已删除 ${result.deleted} 条待处理信息`);
+    await Promise.all([loadStatus(), loadArticles(), loadRuns(), loadIntelligence()]);
+  } catch (error) {
+    showToast(error.message, true);
+    await loadAIStatus();
+  }
+}
+
 async function loadReports() {
   try {
     const data = await api("/api/reports?limit=100");
@@ -623,14 +655,35 @@ function renderSources() {
 }
 
 function renderKeywords() {
-  $("keyword-rows").innerHTML = state.keywords.map((item) => `<tr>
+  const validCategories = new Set(state.keywordCategories.map((item) => String(item.id)));
+  if (!["all", "unclassified"].includes(state.keywordCategoryId) && !validCategories.has(state.keywordCategoryId)) {
+    state.keywordCategoryId = "all";
+  }
+  const menuItems = [
+    { id: "all", name: "全部", count: state.keywords.length },
+    ...state.keywordCategories.map((category) => ({
+      id: String(category.id),
+      name: category.name,
+      count: state.keywords.filter((item) => Number(item.category_id) === Number(category.id)).length,
+    })),
+    { id: "unclassified", name: "未分类", count: state.keywords.filter((item) => item.category_id == null).length },
+  ];
+  $("keyword-category-menu").innerHTML = menuItems.map((item) => `<button class="button secondary keyword-category-button${state.keywordCategoryId === item.id ? " active" : ""}" data-category-id="${escapeHtml(item.id)}" type="button">${escapeHtml(item.name)} · ${item.count}</button>`).join("");
+  const visibleKeywords = state.keywords.filter((item) => {
+    if (state.keywordCategoryId === "all") return true;
+    if (state.keywordCategoryId === "unclassified") return item.category_id == null;
+    return Number(item.category_id) === Number(state.keywordCategoryId);
+  });
+  $("keyword-rows").innerHTML = visibleKeywords.map((item) => `<tr>
     <td><strong>${escapeHtml(item.name)}</strong></td>
+    <td><span class="tag">${escapeHtml(item.category_name || "未分类")}</span></td>
     <td class="url-cell" title="${escapeHtml(item.query)}">${escapeHtml(item.query)}</td>
     <td><div class="keyword-list">${item.match_terms.slice(0, 5).map((term) => `<span class="tag">${escapeHtml(term)}</span>`).join("")}${item.match_terms.length > 5 ? `<span class="tag">+${item.match_terms.length - 5}</span>` : ""}</div></td>
     <td><span class="cell-subtitle">信号 ${item.context_terms.length} 个 · 排除 ${item.exclude_terms.length} 个</span><span class="cell-meta">回溯 ${item.lookback_days} 天</span></td>
     <td>${toggleMarkup("keyword", item)}</td>
     <td><div class="row-actions"><button class="icon-button keyword-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button keyword-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
   </tr>`).join("");
+  $("keyword-empty").classList.toggle("hidden", visibleKeywords.length > 0);
   refreshIcons();
 }
 
@@ -650,6 +703,11 @@ function openKeywordDialog(item = null) {
   $("keyword-dialog-title").textContent = item ? "编辑关键词组" : "新增关键词组";
   $("keyword-id").value = item?.id || "";
   $("keyword-name").value = item?.name || "";
+  $("keyword-category").innerHTML = `<option value="">未分类</option>${state.keywordCategories.map((category) => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}`;
+  const selectedCategory = item
+    ? (item.category_id == null ? "" : String(item.category_id))
+    : (/^\d+$/.test(state.keywordCategoryId) ? state.keywordCategoryId : String(state.keywordCategories[0]?.id || ""));
+  $("keyword-category").value = selectedCategory;
   $("keyword-terms").value = item?.match_terms.join("\n") || "";
   $("keyword-context-terms").value = item?.context_terms.join("\n") || "";
   $("keyword-exclude-terms").value = item?.exclude_terms.join("\n") || "";
@@ -714,6 +772,7 @@ async function saveKeyword(event) {
   const id = $("keyword-id").value;
   const payload = {
     name: $("keyword-name").value.trim(),
+    category_id: $("keyword-category").value ? Number($("keyword-category").value) : null,
     ...keywordStrategyPayload(),
     active: $("keyword-active").checked,
   };
@@ -737,6 +796,7 @@ async function updateKeywordActive(id, active) {
   if (!item) return;
   await api(`/api/keywords/${id}`, { method: "PUT", body: JSON.stringify({
     name: item.name,
+    category_id: item.category_id,
     match_terms: item.match_terms,
     context_terms: item.context_terms,
     exclude_terms: item.exclude_terms,
@@ -869,6 +929,7 @@ function bindEvents() {
   $("refresh-runs").addEventListener("click", loadRuns);
   $("analyze-pending").addEventListener("click", startAIAnalysis);
   $("pause-analysis").addEventListener("click", pauseAIAnalysis);
+  $("clear-pending").addEventListener("click", clearPendingArticles);
   $("ai-collection-run").addEventListener("change", loadAIStatus);
   $("refresh-ai").addEventListener("click", loadIntelligence);
   $("refresh-content-failures").addEventListener("click", loadContentFailures);
@@ -912,6 +973,10 @@ function bindEvents() {
     if (target.classList.contains("report-detail-button")) openReportDetail(id);
     if (target.classList.contains("source-edit")) openSourceDialog(state.sources.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-edit")) openKeywordDialog(state.keywords.find((item) => item.id === Number(id)));
+    if (target.classList.contains("keyword-category-button")) {
+      state.keywordCategoryId = target.dataset.categoryId;
+      renderKeywords();
+    }
     if (target.classList.contains("source-delete")) archiveItem("sources", id);
     if (target.classList.contains("keyword-delete")) archiveItem("keywords", id);
     if (target.classList.contains("content-retry")) retryContentFailure(id);

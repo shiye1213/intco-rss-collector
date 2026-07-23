@@ -282,6 +282,24 @@ class IntelligenceRepository:
             "latest_run": dict(latest_run) if latest_run else None,
         }
 
+    def delete_pending_articles(self) -> int:
+        condition = self._candidate_condition()
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                f"""
+                DELETE FROM articles
+                WHERE id IN (
+                    SELECT a.id
+                    FROM articles a
+                    LEFT JOIN article_contents ic ON ic.article_id = a.id
+                    LEFT JOIN article_relevance_reviews rr ON rr.article_id = a.id
+                    LEFT JOIN business_articles ba ON ba.article_id = a.id
+                    WHERE ({condition})
+                )
+                """  # noqa: S608
+            )
+            return int(cursor.rowcount)
+
     def candidate_article_ids(
         self,
         *,

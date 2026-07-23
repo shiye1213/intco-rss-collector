@@ -140,6 +140,9 @@
               <button id="pause-analysis" class="button secondary hidden" type="button">
                 <i data-lucide="pause"></i><span>暂停处理</span>
               </button>
+              <button id="clear-pending" class="button danger-action" type="button">
+                <i data-lucide="trash-2"></i><span>删除全部待处理</span>
+              </button>
             </div>
           </div>
           <div class="ai-summary" aria-label="AI 分析概览">
@@ -261,11 +264,13 @@
             <div><h2>关键词</h2><p>主题词 × 业务信号 − 歧义噪声；系统按 RSS 源语言自动拆分中英文词</p></div>
             <button id="add-keyword" class="button primary" type="button"><i data-lucide="plus"></i><span>新增关键词组</span></button>
           </div>
+          <nav id="keyword-category-menu" class="keyword-category-menu" aria-label="关键词二级分类"></nav>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>查询表达式</th><th>主题词</th><th>业务信号 / 排除</th><th>启用</th><th></th></tr></thead>
+              <thead><tr><th>名称</th><th>分类</th><th>查询表达式</th><th>主题词</th><th>业务信号 / 排除</th><th>启用</th><th></th></tr></thead>
               <tbody id="keyword-rows"></tbody>
             </table>
+            <div id="keyword-empty" class="empty-state hidden">当前分类下没有关键词组</div>
           </div>
         </section>
 
@@ -332,6 +337,7 @@
         <input id="keyword-id" type="hidden" />
         <div class="form-grid one-column">
           <label><span>名称</span><input id="keyword-name" maxlength="100" required /></label>
+          <label><span>所属分类</span><select id="keyword-category"><option value="">未分类</option></select></label>
           <label><span>查询表达式（自动生成）</span><textarea id="keyword-query" rows="4" maxlength="2000" readonly></textarea></label>
           <label><span>主题词（文章标题或摘要必须命中）</span><textarea id="keyword-terms" rows="5" required placeholder="每行一个产品、企业或主题，例如 nitrile gloves"></textarea></label>
           <label><span>业务信号词（Google News 至少命中一个）</span><textarea id="keyword-context-terms" rows="5" placeholder="每行一个，例如 tariff、regulation、price、demand、capacity"></textarea></label>

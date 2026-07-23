@@ -29,8 +29,18 @@ CREATE TABLE IF NOT EXISTS rss_sources (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS keyword_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS keywords (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL,
     name TEXT NOT NULL UNIQUE,
     query TEXT NOT NULL,
     match_terms TEXT NOT NULL,
@@ -321,6 +331,13 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at TEXT NOT NULL
 );
 """
+
+
+DEFAULT_KEYWORD_CATEGORIES = (
+    "贸易政策",
+    "关税调整",
+    "行业法规",
+)
 
 
 DEFAULT_SOURCES = (
@@ -678,6 +695,14 @@ class Database:
                 connection.execute(
                     "ALTER TABLE keywords ADD COLUMN lookback_days INTEGER NOT NULL DEFAULT 30"
                 )
+            if "category_id" not in keyword_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE keywords
+                    ADD COLUMN category_id INTEGER
+                    REFERENCES keyword_categories(id) ON DELETE SET NULL
+                    """
+                )
             article_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(articles)").fetchall()
@@ -910,6 +935,18 @@ class Database:
                 """,
                 (now,),
             )
+            for sort_order, category_name in enumerate(DEFAULT_KEYWORD_CATEGORIES):
+                connection.execute(
+                    """
+                    INSERT INTO keyword_categories
+                        (name, sort_order, active, created_at, updated_at)
+                    VALUES (?, ?, 1, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        sort_order = excluded.sort_order,
+                        updated_at = excluded.updated_at
+                    """,
+                    (category_name, sort_order, now, now),
+                )
             for source in DEFAULT_SOURCES:
                 connection.execute(
                     """
@@ -1011,13 +1048,31 @@ class Database:
             ).fetchall()
         return self.rows(rows)
 
-    def get_keywords(self, active_only: bool = False) -> list[dict[str, Any]]:
-        where = "WHERE archived = 0"
-        if active_only:
-            where += " AND active = 1"
+    def get_keyword_categories(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM keywords {where} ORDER BY id"  # noqa: S608
+                """
+                SELECT id, name, sort_order
+                FROM keyword_categories
+                WHERE active = 1
+                ORDER BY sort_order, id
+                """
+            ).fetchall()
+        return self.rows(rows)
+
+    def get_keywords(self, active_only: bool = False) -> list[dict[str, Any]]:
+        where = "WHERE k.archived = 0"
+        if active_only:
+            where += " AND k.active = 1"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT k.*, kc.name AS category_name
+                FROM keywords k
+                LEFT JOIN keyword_categories kc ON kc.id = k.category_id
+                {where}
+                ORDER BY COALESCE(kc.sort_order, 999999), k.id
+                """  # noqa: S608
             ).fetchall()
         result = self.rows(rows)
         for item in result:
@@ -1094,14 +1149,21 @@ class Database:
             lookback_days=lookback_days,
         )
         with self.connect() as connection:
+            category_id = data.get("category_id")
+            if category_id is not None and connection.execute(
+                "SELECT 1 FROM keyword_categories WHERE id = ? AND active = 1",
+                (category_id,),
+            ).fetchone() is None:
+                raise ValueError("关键词分类不存在")
             cursor = connection.execute(
                 """
                 INSERT INTO keywords
-                    (name, query, match_terms, context_terms, exclude_terms,
-                     lookback_days, active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (category_id, name, query, match_terms, context_terms,
+                     exclude_terms, lookback_days, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    category_id,
                     data["name"],
                     query,
                     json.dumps(data["match_terms"], ensure_ascii=False),
@@ -1127,14 +1189,22 @@ class Database:
             lookback_days=lookback_days,
         )
         with self.connect() as connection:
+            category_id = data.get("category_id")
+            if category_id is not None and connection.execute(
+                "SELECT 1 FROM keyword_categories WHERE id = ? AND active = 1",
+                (category_id,),
+            ).fetchone() is None:
+                raise ValueError("关键词分类不存在")
             cursor = connection.execute(
                 """
                 UPDATE keywords
-                SET name = ?, query = ?, match_terms = ?, context_terms = ?,
-                    exclude_terms = ?, lookback_days = ?, active = ?, updated_at = ?
+                SET category_id = ?, name = ?, query = ?, match_terms = ?,
+                    context_terms = ?, exclude_terms = ?, lookback_days = ?,
+                    active = ?, updated_at = ?
                 WHERE id = ? AND archived = 0
                 """,
                 (
+                    category_id,
                     data["name"],
                     query,
                     json.dumps(data["match_terms"], ensure_ascii=False),
