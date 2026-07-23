@@ -232,6 +232,9 @@ class Collector:
         incremental_collection = (
             settings.get("incremental_collection", "true") == "true"
         )
+        search_local_keyword_filter = (
+            settings.get("search_local_keyword_filter", "true") == "true"
+        )
         end_iso = iso_utc(run_started_at)
 
         if not sources or not keywords:
@@ -359,6 +362,7 @@ class Collector:
                                 totals,
                                 seen_count=len(feed_items),
                                 use_cursor=incremental_collection,
+                                apply_local_keyword_filter=search_local_keyword_filter,
                             )
                         except Exception as exc:
                             self._insert_detail(
@@ -467,6 +471,7 @@ class Collector:
         *,
         seen_count: int,
         use_cursor: bool = True,
+        apply_local_keyword_filter: bool = True,
     ) -> None:
         window_start = self._window_start(
             connection,
@@ -490,7 +495,7 @@ class Collector:
                 skipped_outside_window += 1
                 continue
             matched = match_terms(item, terms)
-            if not matched:
+            if apply_local_keyword_filter and not matched:
                 continue
             matched_count += 1
             article_id, inserted = self._upsert_article(

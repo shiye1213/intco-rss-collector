@@ -821,6 +821,7 @@ async function loadSettings() {
     const data = await api("/api/settings");
     $("schedule-time").value = data.schedule_time;
     $("incremental-collection").checked = data.incremental_collection;
+    $("search-local-keyword-filter").checked = data.search_local_keyword_filter;
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -832,6 +833,7 @@ async function saveSettings(event) {
       body: JSON.stringify({
         schedule_time: $("schedule-time").value,
         incremental_collection: $("incremental-collection").checked,
+        search_local_keyword_filter: $("search-local-keyword-filter").checked,
       }),
     });
     await loadStatus();

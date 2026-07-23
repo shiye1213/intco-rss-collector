@@ -43,3 +43,6 @@ def test_incremental_collection_setting_is_wired() -> None:
     assert 'id="incremental-collection"' in html
     assert "从上次成功采集时间继续" in html
     assert 'incremental_collection: $("incremental-collection").checked' in javascript
+    assert 'id="search-local-keyword-filter"' in html
+    assert "直连源仍会复核" in html
+    assert 'search_local_keyword_filter: $("search-local-keyword-filter").checked' in javascript
