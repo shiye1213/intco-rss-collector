@@ -149,6 +149,7 @@ class AIAnalysisPayload(BaseModel):
     article_ids: list[int] | None = Field(
         default=None, min_length=1, max_length=100
     )
+    collection_run_id: int | None = Field(default=None, ge=1)
 
 
 class AISettingsPayload(BaseModel):
@@ -410,6 +411,7 @@ def create_app(
                 ),
                 "analysis_running": analysis_manager.running_run_id is not None,
                 "analysis_run_id": analysis_manager.running_run_id,
+                "analysis_pause_requested": analysis_manager.pause_requested,
                 "report_running": report_manager.running_report_id is not None,
                 "report_id": report_manager.running_report_id,
                 "categories": CATEGORY_LABELS,
@@ -429,18 +431,25 @@ def create_app(
 
     @app.post("/api/ai/analyze", status_code=status.HTTP_202_ACCEPTED)
     async def start_ai_analysis(payload: AIAnalysisPayload):
+        if (
+            payload.collection_run_id is not None
+            and database.get_run(payload.collection_run_id) is None
+        ):
+            raise HTTPException(status_code=404, detail="采集任务不存在")
         try:
             if payload.process_all:
                 run_id, article_ids = analysis_manager.prepare_queue(
                     batch_size=payload.limit,
                     force=payload.force,
                     article_ids=payload.article_ids,
+                    collection_run_id=payload.collection_run_id,
                 )
             else:
                 run_id, article_ids = analysis_manager.prepare(
                     limit=payload.limit,
                     force=payload.force,
                     article_ids=payload.article_ids,
+                    collection_run_id=payload.collection_run_id,
                 )
         except IntelligenceAlreadyRunningError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -473,7 +482,15 @@ def create_app(
             "article_count": len(article_ids),
             "batch_size": payload.limit,
             "process_all": payload.process_all,
+            "collection_run_id": payload.collection_run_id,
         }
+
+    @app.post("/api/ai/pause", status_code=status.HTTP_202_ACCEPTED)
+    def pause_ai_analysis():
+        run_id = analysis_manager.request_pause()
+        if run_id is None:
+            raise HTTPException(status_code=409, detail="当前没有正在运行的 AI 处理任务")
+        return {"run_id": run_id, "status": "pause_requested"}
 
     @app.get("/api/ai/runs")
     def list_ai_runs(limit: int = Query(default=50, ge=1, le=200)):

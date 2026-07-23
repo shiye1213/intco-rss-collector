@@ -130,9 +130,17 @@
         <section id="view-intelligence" class="view">
           <div class="view-heading">
             <div><h2>AI 情报</h2><p id="ai-view-status">DeepSeek · 等待状态</p></div>
-            <button id="analyze-pending" class="button primary" type="button">
-              <i data-lucide="sparkles"></i><span>处理全部待办</span>
-            </button>
+            <div class="ai-actions">
+              <select id="ai-collection-run" aria-label="选择要处理的采集批次">
+                <option value="">全部采集批次（全部待办）</option>
+              </select>
+              <button id="analyze-pending" class="button primary" type="button">
+                <i data-lucide="sparkles"></i><span>处理全部待办</span>
+              </button>
+              <button id="pause-analysis" class="button secondary hidden" type="button">
+                <i data-lucide="pause"></i><span>暂停处理</span>
+              </button>
+            </div>
           </div>
           <div class="ai-summary" aria-label="AI 分析概览">
             <div><span>待处理</span><strong id="ai-metric-pending">0</strong></div>

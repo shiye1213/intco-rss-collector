@@ -232,6 +232,13 @@ async function loadArticles() {
 async function loadRuns() {
   try {
     const data = await api("/api/collections?limit=100");
+    const collectionRunSelect = $("ai-collection-run");
+    const selectedRunId = collectionRunSelect.value;
+    const selectableRuns = data.items.filter((run) => Number(run.items_inserted) > 0);
+    collectionRunSelect.innerHTML = `<option value="">全部采集批次（全部待办）</option>${selectableRuns
+      .map((run) => `<option value="${Number(run.id)}">采集 #${Number(run.id)} · ${escapeHtml(formatFullTime(run.started_at))} · 新增 ${Number(run.items_inserted)} 篇</option>`)
+      .join("")}`;
+    if (selectableRuns.some((run) => String(run.id) === selectedRunId)) collectionRunSelect.value = selectedRunId;
     $("run-rows").innerHTML = data.items.map((run) => `<tr>
       <td>#${run.id}</td><td>${triggerLabel(run.trigger_type)}</td><td>${statusLabel(run.status)}</td>
       <td>${formatFullTime(run.window_start)}<span class="cell-subtitle">至 ${formatFullTime(run.window_end)}</span></td>
@@ -278,14 +285,22 @@ async function loadAIStatus() {
       ? data.analysis_model
       : `${data.analysis_model}（DEEPSEEK_API_KEY 未配置）`;
     const taskStatus = data.analysis_running
-      ? ` · 分析任务 #${data.analysis_run_id} 运行中`
+      ? ` · 分析任务 #${data.analysis_run_id} ${data.analysis_pause_requested ? "正在暂停" : "运行中"}`
       : "";
     const statusText = `正文读取 ${readerStatus} · 内容分析 ${analysisStatus}${taskStatus}`;
     $("ai-view-status").textContent = statusText;
     $("ai-settings-status").textContent = statusText;
     const analyzeButton = $("analyze-pending");
+    const collectionRunSelect = $("ai-collection-run");
     analyzeButton.disabled = !data.configured || data.analysis_running || data.pending === 0;
-    analyzeButton.querySelector("span").textContent = data.analysis_running ? "正在处理" : "处理全部待办";
+    analyzeButton.querySelector("span").textContent = data.analysis_running
+      ? "正在处理"
+      : collectionRunSelect.value ? "处理所选采集" : "处理全部待办";
+    collectionRunSelect.disabled = data.analysis_running;
+    const pauseButton = $("pause-analysis");
+    pauseButton.classList.toggle("hidden", !data.analysis_running);
+    pauseButton.disabled = data.analysis_pause_requested;
+    pauseButton.querySelector("span").textContent = data.analysis_pause_requested ? "正在暂停" : "暂停处理";
     const reportButton = $("generate-report");
     reportButton.disabled = !data.report_configured || data.report_running;
     reportButton.querySelector("span").textContent = data.report_running ? "正在生成" : "生成日报";
@@ -457,14 +472,32 @@ async function loadIntelligence() {
 
 async function startAIAnalysis() {
   const button = $("analyze-pending");
+  const collectionRunId = Number($("ai-collection-run").value) || null;
   button.disabled = true;
   try {
     const data = await api("/api/ai/analyze", {
       method: "POST",
-      body: JSON.stringify({ limit: state.aiBatchSize, process_all: true, force: false, refresh_content: false }),
+      body: JSON.stringify({
+        limit: state.aiBatchSize, process_all: true, force: false,
+        refresh_content: false, collection_run_id: collectionRunId,
+      }),
     });
     state.wasAnalysisRunning = true;
-    showToast(`AI 处理已启动，共 ${data.article_count} 篇，将按每批 ${data.batch_size} 篇连续处理`);
+    const scope = collectionRunId ? `采集 #${collectionRunId}` : "全部待办";
+    showToast(`${scope}的 AI 处理已启动，共 ${data.article_count} 篇，将按每批 ${data.batch_size} 篇连续处理`);
+    await loadAIStatus();
+  } catch (error) {
+    showToast(error.message, true);
+    await loadAIStatus();
+  }
+}
+
+async function pauseAIAnalysis() {
+  const button = $("pause-analysis");
+  button.disabled = true;
+  try {
+    await api("/api/ai/pause", { method: "POST" });
+    showToast("已请求暂停，将在当前文章处理完成后停止");
     await loadAIStatus();
   } catch (error) {
     showToast(error.message, true);
@@ -835,6 +868,8 @@ function bindEvents() {
   $("refresh-articles").addEventListener("click", loadArticles);
   $("refresh-runs").addEventListener("click", loadRuns);
   $("analyze-pending").addEventListener("click", startAIAnalysis);
+  $("pause-analysis").addEventListener("click", pauseAIAnalysis);
+  $("ai-collection-run").addEventListener("change", loadAIStatus);
   $("refresh-ai").addEventListener("click", loadIntelligence);
   $("refresh-content-failures").addEventListener("click", loadContentFailures);
   $("ai-category-filter").addEventListener("change", () => { state.aiOffset = 0; loadAIArticles(); });

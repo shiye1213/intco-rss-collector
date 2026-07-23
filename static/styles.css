@@ -74,6 +74,8 @@ h1 { margin: 0; font-size: 17px; line-height: 1.25; font-weight: 700; }
 .view-heading { justify-content: space-between; min-height: 48px; margin-bottom: 14px; gap: 16px; }
 .view-heading h2 { margin: 0; font-size: 20px; line-height: 1.3; }
 .view-heading p { margin: 3px 0 0; font-size: 13px; color: var(--muted); }
+.ai-actions { display: flex; flex: 1; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.ai-actions select { flex: 1 1 220px; max-width: 280px; }
 
 .button, .icon-button {
   border: 1px solid transparent; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center;
