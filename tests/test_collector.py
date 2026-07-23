@@ -413,6 +413,34 @@ def test_second_run_uses_cursor_after_initial_collection(tmp_path) -> None:
     assert database.article_count() == 1
 
 
+def test_second_run_rechecks_lookback_when_incremental_collection_is_off(
+    tmp_path,
+) -> None:
+    database = configured_database(tmp_path)
+    database.set_setting("incremental_collection", "false")
+    collector = Collector(database, feed_fetcher=lambda _url, _timeout: RSS_XML)
+    first_started = datetime(2026, 7, 20, 4, 0, tzinfo=UTC)
+    first_run = database.create_run(
+        "manual", first_started.isoformat(), "2026-06-20T16:00:00Z"
+    )
+    collector.collect(first_run, first_started)
+
+    second_started = first_started + timedelta(hours=1)
+    second_run = database.create_run(
+        "manual", second_started.isoformat(), "2026-06-20T16:00:00Z"
+    )
+    collector.collect(second_run, second_started)
+
+    second_result = database.get_run(second_run)
+    assert second_result is not None
+    assert second_result["items_inserted"] == 0
+    assert second_result["items_matched"] == 1
+    assert second_result["duplicates"] == 1
+    assert second_result["details"][0]["skipped_outside_window"] == 0
+    assert second_result["details"][0]["window_start"] == "2026-06-20T16:00:00Z"
+    assert database.article_count() == 1
+
+
 def test_new_keyword_uses_its_google_news_lookback_window(tmp_path) -> None:
     database = configured_database(tmp_path)
     keyword = database.get_keywords(active_only=True)[0]

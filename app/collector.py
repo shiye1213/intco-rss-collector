@@ -229,6 +229,9 @@ class Collector:
         keywords = self.database.get_keywords(active_only=True)
         settings = self.database.get_settings()
         timezone_name = settings.get("timezone", "Asia/Shanghai")
+        incremental_collection = (
+            settings.get("incremental_collection", "true") == "true"
+        )
         end_iso = iso_utc(run_started_at)
 
         if not sources or not keywords:
@@ -282,7 +285,11 @@ class Collector:
                                 int(keyword.get("lookback_days", 1)),
                             )
                             window_start = self._window_start(
-                                connection, source["id"], keyword["id"], first_window
+                                connection,
+                                source["id"],
+                                keyword["id"],
+                                first_window,
+                                use_cursor=incremental_collection,
                             )
                             self._insert_detail(
                                 connection,
@@ -316,6 +323,7 @@ class Collector:
                             run_started_at,
                             totals,
                             seen_count=len(feed_items),
+                            use_cursor=incremental_collection,
                         )
                         connection.commit()
                 else:
@@ -326,7 +334,11 @@ class Collector:
                             int(keyword.get("lookback_days", 1)),
                         )
                         window_start = self._window_start(
-                            connection, source["id"], keyword["id"], first_window
+                            connection,
+                            source["id"],
+                            keyword["id"],
+                            first_window,
+                            use_cursor=incremental_collection,
                         )
                         runtime_keyword = self._runtime_search_keyword(
                             keyword, window_start, run_started_at
@@ -346,6 +358,7 @@ class Collector:
                                 run_started_at,
                                 totals,
                                 seen_count=len(feed_items),
+                                use_cursor=incremental_collection,
                             )
                         except Exception as exc:
                             self._insert_detail(
@@ -423,7 +436,11 @@ class Collector:
         source_id: int,
         keyword_id: int,
         first_window: datetime,
+        *,
+        use_cursor: bool = True,
     ) -> datetime:
+        if not use_cursor:
+            return first_window
         row = connection.execute(
             """
             SELECT last_collected_at FROM collection_cursors
@@ -449,9 +466,14 @@ class Collector:
         totals: dict[str, int],
         *,
         seen_count: int,
+        use_cursor: bool = True,
     ) -> None:
         window_start = self._window_start(
-            connection, int(source["id"]), int(keyword["id"]), first_window
+            connection,
+            int(source["id"]),
+            int(keyword["id"]),
+            first_window,
+            use_cursor=use_cursor,
         )
         matched_count = 0
         inserted_count = 0
@@ -690,6 +712,9 @@ class CollectionManager:
             started_at = datetime.now(UTC)
             settings = self.database.get_settings()
             timezone_name = settings.get("timezone", "Asia/Shanghai")
+            incremental_collection = (
+                settings.get("incremental_collection", "true") == "true"
+            )
             first_window = start_of_local_day(started_at, timezone_name)
             active_sources = self.database.get_sources(active_only=True)
             active_keywords = self.database.get_keywords(active_only=True)
@@ -708,7 +733,11 @@ class CollectionManager:
                         """
                     ).fetchall()
                     cursor_values = [
-                        parse_datetime(row["last_collected_at"])
+                        (
+                            parse_datetime(row["last_collected_at"])
+                            if incremental_collection
+                            else None
+                        )
                         or start_of_local_lookback(
                             started_at,
                             timezone_name,

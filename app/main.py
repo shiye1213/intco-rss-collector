@@ -129,6 +129,7 @@ class KeywordPayload(KeywordQueryPayload):
 
 class SettingsPayload(BaseModel):
     schedule_time: str
+    incremental_collection: bool = True
 
     @field_validator("schedule_time")
     @classmethod
@@ -393,14 +394,22 @@ def create_app(
         return {
             "schedule_time": settings.get("schedule_time", "08:00"),
             "timezone": settings.get("timezone", "Asia/Shanghai"),
+            "incremental_collection": (
+                settings.get("incremental_collection", "true") == "true"
+            ),
         }
 
     @app.put("/api/settings")
     def update_settings(payload: SettingsPayload):
         database.set_setting("schedule_time", payload.schedule_time)
+        database.set_setting(
+            "incremental_collection",
+            str(payload.incremental_collection).lower(),
+        )
         return {
             "schedule_time": payload.schedule_time,
             "timezone": database.get_settings().get("timezone", "Asia/Shanghai"),
+            "incremental_collection": payload.incremental_collection,
         }
 
     @app.get("/api/ai/status")

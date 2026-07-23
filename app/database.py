@@ -1017,6 +1017,7 @@ class Database:
             defaults = {
                 "schedule_time": "08:00",
                 "timezone": "Asia/Shanghai",
+                "incremental_collection": "true",
                 "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
                 "ai_relevance_threshold": "70",
                 "ai_batch_size": "20",

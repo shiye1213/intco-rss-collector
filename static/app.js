@@ -817,16 +817,25 @@ async function archiveItem(type, id) {
 }
 
 async function loadSettings() {
-  try { const data = await api("/api/settings"); $("schedule-time").value = data.schedule_time; }
-  catch (error) { showToast(error.message, true); }
+  try {
+    const data = await api("/api/settings");
+    $("schedule-time").value = data.schedule_time;
+    $("incremental-collection").checked = data.incremental_collection;
+  } catch (error) { showToast(error.message, true); }
 }
 
 async function saveSettings(event) {
   event.preventDefault();
   try {
-    await api("/api/settings", { method: "PUT", body: JSON.stringify({ schedule_time: $("schedule-time").value }) });
+    await api("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        schedule_time: $("schedule-time").value,
+        incremental_collection: $("incremental-collection").checked,
+      }),
+    });
     await loadStatus();
-    showToast("每日采集时间已保存");
+    showToast("采集设置已保存");
   } catch (error) { showToast(error.message, true); }
 }
 

@@ -278,10 +278,14 @@
           <div class="view-heading"><div><h2>系统设置</h2><p>采集调度与 DeepSeek 分析策略</p></div></div>
           <div class="settings-section">
             <div class="subsection-heading"><div><h3>采集调度</h3><p>Asia/Shanghai</p></div></div>
-            <form id="settings-form" class="settings-form">
+            <form id="settings-form" class="settings-form collection-settings-form">
               <label>
                 <span>每日采集时间</span>
                 <input id="schedule-time" type="time" required />
+              </label>
+              <label class="switch-row">
+                <span><strong>增量采集</strong><small>开启后从上次成功采集时间继续；关闭后按关键词回溯天数重新检查</small></span>
+                <input id="incremental-collection" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
               </label>
               <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存采集设置</span></button>
             </form>

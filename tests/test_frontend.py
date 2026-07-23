@@ -35,3 +35,11 @@ def test_pending_cleanup_and_keyword_category_controls_are_wired() -> None:
     assert 'api("/api/ai/pending/clear"' in javascript
     assert 'api("/api/keyword-categories")' in javascript
     assert "category_id:" in javascript
+
+def test_incremental_collection_setting_is_wired() -> None:
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="incremental-collection"' in html
+    assert "从上次成功采集时间继续" in html
+    assert 'incremental_collection: $("incremental-collection").checked' in javascript
