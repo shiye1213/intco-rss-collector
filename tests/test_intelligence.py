@@ -83,6 +83,7 @@ def create_article(
     title: str,
     summary: str,
     published_at: str = "2026-07-20T02:00:00Z",
+    collected_at: str | None = None,
 ) -> int:
     url = f"https://example.com/{slug}"
     with database.connect() as connection:
@@ -100,7 +101,7 @@ def create_article(
                 f"fingerprint-{slug}",
                 summary,
                 published_at,
-                published_at,
+                collected_at or published_at,
             ),
         )
         return int(cursor.lastrowid)
@@ -544,6 +545,114 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     assert repository.has_successful_report(date(2026, 7, 20))
 
 
+def test_analysis_queue_can_process_one_collection_run(tmp_path) -> None:
+    database = Database(tmp_path / "analysis-collection-run.db")
+    database.initialize()
+    first_started_at = "2026-07-20T01:00:00Z"
+    second_started_at = "2026-07-20T02:00:00Z"
+    database.create_run("manual", first_started_at, first_started_at)
+    second_run_id = database.create_run(
+        "manual", second_started_at, second_started_at
+    )
+    first_article_ids = [
+        create_article(
+            database,
+            slug=f"first-run-{index}",
+            title=f"首次采集 {index}",
+            summary="候选摘要",
+            collected_at=first_started_at,
+        )
+        for index in range(2)
+    ]
+    second_article_ids = [
+        create_article(
+            database,
+            slug=f"second-run-{index}",
+            title=f"第二次采集 {index}",
+            summary="候选摘要",
+            collected_at=second_started_at,
+        )
+        for index in range(3)
+    ]
+    repository = IntelligenceRepository(database)
+    content_fetcher = FakeContentFetcher(
+        [
+            content_document(
+                f"https://example.com/second-run-{index}",
+                f"与企业业务无关的测试正文 {index}" * 30,
+            )
+            for index in reversed(range(3))
+        ]
+    )
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review() for _ in range(3)]),
+        content_fetcher,
+    )
+
+    analysis_run_id, queued_ids = manager.prepare_queue(
+        batch_size=20, collection_run_id=second_run_id
+    )
+    manager.execute_queue(analysis_run_id, queued_ids, batch_size=20)
+
+    assert queued_ids == list(reversed(second_article_ids))
+    assert len(content_fetcher.calls) == 3
+    assert repository.status()["pending"] == len(first_article_ids)
+
+
+def test_analysis_queue_pauses_after_current_article(tmp_path) -> None:
+    class PausingContentFetcher(FakeContentFetcher):
+        manager: ArticleAnalysisManager | None = None
+
+        def read(self, article: ArticleReference) -> ContentDocument:
+            document = super().read(article)
+            assert self.manager is not None
+            assert self.manager.request_pause() is not None
+            return document
+
+    database = Database(tmp_path / "analysis-pause.db")
+    database.initialize()
+    article_ids = [
+        create_article(
+            database,
+            slug=f"pause-{index}",
+            title=f"暂停测试文章 {index}",
+            summary="候选摘要",
+        )
+        for index in range(3)
+    ]
+    repository = IntelligenceRepository(database)
+    content_fetcher = PausingContentFetcher(
+        [content_document("https://example.com/pause-2", "无关测试正文" * 30)]
+    )
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review()]),
+        content_fetcher,
+    )
+    content_fetcher.manager = manager
+
+    run_id, queued_ids = manager.prepare_queue(batch_size=3)
+    manager.execute_queue(run_id, queued_ids, batch_size=3)
+
+    assert queued_ids == list(reversed(article_ids))
+    assert len(content_fetcher.calls) == 1
+    assert repository.status()["pending"] == 2
+    assert manager.running_run_id is None
+    assert manager.pause_requested is False
+    run = repository.get_analysis_run(run_id)
+    assert run is not None
+    assert run["status"] == "partial"
+    assert "用户已暂停处理" in run["message"]
+    assert [item["status"] for item in run["items"]] == [
+        "pending",
+        "pending",
+        "success",
+    ]
+
+
 def test_analysis_queue_drains_all_pending_articles_across_batches(tmp_path) -> None:
     database = Database(tmp_path / "analysis-queue.db")
     database.initialize()
@@ -750,6 +859,45 @@ def test_analysis_queue_continues_after_one_article_is_unavailable(tmp_path) -> 
     assert run is not None
     assert run["status"] == "partial"
     assert run["message"] == ""
+
+
+def test_delete_pending_articles_preserves_completed_analysis(tmp_path) -> None:
+    database = Database(tmp_path / "delete-pending.db")
+    database.initialize()
+    completed_id = create_article(
+        database,
+        slug="completed-analysis",
+        title="已完成审核文章",
+        summary="候选摘要",
+    )
+    pending_id = create_article(
+        database,
+        slug="pending-analysis",
+        title="等待处理文章",
+        summary="候选摘要",
+    )
+    repository = IntelligenceRepository(database)
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review()]),
+        FakeContentFetcher(
+            [content_document("https://example.com/completed-analysis", "无关测试正文" * 30)]
+        ),
+    )
+    run_id, article_ids = manager.prepare(limit=1, article_ids=[completed_id])
+    manager.execute(run_id, article_ids)
+
+    assert repository.status()["pending"] == 1
+    assert repository.delete_pending_articles() == 1
+
+    with database.connect() as connection:
+        remaining_ids = {
+            int(row["id"]) for row in connection.execute("SELECT id FROM articles")
+        }
+    assert remaining_ids == {completed_id}
+    assert pending_id not in remaining_ids
+    assert repository.status()["pending"] == 0
 
 
 def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:

@@ -118,6 +118,7 @@ class KeywordQueryPayload(BaseModel):
 
 class KeywordPayload(KeywordQueryPayload):
     name: str = Field(min_length=1, max_length=100)
+    category_id: int | None = Field(default=None, ge=1)
     active: bool = True
 
     @field_validator("name")
@@ -128,6 +129,8 @@ class KeywordPayload(KeywordQueryPayload):
 
 class SettingsPayload(BaseModel):
     schedule_time: str
+    incremental_collection: bool = True
+    search_local_keyword_filter: bool = True
 
     @field_validator("schedule_time")
     @classmethod
@@ -149,6 +152,7 @@ class AIAnalysisPayload(BaseModel):
     article_ids: list[int] | None = Field(
         default=None, min_length=1, max_length=100
     )
+    collection_run_id: int | None = Field(default=None, ge=1)
 
 
 class AISettingsPayload(BaseModel):
@@ -178,6 +182,10 @@ class ReportPayload(BaseModel):
         return list(
             dict.fromkeys(value.strip() for value in values if value.strip())
         )
+
+
+class DeletePendingPayload(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=20)
 
 
 class CleanupPayload(BaseModel):
@@ -342,6 +350,10 @@ def create_app(
         if not database.archive_source(source_id):
             raise HTTPException(status_code=404, detail="RSS 源不存在")
 
+    @app.get("/api/keyword-categories")
+    def list_keyword_categories():
+        return {"items": database.get_keyword_categories()}
+
     @app.get("/api/keywords")
     def list_keywords():
         return {"items": database.get_keywords()}
@@ -354,6 +366,8 @@ def create_app(
     def create_keyword(payload: KeywordPayload):
         try:
             keyword_id = database.create_keyword(payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="关键词组名称已存在") from exc
         return {"id": keyword_id}
@@ -362,6 +376,8 @@ def create_app(
     def update_keyword(keyword_id: int, payload: KeywordPayload):
         try:
             updated = database.update_keyword(keyword_id, payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="关键词组名称已存在") from exc
         if not updated:
@@ -379,14 +395,30 @@ def create_app(
         return {
             "schedule_time": settings.get("schedule_time", "08:00"),
             "timezone": settings.get("timezone", "Asia/Shanghai"),
+            "incremental_collection": (
+                settings.get("incremental_collection", "true") == "true"
+            ),
+            "search_local_keyword_filter": (
+                settings.get("search_local_keyword_filter", "true") == "true"
+            ),
         }
 
     @app.put("/api/settings")
     def update_settings(payload: SettingsPayload):
         database.set_setting("schedule_time", payload.schedule_time)
+        database.set_setting(
+            "incremental_collection",
+            str(payload.incremental_collection).lower(),
+        )
+        database.set_setting(
+            "search_local_keyword_filter",
+            str(payload.search_local_keyword_filter).lower(),
+        )
         return {
             "schedule_time": payload.schedule_time,
             "timezone": database.get_settings().get("timezone", "Asia/Shanghai"),
+            "incremental_collection": payload.incremental_collection,
+            "search_local_keyword_filter": payload.search_local_keyword_filter,
         }
 
     @app.get("/api/ai/status")
@@ -410,6 +442,7 @@ def create_app(
                 ),
                 "analysis_running": analysis_manager.running_run_id is not None,
                 "analysis_run_id": analysis_manager.running_run_id,
+                "analysis_pause_requested": analysis_manager.pause_requested,
                 "report_running": report_manager.running_report_id is not None,
                 "report_id": report_manager.running_report_id,
                 "categories": CATEGORY_LABELS,
@@ -429,18 +462,25 @@ def create_app(
 
     @app.post("/api/ai/analyze", status_code=status.HTTP_202_ACCEPTED)
     async def start_ai_analysis(payload: AIAnalysisPayload):
+        if (
+            payload.collection_run_id is not None
+            and database.get_run(payload.collection_run_id) is None
+        ):
+            raise HTTPException(status_code=404, detail="采集任务不存在")
         try:
             if payload.process_all:
                 run_id, article_ids = analysis_manager.prepare_queue(
                     batch_size=payload.limit,
                     force=payload.force,
                     article_ids=payload.article_ids,
+                    collection_run_id=payload.collection_run_id,
                 )
             else:
                 run_id, article_ids = analysis_manager.prepare(
                     limit=payload.limit,
                     force=payload.force,
                     article_ids=payload.article_ids,
+                    collection_run_id=payload.collection_run_id,
                 )
         except IntelligenceAlreadyRunningError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -473,7 +513,32 @@ def create_app(
             "article_count": len(article_ids),
             "batch_size": payload.limit,
             "process_all": payload.process_all,
+            "collection_run_id": payload.collection_run_id,
         }
+
+    @app.post("/api/ai/pause", status_code=status.HTTP_202_ACCEPTED)
+    def pause_ai_analysis():
+        run_id = analysis_manager.request_pause()
+        if run_id is None:
+            raise HTTPException(status_code=409, detail="当前没有正在运行的 AI 处理任务")
+        return {"run_id": run_id, "status": "pause_requested"}
+
+    @app.post("/api/ai/pending/clear")
+    def clear_pending_articles(payload: DeletePendingPayload):
+        if payload.confirmation != "DELETE":
+            raise HTTPException(status_code=422, detail="请输入 DELETE 确认删除")
+        if any(
+            (
+                manager.running_run_id is not None,
+                analysis_manager.running_run_id is not None,
+                report_manager.running_report_id is not None,
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="采集、AI 分析或日报任务运行中，不能删除待处理信息",
+            )
+        return {"deleted": intelligence_repository.delete_pending_articles()}
 
     @app.get("/api/ai/runs")
     def list_ai_runs(limit: int = Query(default=50, ge=1, le=200)):

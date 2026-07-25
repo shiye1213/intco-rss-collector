@@ -130,9 +130,20 @@
         <section id="view-intelligence" class="view">
           <div class="view-heading">
             <div><h2>AI 情报</h2><p id="ai-view-status">DeepSeek · 等待状态</p></div>
-            <button id="analyze-pending" class="button primary" type="button">
-              <i data-lucide="sparkles"></i><span>处理全部待办</span>
-            </button>
+            <div class="ai-actions">
+              <select id="ai-collection-run" aria-label="选择要处理的采集批次">
+                <option value="">全部采集批次（全部待办）</option>
+              </select>
+              <button id="analyze-pending" class="button primary" type="button">
+                <i data-lucide="sparkles"></i><span>处理全部待办</span>
+              </button>
+              <button id="pause-analysis" class="button secondary hidden" type="button">
+                <i data-lucide="pause"></i><span>暂停处理</span>
+              </button>
+              <button id="clear-pending" class="button danger-action" type="button">
+                <i data-lucide="trash-2"></i><span>删除全部待处理</span>
+              </button>
+            </div>
           </div>
           <div class="ai-summary" aria-label="AI 分析概览">
             <div><span>待处理</span><strong id="ai-metric-pending">0</strong></div>
@@ -253,11 +264,13 @@
             <div><h2>关键词</h2><p>主题词 × 业务信号 − 歧义噪声；系统按 RSS 源语言自动拆分中英文词</p></div>
             <button id="add-keyword" class="button primary" type="button"><i data-lucide="plus"></i><span>新增关键词组</span></button>
           </div>
+          <nav id="keyword-category-menu" class="keyword-category-menu" aria-label="关键词二级分类"></nav>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>查询表达式</th><th>主题词</th><th>业务信号 / 排除</th><th>启用</th><th></th></tr></thead>
+              <thead><tr><th>名称</th><th>分类</th><th>查询表达式</th><th>主题词</th><th>业务信号 / 排除</th><th>启用</th><th></th></tr></thead>
               <tbody id="keyword-rows"></tbody>
             </table>
+            <div id="keyword-empty" class="empty-state hidden">当前分类下没有关键词组</div>
           </div>
         </section>
 
@@ -265,10 +278,18 @@
           <div class="view-heading"><div><h2>系统设置</h2><p>采集调度与 DeepSeek 分析策略</p></div></div>
           <div class="settings-section">
             <div class="subsection-heading"><div><h3>采集调度</h3><p>Asia/Shanghai</p></div></div>
-            <form id="settings-form" class="settings-form">
+            <form id="settings-form" class="settings-form collection-settings-form">
               <label>
                 <span>每日采集时间</span>
                 <input id="schedule-time" type="time" required />
+              </label>
+              <label class="switch-row">
+                <span><strong>增量采集</strong><small>开启后从上次成功采集时间继续；关闭后按关键词回溯天数重新检查</small></span>
+                <input id="incremental-collection" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
+              </label>
+              <label class="switch-row">
+                <span><strong>搜索结果本地复核</strong><small>开启后标题或摘要必须命中主题词；关闭后信任搜索型 RSS，直连源仍会复核</small></span>
+                <input id="search-local-keyword-filter" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
               </label>
               <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存采集设置</span></button>
             </form>
@@ -324,6 +345,7 @@
         <input id="keyword-id" type="hidden" />
         <div class="form-grid one-column">
           <label><span>名称</span><input id="keyword-name" maxlength="100" required /></label>
+          <label><span>所属分类</span><select id="keyword-category"><option value="">未分类</option></select></label>
           <label><span>查询表达式（自动生成）</span><textarea id="keyword-query" rows="4" maxlength="2000" readonly></textarea></label>
           <label><span>主题词（文章标题或摘要必须命中）</span><textarea id="keyword-terms" rows="5" required placeholder="每行一个产品、企业或主题，例如 nitrile gloves"></textarea></label>
           <label><span>业务信号词（Google News 至少命中一个）</span><textarea id="keyword-context-terms" rows="5" placeholder="每行一个，例如 tariff、regulation、price、demand、capacity"></textarea></label>

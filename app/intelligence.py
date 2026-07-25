@@ -282,12 +282,31 @@ class IntelligenceRepository:
             "latest_run": dict(latest_run) if latest_run else None,
         }
 
+    def delete_pending_articles(self) -> int:
+        condition = self._candidate_condition()
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                f"""
+                DELETE FROM articles
+                WHERE id IN (
+                    SELECT a.id
+                    FROM articles a
+                    LEFT JOIN article_contents ic ON ic.article_id = a.id
+                    LEFT JOIN article_relevance_reviews rr ON rr.article_id = a.id
+                    LEFT JOIN business_articles ba ON ba.article_id = a.id
+                    WHERE ({condition})
+                )
+                """  # noqa: S608
+            )
+            return int(cursor.rowcount)
+
     def candidate_article_ids(
         self,
         *,
         limit: int | None,
         force: bool = False,
         article_ids: list[int] | None = None,
+        collection_run_id: int | None = None,
     ) -> list[int]:
         filters: list[str] = []
         parameters: list[Any] = []
@@ -297,6 +316,11 @@ class IntelligenceRepository:
             placeholders = ",".join("?" for _ in article_ids)
             filters.append(f"a.id IN ({placeholders})")  # noqa: S608
             parameters.extend(article_ids)
+        if collection_run_id is not None:
+            filters.append(
+                "a.collected_at = (SELECT started_at FROM collection_runs WHERE id = ?)"
+            )
+            parameters.append(collection_run_id)
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         limit_clause = "LIMIT ?" if limit is not None else ""
         if limit is not None:
@@ -1341,10 +1365,26 @@ class ArticleAnalysisManager:
         self.content_reader = content_reader
         self._state_lock = threading.Lock()
         self._running_run_id: int | None = None
+        self._pause_requested = threading.Event()
 
     @property
     def running_run_id(self) -> int | None:
         with self._state_lock:
+            return self._running_run_id
+
+    @property
+    def pause_requested(self) -> bool:
+        with self._state_lock:
+            return (
+                self._running_run_id is not None
+                and self._pause_requested.is_set()
+            )
+
+    def request_pause(self) -> int | None:
+        with self._state_lock:
+            if self._running_run_id is None:
+                return None
+            self._pause_requested.set()
             return self._running_run_id
 
     def prepare(
@@ -1354,6 +1394,7 @@ class ArticleAnalysisManager:
         limit: int = 20,
         force: bool = False,
         article_ids: list[int] | None = None,
+        collection_run_id: int | None = None,
     ) -> tuple[int, list[int]]:
         if not self.content_reader.configured:
             raise ValueError("尚未配置 OPENAI_API_KEY")
@@ -1364,8 +1405,12 @@ class ArticleAnalysisManager:
                 raise IntelligenceAlreadyRunningError(
                     f"AI 处理任务 #{self._running_run_id} 正在运行"
                 )
+            self._pause_requested.clear()
             candidate_ids = self.repository.candidate_article_ids(
-                limit=limit, force=force, article_ids=article_ids
+                limit=limit,
+                force=force,
+                article_ids=article_ids,
+                collection_run_id=collection_run_id,
             )
             run_id = self.repository.create_analysis_run(
                 candidate_ids, trigger_type=trigger_type, model=self.client.model
@@ -1380,6 +1425,7 @@ class ArticleAnalysisManager:
         batch_size: int = 20,
         force: bool = False,
         article_ids: list[int] | None = None,
+        collection_run_id: int | None = None,
     ) -> tuple[int, list[int]]:
         if not self.content_reader.configured:
             raise ValueError("尚未配置 OPENAI_API_KEY")
@@ -1391,8 +1437,12 @@ class ArticleAnalysisManager:
                 raise IntelligenceAlreadyRunningError(
                     f"AI 处理任务 #{self._running_run_id} 正在运行"
                 )
+            self._pause_requested.clear()
             candidate_ids = self.repository.candidate_article_ids(
-                limit=None, force=force, article_ids=article_ids
+                limit=None,
+                force=force,
+                article_ids=article_ids,
+                collection_run_id=collection_run_id,
             )
             run_id = self.repository.create_analysis_run(
                 candidate_ids[:batch_size],
@@ -1421,6 +1471,7 @@ class ArticleAnalysisManager:
             with self._state_lock:
                 if self._running_run_id == run_id:
                     self._running_run_id = None
+                    self._pause_requested.clear()
 
     def execute_queue(
         self,
@@ -1441,6 +1492,8 @@ class ArticleAnalysisManager:
         try:
             for index, batch in enumerate(batches):
                 if index > 0:
+                    if self._pause_requested.is_set():
+                        break
                     active_run_id = self.repository.create_analysis_run(
                         batch,
                         trigger_type=trigger_type,
@@ -1454,12 +1507,13 @@ class ArticleAnalysisManager:
                     force=force,
                     refresh_content=refresh_content,
                 )
-                if not should_continue:
+                if not should_continue or self._pause_requested.is_set():
                     break
         finally:
             with self._state_lock:
                 if self._running_run_id == active_run_id:
                     self._running_run_id = None
+                    self._pause_requested.clear()
 
     def _execute_run(
         self,
@@ -1486,6 +1540,10 @@ class ArticleAnalysisManager:
                 100000,
             )
             for article_id in article_ids:
+                if self._pause_requested.is_set():
+                    should_continue = False
+                    run_message = "用户已暂停处理；未开始文章保留为待处理"
+                    break
                 article = self.repository.get_article(article_id)
                 if article is None:
                     self.repository.fail_run_item(
@@ -1615,6 +1673,9 @@ class ArticleAnalysisManager:
                         article_id,
                         f"业务分析失败: {type(exc).__name__}: {exc}",
                     )
+            if should_continue and self._pause_requested.is_set():
+                should_continue = False
+                run_message = "用户已暂停处理；未开始文章保留为待处理"
         finally:
             self.repository.finish_analysis_run(
                 run_id,

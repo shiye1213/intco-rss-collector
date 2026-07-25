@@ -130,10 +130,11 @@ def test_keyword_query_is_generated_only_from_match_terms() -> None:
     )
 
     assert query == (
-        '("PE手套" OR "聚乙烯手套" OR "polyethylene gloves")'
+        '("PE手套"OR"聚乙烯手套"OR"polyethylene gloves")'
     )
     assert "medical" not in query
     assert "-football" not in query
+    assert " " not in query.replace("polyethylene gloves", "")
 
 
 def test_keyword_query_combines_subjects_signals_exclusions_and_recency() -> None:
@@ -145,10 +146,71 @@ def test_keyword_query_combines_subjects_signals_exclusions_and_recency() -> Non
     )
 
     assert query == (
-        '("nitrile gloves" OR "medical gloves") '
-        'AND ("tariff" OR "regulation") '
-        '-"boxing gloves" -"football" when:30d'
+        '("nitrile gloves"OR"medical gloves")'
+        'AND("tariff"OR"regulation")'
+        '-"boxing gloves"-"football"when:30d'
     )
+
+
+def test_initialize_migrates_keyword_categories_and_supports_assignment(tmp_path) -> None:
+    database_path = tmp_path / "legacy-keywords.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                query TEXT NOT NULL,
+                match_terms TEXT NOT NULL,
+                context_terms TEXT NOT NULL DEFAULT '[]',
+                exclude_terms TEXT NOT NULL DEFAULT '[]',
+                lookback_days INTEGER NOT NULL DEFAULT 30,
+                active INTEGER NOT NULL DEFAULT 1,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO keywords
+                (name, query, match_terms, created_at, updated_at)
+            VALUES
+                ('旧关键词', '\"tariff\"', '[\"tariff\"]',
+                 '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z');
+            """
+        )
+
+    database = Database(database_path)
+    database.initialize()
+
+    categories = database.get_keyword_categories()
+    assert [item["name"] for item in categories] == [
+        "贸易政策",
+        "关税调整",
+        "行业法规",
+    ]
+    legacy_keyword = next(
+        item for item in database.get_keywords() if item["name"] == "旧关键词"
+    )
+    assert legacy_keyword["category_id"] is None
+    assert legacy_keyword["category_name"] is None
+
+    updated = database.update_keyword(
+        legacy_keyword["id"],
+        {
+            "name": "旧关键词",
+            "category_id": categories[1]["id"],
+            "match_terms": ["tariff"],
+            "context_terms": [],
+            "exclude_terms": [],
+            "lookback_days": 30,
+            "active": True,
+        },
+    )
+
+    assert updated
+    assigned = next(
+        item for item in database.get_keywords() if item["id"] == legacy_keyword["id"]
+    )
+    assert assigned["category_name"] == "关税调整"
 
 
 def test_search_sources_receive_only_matching_language_terms(tmp_path) -> None:
@@ -277,6 +339,73 @@ def test_direct_source_matches_only_keywords_for_its_language(tmp_path) -> None:
     assert result["details"][0]["keyword_name"] == "Mixed gloves"
 
 
+def test_search_source_can_skip_local_filter_but_direct_source_still_checks(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "search-local-filter.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": "测试搜索源",
+            "url_template": "https://search.example/rss?q={query}",
+            "mode": "search",
+            "language": "zh-CN",
+            "country": "CN",
+            "active": True,
+        }
+    )
+    database.create_source(
+        {
+            "name": "测试直连源",
+            "url_template": "https://direct.example/feed.xml",
+            "mode": "direct",
+            "language": "zh-CN",
+            "country": "CN",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "手套贸易",
+            "match_terms": ["手套"],
+            "context_terms": ["贸易"],
+            "lookback_days": 30,
+            "active": True,
+        }
+    )
+    database.set_setting("search_local_keyword_filter", "false")
+    rss_without_subject = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>Search result</title><item>
+      <title>New international trade policy announced</title>
+      <link>https://example.com/trade-policy</link>
+      <source>Example News</source>
+      <guid>trade-policy-1</guid>
+      <pubDate>Mon, 20 Jul 2026 02:00:00 GMT</pubDate>
+      <description>Export rules were updated.</description>
+    </item></channel></rss>"""
+    collector = Collector(
+        database,
+        feed_fetcher=lambda _url, _timeout: rss_without_subject,
+    )
+    started = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-06-22T00:00:00Z"
+    )
+
+    collector.collect(run_id, started)
+
+    result = database.get_run(run_id)
+    assert result is not None
+    details = {item["source_name"]: item for item in result["details"]}
+    assert details["测试搜索源"]["items_matched"] == 1
+    assert details["测试直连源"]["items_matched"] == 0
+    assert result["items_inserted"] == 1
+    assert database.article_count() == 1
+
+
 def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) -> None:
     database = Database(tmp_path / "keyword-strategy.db")
     database.initialize()
@@ -297,8 +426,8 @@ def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) ->
     assert keyword["exclude_terms"] == ["boxing", "football"]
     assert keyword["lookback_days"] == 14
     assert keyword["query"] == (
-        '("nitrile gloves" OR "medical gloves") '
-        'AND ("tariff" OR "demand") -"boxing" -"football" when:14d'
+        '("nitrile gloves"OR"medical gloves")'
+        'AND("tariff"OR"demand")-"boxing"-"football"when:14d'
     )
     feed_url = build_feed_url(
         {"mode": "search", "url_template": "https://example.com/rss?q={query}"},
@@ -349,6 +478,34 @@ def test_second_run_uses_cursor_after_initial_collection(tmp_path) -> None:
     assert second_result["items_inserted"] == 0
     assert second_result["items_matched"] == 0
     assert second_result["details"][0]["skipped_outside_window"] == 1
+    assert database.article_count() == 1
+
+
+def test_second_run_rechecks_lookback_when_incremental_collection_is_off(
+    tmp_path,
+) -> None:
+    database = configured_database(tmp_path)
+    database.set_setting("incremental_collection", "false")
+    collector = Collector(database, feed_fetcher=lambda _url, _timeout: RSS_XML)
+    first_started = datetime(2026, 7, 20, 4, 0, tzinfo=UTC)
+    first_run = database.create_run(
+        "manual", first_started.isoformat(), "2026-06-20T16:00:00Z"
+    )
+    collector.collect(first_run, first_started)
+
+    second_started = first_started + timedelta(hours=1)
+    second_run = database.create_run(
+        "manual", second_started.isoformat(), "2026-06-20T16:00:00Z"
+    )
+    collector.collect(second_run, second_started)
+
+    second_result = database.get_run(second_run)
+    assert second_result is not None
+    assert second_result["items_inserted"] == 0
+    assert second_result["items_matched"] == 1
+    assert second_result["duplicates"] == 1
+    assert second_result["details"][0]["skipped_outside_window"] == 0
+    assert second_result["details"][0]["window_start"] == "2026-06-20T16:00:00Z"
     assert database.article_count() == 1
 
 
