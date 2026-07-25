@@ -14,6 +14,12 @@ from app.collector import (
     parse_feed,
 )
 from app.database import DEFAULT_KEYWORDS, DEFAULT_SOURCES, Database
+from app.prompts import (
+    DEFAULT_BUSINESS_PROFILE,
+    DEFAULT_REPORT_PROMPT,
+    LEGACY_DEFAULT_BUSINESS_PROFILE,
+    LEGACY_DEFAULT_REPORT_PROMPT,
+)
 from app.query_builder import (
     MAX_GOOGLE_NEWS_QUERY_CHARS,
     build_keyword_query,
@@ -375,24 +381,55 @@ def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
                 reviewed_at TEXT,
                 error_message TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE daily_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_date TEXT NOT NULL,
+                categories TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error_message TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
+        )
+        connection.executemany(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, '2026-07-20T00:00:00Z')
+            """,
+            [
+                ("ai_business_profile", LEGACY_DEFAULT_BUSINESS_PROFILE),
+                ("ai_report_prompt", LEGACY_DEFAULT_REPORT_PROMPT),
+            ],
         )
 
     database = Database(database_path)
     database.initialize()
 
     with database.connect() as connection:
-        columns = {
+        review_columns = {
             row["name"]
             for row in connection.execute(
                 "PRAGMA table_info(article_relevance_reviews)"
             ).fetchall()
         }
+        report_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(daily_reports)"
+            ).fetchall()
+        }
     settings = database.get_settings()
 
-    assert {"category", "secondary_categories"} <= columns
+    assert {"category", "secondary_categories"} <= review_columns
+    assert {"keyword_category_id", "keyword_category_name"} <= report_columns
     assert len(settings["ai_relevance_prompt"]) >= 20
-    assert len(settings["ai_report_prompt"]) >= 20
+    assert settings["ai_business_profile"] == DEFAULT_BUSINESS_PROFILE
+    assert settings["ai_report_prompt"] == DEFAULT_REPORT_PROMPT
 
 
 def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(

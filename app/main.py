@@ -232,14 +232,7 @@ class AISettingsPayload(BaseModel):
 
 class ReportPayload(BaseModel):
     report_date: date
-    categories: list[str] = Field(default_factory=list, max_length=10)
-
-    @field_validator("categories")
-    @classmethod
-    def normalize_categories(cls, values: list[str]) -> list[str]:
-        return list(
-            dict.fromkeys(value.strip() for value in values if value.strip())
-        )
+    keyword_category_id: int = Field(ge=1)
 
 
 class DeletePendingPayload(BaseModel):
@@ -299,7 +292,7 @@ def create_app(
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
 
-    app = FastAPI(title="英科医疗 RSS 情报", version="1.3.0", lifespan=lifespan)
+    app = FastAPI(title="英科医疗 RSS 情报", version="1.4.0", lifespan=lifespan)
     app.state.database = database
     app.state.manager = manager
     app.state.scheduler = scheduler
@@ -756,8 +749,8 @@ def create_app(
     @app.post("/api/reports", status_code=status.HTTP_202_ACCEPTED)
     async def create_daily_report(payload: ReportPayload):
         try:
-            report_id, articles = report_manager.prepare(
-                payload.report_date, payload.categories
+            report_id, keyword_category_name, articles = report_manager.prepare(
+                payload.report_date, payload.keyword_category_id
             )
         except IntelligenceAlreadyRunningError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -769,7 +762,7 @@ def create_app(
                 report_manager.execute,
                 report_id,
                 payload.report_date,
-                payload.categories,
+                keyword_category_name,
                 articles,
             )
         )
@@ -778,6 +771,8 @@ def create_app(
         return {
             "report_id": report_id,
             "status": "running",
+            "keyword_category_id": payload.keyword_category_id,
+            "keyword_category_name": keyword_category_name,
             "article_count": len(articles),
         }
 

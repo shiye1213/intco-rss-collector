@@ -194,6 +194,7 @@ async function loadCatalogs() {
   state.keywordCategories = categoryData.items;
   state.keywordHitStats = hitStatsData;
   fillFilters();
+  fillReportKeywordCategoryOptions();
   renderSources();
   renderKeywords();
 }
@@ -265,14 +266,23 @@ async function loadRuns() {
 }
 
 function fillCategoryOptions() {
-  ["ai-category-filter", "report-category"].forEach((id) => {
-    const select = $(id);
-    const current = select.value;
-    select.innerHTML = `<option value="">全部分类</option>${Object.entries(state.categories)
-      .map(([code, label]) => `<option value="${escapeHtml(code)}">${escapeHtml(label)}</option>`)
-      .join("")}`;
+  const select = $("ai-category-filter");
+  const current = select.value;
+  select.innerHTML = `<option value="">全部分类</option>${Object.entries(state.categories)
+    .map(([code, label]) => `<option value="${escapeHtml(code)}">${escapeHtml(label)}</option>`)
+    .join("")}`;
+  select.value = current;
+}
+
+function fillReportKeywordCategoryOptions() {
+  const select = $("report-category");
+  const current = select.value;
+  select.innerHTML = `<option value="">请选择关键词分类</option>${state.keywordCategories
+    .map((category) => `<option value="${Number(category.id)}">${escapeHtml(category.name)}</option>`)
+    .join("")}`;
+  if (state.keywordCategories.some((category) => String(category.id) === current)) {
     select.value = current;
-  });
+  }
 }
 
 async function loadAIStatus() {
@@ -549,11 +559,13 @@ async function loadReports() {
   try {
     const data = await api("/api/reports?limit=100");
     $("report-rows").innerHTML = data.items.map((report) => {
-      const categories = (report.categories || []).length
-        ? report.categories.map(categoryLabel).join("、") : "全部分类";
+      const keywordCategory = report.keyword_category_name
+        || ((report.categories || []).length
+          ? report.categories.map(categoryLabel).join("、")
+          : "历史综合日报");
       return `<tr>
         <td><strong>${escapeHtml(report.title || `日报 #${report.id}`)}</strong><span class="cell-subtitle">#${report.id} · ${escapeHtml(report.model)}</span></td>
-        <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(categories)}</td><td>${report.article_count}</td>
+        <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(keywordCategory)}</td><td>${report.article_count}</td>
         <td>${riskMarkup(report.risk_level, report.risk_score)}</td><td>${statusLabel(report.status)}</td>
         <td>${formatFullTime(report.updated_at)}</td>
         <td><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button></td>
@@ -566,27 +578,33 @@ async function loadReports() {
 
 async function generateReport(event) {
   event.preventDefault();
-  const category = $("report-category").value;
+  const keywordCategoryId = Number($("report-category").value);
+  if (!keywordCategoryId) {
+    showToast("请选择一个关键词分类", true);
+    return;
+  }
   try {
     const data = await api("/api/reports", {
       method: "POST",
       body: JSON.stringify({
         report_date: $("report-date").value,
-        categories: category ? [category] : [],
+        keyword_category_id: keywordCategoryId,
       }),
     });
     state.wasReportRunning = true;
-    showToast(`日报 #${data.report_id} 已开始生成，共 ${data.article_count} 篇新闻`);
+    showToast(`${data.keyword_category_name}日报 #${data.report_id} 已开始生成，共 ${data.article_count} 篇新闻`);
     await Promise.all([loadAIStatus(), loadReports()]);
   } catch (error) { showToast(error.message, true); }
 }
 
-function reportSources(articleIds, articleById) {
-  const sources = [...new Set((articleIds || []).map(Number))]
-    .map((articleId) => articleById.get(articleId))
-    .filter(Boolean);
+function reportSources(articleIds, articleById, attachedSources = []) {
+  const sources = attachedSources.length
+    ? attachedSources
+    : [...new Set((articleIds || []).map(Number))]
+      .map((articleId) => articleById.get(articleId))
+      .filter(Boolean);
   if (!sources.length) return "";
-  return `<div class="report-sources"><span>出处</span>${sources.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.publisher || "原文")} · ${escapeHtml(article.title)}</a>`).join("")}</div>`;
+  return `<div class="report-sources"><span>出处</span>${sources.map((article) => `<a href="${escapeHtml(article.source_url || article.final_url || article.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.publisher || "原文")} · ${escapeHtml(article.title)}</a>`).join("")}</div>`;
 }
 
 function reportList(title, items, articleById) {
@@ -595,7 +613,7 @@ function reportList(title, items, articleById) {
     const normalized = typeof item === "string"
       ? { category: "other", content: item, article_ids: [] }
       : item;
-    return `<li><div class="report-item-content"><span class="tag">${escapeHtml(categoryLabel(normalized.category || "other"))}</span><span>${escapeHtml(normalized.content || "")}</span></div>${reportSources(normalized.article_ids, articleById)}</li>`;
+    return `<li><div class="report-item-content"><span class="tag">${escapeHtml(categoryLabel(normalized.category || "other"))}</span><span>${escapeHtml(normalized.content || "")}</span></div>${reportSources(normalized.article_ids, articleById, normalized.sources)}</li>`;
   }).join("")}</ul></section>`;
 }
 
@@ -603,14 +621,16 @@ async function openReportDetail(id) {
   try {
     const report = await api(`/api/reports/${id}`);
     $("report-dialog-title").textContent = report.title || `情报日报 #${report.id}`;
-    const categoryScope = report.categories?.length
-      ? report.categories.map(categoryLabel).join("、") : "全部分类";
+    const categoryScope = report.keyword_category_name
+      || (report.categories?.length
+        ? report.categories.map(categoryLabel).join("、")
+        : "历史综合日报");
     const articleById = new Map((report.articles || []).map((article) => [Number(article.article_id), article]));
     const allSourceIds = (report.articles || []).map((article) => article.article_id);
     $("report-detail").innerHTML = `
       <div class="report-meta"><span>${escapeHtml(report.report_date)}</span><span>${escapeHtml(categoryScope)}</span><span>${report.article_count} 篇新闻</span>${riskMarkup(report.risk_level, report.risk_score)}</div>
-      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p>${reportSources(allSourceIds, articleById)}</section>
-      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><div class="development-title"><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span><strong>${escapeHtml(item.title)}</strong></div><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p>${reportSources([item.article_id], articleById)}</article>`).join("")}</div></section>` : ""}
+      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p>${reportSources(allSourceIds, articleById, report.sources)}</section>
+      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><div class="development-title"><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span><strong>${escapeHtml(item.title)}</strong></div><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p>${reportSources([item.article_id], articleById, item.sources)}</article>`).join("")}</div></section>` : ""}
       ${reportList("关键风险", report.key_risks, articleById)}
       ${reportList("业务机会", report.opportunities, articleById)}
       ${reportList("建议动作", report.recommended_actions, articleById)}

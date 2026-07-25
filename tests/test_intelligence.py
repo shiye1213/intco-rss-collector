@@ -15,6 +15,7 @@ from app.content import (
 from app.database import Database
 from app.intelligence import (
     ArticleAnalysisManager,
+    AutomaticIntelligenceWorkflow,
     DailyReportManager,
     IntelligenceRepository,
 )
@@ -108,6 +109,36 @@ def create_article(
             ),
         )
         return int(cursor.lastrowid)
+
+
+def assign_article_to_keyword_category(
+    database: Database,
+    article_id: int,
+    category_name: str = "贸易政策",
+) -> int:
+    category = next(
+        item
+        for item in database.get_keyword_categories()
+        if item["name"] == category_name
+    )
+    keyword_id = database.create_keyword(
+        {
+            "name": f"测试关键词-{category_name}-{article_id}",
+            "category_id": category["id"],
+            "match_terms": [f"测试词-{article_id}"],
+            "active": True,
+        }
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO article_keywords
+                (article_id, keyword_id, matched_terms)
+            VALUES (?, ?, '["测试词"]')
+            """,
+            (article_id, keyword_id),
+        )
+    return int(category["id"])
 
 
 def relevant_review() -> dict[str, Any]:
@@ -576,34 +607,212 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     )
     run_id, article_ids = analysis_manager.prepare(limit=20)
     analysis_manager.execute(run_id, article_ids)
+    keyword_category_id = assign_article_to_keyword_category(
+        database, article_id
+    )
 
     report_client = FakeLLMClient([report_response(article_id)])
     report_manager = DailyReportManager(database, repository, report_client)
-    report_id, articles = report_manager.prepare(date(2026, 7, 20), [])
-    report_manager.execute(report_id, date(2026, 7, 20), [], articles)
+    report_id, category_name, articles = report_manager.prepare(
+        date(2026, 7, 20), keyword_category_id
+    )
+    report_manager.execute(
+        report_id, date(2026, 7, 20), category_name, articles
+    )
 
     report = repository.get_report(report_id)
     assert report is not None
     assert report["status"] == "success"
     assert report["article_count"] == 1
+    assert report["keyword_category_id"] == keyword_category_id
+    assert report["keyword_category_name"] == "贸易政策"
     assert report["risk_score"] == 72
     assert report["risk_level"] == "high"
     assert [item["article_id"] for item in report["key_developments"]] == [
         article_id
     ]
     assert report["key_developments"][0]["category"] == "market_demand"
-    assert report["key_risks"] == [
-        {
-            "category": "market_demand",
-            "content": "需求持续性仍需确认",
-            "article_ids": [article_id],
-        }
-    ]
+    assert report["key_risks"][0]["category"] == "market_demand"
+    assert report["key_risks"][0]["content"] == "需求持续性仍需确认"
+    assert report["key_risks"][0]["article_ids"] == [article_id]
+    assert report["key_risks"][0]["sources"][0]["source_url"] == (
+        "https://example.com/medical-gloves"
+    )
     assert [item["content"] for item in report["watchlist"]] == ["采购量变化"]
     assert report["articles"][0]["article_id"] == article_id
     assert "测试自定义日报提示词" in report_client.calls[0][0]
+    assert "本次日报的关键词分类：贸易政策" in report_client.calls[0][0]
+    assert '"keyword_category":"贸易政策"' in report_client.calls[0][1]
     assert '"source_url"' in report_client.calls[0][1]
-    assert repository.has_successful_report(date(2026, 7, 20))
+    assert report["sources"][0]["source_url"] == (
+        "https://example.com/medical-gloves"
+    )
+    assert repository.has_successful_report(
+        date(2026, 7, 20), keyword_category_id
+    )
+
+
+def test_daily_reports_keep_keyword_categories_separate(tmp_path) -> None:
+    database = Database(tmp_path / "separate-category-reports.db")
+    database.initialize()
+    policy_article_id = create_article(
+        database,
+        slug="policy-report",
+        title="医疗用品贸易政策更新",
+        summary="贸易政策候选",
+    )
+    tariff_article_id = create_article(
+        database,
+        slug="tariff-report",
+        title="医疗手套关税调整",
+        summary="关税候选",
+    )
+    repository = IntelligenceRepository(database)
+    analysis_manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient(
+            [
+                relevant_review(),
+                business_analysis(risk_score=65),
+                relevant_review(),
+                business_analysis(risk_score=55),
+            ]
+        ),
+        FakeContentFetcher(
+            [
+                content_document(
+                    "https://example.com/tariff-report",
+                    "医疗手套进口关税发生调整。" * 30,
+                ),
+                content_document(
+                    "https://example.com/policy-report",
+                    "医疗用品贸易政策发生变化。" * 30,
+                ),
+            ]
+        ),
+    )
+    run_id, article_ids = analysis_manager.prepare(limit=20)
+    analysis_manager.execute(run_id, article_ids)
+    policy_category_id = assign_article_to_keyword_category(
+        database, policy_article_id, "贸易政策"
+    )
+    tariff_category_id = assign_article_to_keyword_category(
+        database, tariff_article_id, "关税调整"
+    )
+
+    report_manager = DailyReportManager(
+        database,
+        repository,
+        FakeLLMClient(
+            [
+                report_response(policy_article_id),
+                report_response(tariff_article_id),
+            ]
+        ),
+    )
+    policy_report_id, policy_name, policy_articles = report_manager.prepare(
+        date(2026, 7, 20), policy_category_id
+    )
+    assert [item["article_id"] for item in policy_articles] == [
+        policy_article_id
+    ]
+    report_manager.execute(
+        policy_report_id,
+        date(2026, 7, 20),
+        policy_name,
+        policy_articles,
+    )
+
+    tariff_report_id, tariff_name, tariff_articles = report_manager.prepare(
+        date(2026, 7, 20), tariff_category_id
+    )
+    assert [item["article_id"] for item in tariff_articles] == [
+        tariff_article_id
+    ]
+    report_manager.execute(
+        tariff_report_id,
+        date(2026, 7, 20),
+        tariff_name,
+        tariff_articles,
+    )
+
+    policy_report = repository.get_report(policy_report_id)
+    tariff_report = repository.get_report(tariff_report_id)
+    assert policy_report is not None
+    assert tariff_report is not None
+    assert policy_report["keyword_category_name"] == "贸易政策"
+    assert tariff_report["keyword_category_name"] == "关税调整"
+    assert [item["article_id"] for item in policy_report["articles"]] == [
+        policy_article_id
+    ]
+    assert [item["article_id"] for item in tariff_report["articles"]] == [
+        tariff_article_id
+    ]
+
+
+def test_automatic_workflow_generates_each_keyword_category_separately(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "automatic-category-reports.db")
+    database.initialize()
+    database.set_setting("ai_auto_analyze", "true")
+    database.set_setting("ai_auto_report", "true")
+
+    class ConfiguredDependency:
+        configured = True
+
+    class FakeAnalysisManager:
+        client = ConfiguredDependency()
+        content_reader = ConfiguredDependency()
+
+        def prepare_queue(self, **_: Any) -> tuple[int, list[int]]:
+            return 1, []
+
+        def execute_queue(self, *_: Any, **__: Any) -> None:
+            return None
+
+    class FakeReportManager:
+        def __init__(self) -> None:
+            self.executed: list[tuple[int, str]] = []
+
+        def prepare(
+            self, report_date: date, category_id: int
+        ) -> tuple[int, str, list[dict[str, Any]]]:
+            category = database.get_keyword_category(category_id)
+            assert category is not None
+            return category_id, str(category["name"]), [{"article_id": category_id}]
+
+        def execute(
+            self,
+            report_id: int,
+            report_date: date,
+            category_name: str,
+            articles: list[dict[str, Any]],
+        ) -> None:
+            assert articles == [{"article_id": report_id}]
+            self.executed.append((report_id, category_name))
+
+    class FakeRepository:
+        def has_successful_report(
+            self, report_date: date, category_id: int
+        ) -> bool:
+            return False
+
+    report_manager = FakeReportManager()
+    workflow = AutomaticIntelligenceWorkflow(
+        database,
+        FakeAnalysisManager(),  # type: ignore[arg-type]
+        report_manager,  # type: ignore[arg-type]
+        FakeRepository(),  # type: ignore[arg-type]
+    )
+    workflow.after_collection()
+
+    assert [name for _, name in report_manager.executed] == [
+        "贸易政策",
+        "关税调整",
+        "行业法规",
+    ]
 
 
 def test_analysis_queue_can_process_one_collection_run(tmp_path) -> None:
@@ -978,8 +1187,14 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
 
     report_system, report_user = build_report_prompts(
         report_date="2026-07-20",
-        category_labels=["市场需求"],
-        articles=[{"article_id": 1, "title": "测试新闻"}],
+        keyword_category_name="贸易政策",
+        articles=[
+            {
+                "article_id": 1,
+                "title": "测试新闻",
+                "source_url": "https://example.com/news",
+            }
+        ],
         business_profile=DEFAULT_BUSINESS_PROFILE,
         report_prompt="自定义日报要求：建议必须明确责任对象与监控指标。",
     )
@@ -995,7 +1210,14 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert "自定义日报要求" in report_system
     assert '"article_ids": [1]' in report_system
     assert '"category": "分类代码"' in report_system
+    assert "关键词分类：贸易政策" in report_system
+    assert "来源链接由系统" in DEFAULT_REPORT_PROMPT
+    assert '"keyword_category":"贸易政策"' in report_user
+    assert '"source_url":"https://example.com/news"' in report_user
     assert '"articles"' in report_user
+    assert "直接传导路径" in DEFAULT_BUSINESS_PROFILE
+    assert "贸易政策与关税" in DEFAULT_BUSINESS_PROFILE
+    assert "不属于业务边界" in DEFAULT_BUSINESS_PROFILE
     assert len(DEFAULT_RELEVANCE_PROMPT) >= 20
     assert len(DEFAULT_REPORT_PROMPT) >= 20
 

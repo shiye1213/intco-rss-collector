@@ -227,11 +227,11 @@
 
         <section id="view-reports" class="view">
           <div class="view-heading">
-            <div><h2>情报日报</h2><p>按新闻发布日期与业务分类汇总</p></div>
+            <div><h2>情报日报</h2><p>按新闻发布日期与关键词分类分别生成；条目标签表示业务影响分类</p></div>
           </div>
           <form id="report-form" class="report-toolbar">
             <label><span>日报日期</span><input id="report-date" type="date" required /></label>
-            <label><span>业务分类</span><select id="report-category"><option value="">全部分类</option></select></label>
+            <label><span>关键词分类</span><select id="report-category" required><option value="">请选择关键词分类</option></select></label>
             <button id="generate-report" class="button primary" type="submit"><i data-lucide="file-plus-2"></i><span>生成日报</span></button>
             <button id="refresh-reports" class="icon-button" type="button" title="刷新日报">
               <i data-lucide="rotate-cw"></i>
@@ -239,7 +239,7 @@
           </form>
           <div class="table-wrap">
             <table class="report-table">
-              <thead><tr><th>日报</th><th>日期</th><th>分类范围</th><th>新闻数</th><th>风险</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
+              <thead><tr><th>日报</th><th>日期</th><th>关键词分类</th><th>新闻数</th><th>风险</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
               <tbody id="report-rows"></tbody>
             </table>
             <div id="report-empty" class="empty-state hidden">暂无已生成的情报日报</div>
@@ -302,7 +302,7 @@
             <form id="ai-settings-form" class="ai-settings-form">
               <label class="full"><span>企业业务边界</span><textarea id="ai-business-profile" rows="9" minlength="50" maxlength="10000" required></textarea></label>
               <label class="full prompt-setting"><span>相关性审核提示词</span><small>用于控制业务相关性判断与分类；JSON 格式、安全规则和分类代码由系统固定追加。</small><textarea id="ai-relevance-prompt" rows="11" minlength="20" maxlength="20000" required></textarea></label>
-              <label class="full prompt-setting"><span>日报生成提示词</span><small>用于控制分类汇总、风险与建议写法；来源文章 ID 校验和输出结构由系统固定追加。</small><textarea id="ai-report-prompt" rows="11" minlength="20" maxlength="20000" required></textarea></label>
+              <label class="full prompt-setting"><span>日报生成提示词</span><small>每份日报只汇总一个关键词分类；来源文章 ID、原文链接校验和输出结构由系统固定追加。</small><textarea id="ai-report-prompt" rows="11" minlength="20" maxlength="20000" required></textarea></label>
               <label><span>相关性阈值</span><input id="ai-threshold" type="number" min="0" max="100" required /></label>
               <label><span>每批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /></label>
               <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /></label>

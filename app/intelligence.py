@@ -1234,7 +1234,7 @@ class IntelligenceRepository:
         return {"total": total, "items": items}
 
     def relevant_articles_for_report(
-        self, report_date: date, categories: list[str]
+        self, report_date: date, keyword_category_id: int
     ) -> list[dict[str, Any]]:
         window_start, window_end = local_date_window(report_date)
         filters = [
@@ -1244,19 +1244,29 @@ class IntelligenceRepository:
             "a.published_at >= ?",
             "a.published_at < ?",
         ]
-        parameters: list[Any] = [window_start, window_end]
-        if categories:
-            placeholders = ",".join("?" for _ in categories)
-            filters.append(f"ba.category IN ({placeholders})")  # noqa: S608
-            parameters.extend(categories)
+        parameters: list[Any] = [
+            keyword_category_id,
+            window_start,
+            window_end,
+        ]
         with self.database.connect() as connection:
             rows = connection.execute(
                 f"""
+                WITH category_matches AS (
+                    SELECT
+                        ak.article_id,
+                        GROUP_CONCAT(DISTINCT k.name) AS matched_keyword_names
+                    FROM article_keywords ak
+                    JOIN keywords k ON k.id = ak.keyword_id
+                    WHERE k.category_id = ?
+                    GROUP BY ak.article_id
+                )
                 SELECT ba.*, a.title, a.url, a.publisher, a.published_at,
-                       ic.final_url
+                       ic.final_url, cm.matched_keyword_names
                 FROM business_articles ba
                 JOIN articles a ON a.id = ba.article_id
                 JOIN article_contents ic ON ic.article_id = ba.article_id
+                JOIN category_matches cm ON cm.article_id = ba.article_id
                 WHERE {' AND '.join(filters)}
                 ORDER BY ba.risk_score DESC, a.published_at DESC
                 """,  # noqa: S608
@@ -1272,7 +1282,8 @@ class IntelligenceRepository:
         self,
         *,
         report_date: date,
-        categories: list[str],
+        keyword_category_id: int,
+        keyword_category_name: str,
         article_ids: list[int],
         model: str,
     ) -> int:
@@ -1281,13 +1292,15 @@ class IntelligenceRepository:
             cursor = connection.execute(
                 """
                 INSERT INTO daily_reports
-                    (report_date, categories, status, article_count, model,
+                    (report_date, categories, keyword_category_id,
+                     keyword_category_name, status, article_count, model,
                      prompt_version, created_at, updated_at)
-                VALUES (?, ?, 'running', ?, ?, ?, ?, ?)
+                VALUES (?, '[]', ?, ?, 'running', ?, ?, ?, ?, ?)
                 """,
                 (
                     report_date.isoformat(),
-                    json.dumps(categories, ensure_ascii=False),
+                    keyword_category_id,
+                    keyword_category_name,
                     len(article_ids),
                     model,
                     REPORT_PROMPT_VERSION,
@@ -1395,18 +1408,57 @@ class IntelligenceRepository:
         report = dict(row)
         for field in self.REPORT_JSON_FIELDS:
             report[field] = self._decode_json(report[field], [])
-        report["articles"] = [dict(article) for article in article_rows]
+        articles = [dict(article) for article in article_rows]
+        sources_by_id: dict[int, dict[str, Any]] = {}
+        for article in articles:
+            article["source_url"] = article.get("final_url") or article["url"]
+            source = {
+                "article_id": int(article["article_id"]),
+                "title": article["title"],
+                "publisher": article["publisher"],
+                "source_url": article["source_url"],
+            }
+            sources_by_id[int(article["article_id"])] = source
+        report["articles"] = articles
+        report["sources"] = list(sources_by_id.values())
+        for development in report["key_developments"]:
+            if not isinstance(development, dict):
+                continue
+            source = sources_by_id.get(int(development.get("article_id") or 0))
+            development["sources"] = [source] if source else []
+        for field in (
+            "key_risks",
+            "opportunities",
+            "recommended_actions",
+            "watchlist",
+        ):
+            for item in report[field]:
+                if not isinstance(item, dict):
+                    continue
+                item["sources"] = [
+                    sources_by_id[article_id]
+                    for article_id in dict.fromkeys(
+                        int(value)
+                        for value in item.get("article_ids", [])
+                        if str(value).isdigit()
+                    )
+                    if article_id in sources_by_id
+                ]
         return report
 
-    def has_successful_report(self, report_date: date) -> bool:
+    def has_successful_report(
+        self, report_date: date, keyword_category_id: int
+    ) -> bool:
         with self.database.connect() as connection:
             row = connection.execute(
                 """
                 SELECT 1 FROM daily_reports
-                WHERE report_date = ? AND categories = '[]' AND status = 'success'
+                WHERE report_date = ?
+                  AND keyword_category_id = ?
+                  AND status = 'success'
                 LIMIT 1
                 """,
-                (report_date.isoformat(),),
+                (report_date.isoformat(), keyword_category_id),
             ).fetchone()
         return row is not None
 
@@ -1883,41 +1935,44 @@ class DailyReportManager:
             return self._running_report_id
 
     def prepare(
-        self, report_date: date, categories: list[str]
-    ) -> tuple[int, list[dict[str, Any]]]:
+        self, report_date: date, keyword_category_id: int
+    ) -> tuple[int, str, list[dict[str, Any]]]:
         if not self.client.configured:
             raise ValueError("尚未配置 DEEPSEEK_API_KEY")
-        invalid_categories = [
-            category for category in categories if category not in CATEGORY_LABELS
-        ]
-        if invalid_categories:
-            raise ValueError(f"未知分类: {', '.join(invalid_categories)}")
+        keyword_category = self.database.get_keyword_category(
+            keyword_category_id
+        )
+        if keyword_category is None:
+            raise ValueError("未知或已停用的关键词分类")
+        keyword_category_name = str(keyword_category["name"])
         with self._state_lock:
             if self._running_report_id is not None:
                 raise IntelligenceAlreadyRunningError(
                     f"日报 #{self._running_report_id} 正在生成"
                 )
             articles = self.repository.relevant_articles_for_report(
-                report_date, categories
+                report_date, keyword_category_id
             )
             if not articles:
                 raise ValueError(
-                    "所选日期和分类下没有完成全文审核与业务分析的相关新闻"
+                    f"“{keyword_category_name}”分类在所选日期下"
+                    "没有完成全文审核与业务分析的相关新闻"
                 )
             report_id = self.repository.create_report(
                 report_date=report_date,
-                categories=categories,
+                keyword_category_id=keyword_category_id,
+                keyword_category_name=keyword_category_name,
                 article_ids=[int(article["article_id"]) for article in articles],
                 model=self.client.model,
             )
             self._running_report_id = report_id
-        return report_id, articles
+        return report_id, keyword_category_name, articles
 
     def execute(
         self,
         report_id: int,
         report_date: date,
-        categories: list[str],
+        keyword_category_name: str,
         articles: list[dict[str, Any]],
     ) -> None:
         try:
@@ -1925,7 +1980,7 @@ class DailyReportManager:
             report_articles = [self._report_article(article) for article in articles]
             system_prompt, user_prompt = build_report_prompts(
                 report_date=report_date.isoformat(),
-                category_labels=[CATEGORY_LABELS[category] for category in categories],
+                keyword_category_name=keyword_category_name,
                 articles=report_articles,
                 business_profile=settings.get("ai_business_profile", ""),
                 report_prompt=settings.get(
@@ -1979,6 +2034,13 @@ class DailyReportManager:
             "publisher": article["publisher"],
             "published_at": article["published_at"],
             "source_url": article.get("final_url") or article["url"],
+            "matched_keywords": [
+                name.strip()
+                for name in str(
+                    article.get("matched_keyword_names") or ""
+                ).split(",")
+                if name.strip()
+            ],
             "category": article["category"],
             "summary": article["summary"],
             "impact_direction": article["impact_direction"],
@@ -2051,10 +2113,18 @@ class AutomaticIntelligenceWorkflow:
             return
         timezone = ZoneInfo(settings.get("timezone", "Asia/Shanghai"))
         report_date = datetime.now(timezone).date()
-        if self.repository.has_successful_report(report_date):
-            return
-        try:
-            report_id, articles = self.report_manager.prepare(report_date, [])
-            self.report_manager.execute(report_id, report_date, [], articles)
-        except (IntelligenceAlreadyRunningError, ValueError):
-            return
+        for keyword_category in self.database.get_keyword_categories():
+            category_id = int(keyword_category["id"])
+            if self.repository.has_successful_report(report_date, category_id):
+                continue
+            try:
+                report_id, category_name, articles = self.report_manager.prepare(
+                    report_date, category_id
+                )
+                self.report_manager.execute(
+                    report_id, report_date, category_name, articles
+                )
+            except IntelligenceAlreadyRunningError:
+                return
+            except ValueError:
+                continue

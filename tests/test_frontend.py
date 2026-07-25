@@ -52,6 +52,12 @@ def test_prompt_settings_and_cited_report_content_are_wired() -> None:
     assert "function reportSources(" in javascript
     assert "全部来源文章" in javascript
     assert "item.secondary_categories" in javascript
+    assert "按新闻发布日期与关键词分类分别生成" in html
+    assert "请选择关键词分类" in html
+    assert "fillReportKeywordCategoryOptions()" in javascript
+    assert "keyword_category_id: keywordCategoryId" in javascript
+    assert "report.keyword_category_name" in javascript
+    assert "article.source_url" in javascript
 
 
 def test_incremental_collection_setting_is_wired() -> None:

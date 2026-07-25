@@ -12,6 +12,8 @@ from .prompts import (
     DEFAULT_BUSINESS_PROFILE,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
+    LEGACY_DEFAULT_BUSINESS_PROFILE,
+    LEGACY_DEFAULT_REPORT_PROMPT,
 )
 from .query_builder import build_keyword_query
 
@@ -301,6 +303,8 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     report_date TEXT NOT NULL,
     categories TEXT NOT NULL DEFAULT '[]',
+    keyword_category_id INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL,
+    keyword_category_name TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed', 'interrupted')),
     risk_level TEXT NOT NULL DEFAULT 'low',
     risk_score INTEGER NOT NULL DEFAULT 0,
@@ -1002,6 +1006,34 @@ class Database:
                         ADD COLUMN {column} TEXT NOT NULL DEFAULT 'pending'
                         """  # noqa: S608
                     )
+            report_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(daily_reports)"
+                ).fetchall()
+            }
+            report_migrations = {
+                "keyword_category_id": (
+                    "INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL"
+                ),
+                "keyword_category_name": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in report_migrations.items():
+                if column not in report_columns:
+                    connection.execute(
+                        f"""
+                        ALTER TABLE daily_reports
+                        ADD COLUMN {column} {definition}
+                        """  # noqa: S608
+                    )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_daily_reports_keyword_category
+                ON daily_reports(
+                    report_date DESC, keyword_category_id, status, id DESC
+                )
+                """
+            )
             source_rows = connection.execute(
                 "SELECT id, url_template, language, country FROM rss_sources"
             ).fetchall()
@@ -1333,6 +1365,27 @@ class Database:
                     """,
                     (key, value, now),
                 )
+            prompt_default_migrations = {
+                "ai_business_profile": (
+                    LEGACY_DEFAULT_BUSINESS_PROFILE,
+                    DEFAULT_BUSINESS_PROFILE,
+                ),
+                "ai_report_prompt": (
+                    LEGACY_DEFAULT_REPORT_PROMPT,
+                    DEFAULT_REPORT_PROMPT,
+                ),
+            }
+            for key, (legacy_value, current_value) in (
+                prompt_default_migrations.items()
+            ):
+                connection.execute(
+                    """
+                    UPDATE app_settings
+                    SET value = ?, updated_at = ?
+                    WHERE key = ? AND value = ?
+                    """,
+                    (current_value, now, key, legacy_value),
+                )
 
     @staticmethod
     def rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
@@ -1359,6 +1412,18 @@ class Database:
                 """
             ).fetchall()
         return self.rows(rows)
+
+    def get_keyword_category(self, category_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, sort_order
+                FROM keyword_categories
+                WHERE id = ? AND active = 1
+                """,
+                (category_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def keyword_hit_stats(self) -> dict[str, Any]:
         with self.connect() as connection:

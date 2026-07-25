@@ -211,7 +211,7 @@
 }
 ```
 
-两段提示词可在系统设置中查看和修改。系统会在运行时固定追加业务分类代码、JSON 输出结构、来源 ID 校验和防 Prompt 注入规则，因此可编辑内容应聚焦业务判断、分析顺序和写作要求。自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 且当天存在已审核相关新闻时才会执行。
+企业业务边界和两段提示词可在系统设置中查看和修改。系统会在运行时固定追加业务分类代码、单一关键词分类边界、JSON 输出结构、来源 ID/链接校验和防 Prompt 注入规则，因此可编辑内容应聚焦业务判断、分析顺序和写作要求。自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 时才会执行，并为当天每个有合格文章的活跃关键词分类分别生成日报。
 
 ## 数据维护
 
@@ -235,16 +235,16 @@
 
 ### `POST /api/reports`
 
-按新闻发布日期和分类生成后台日报任务：
+按新闻发布日期和一个关键词分类生成后台日报任务：
 
 ```json
 {
   "report_date": "2026-07-20",
-  "categories": ["market_demand"]
+  "keyword_category_id": 1
 }
 ```
 
-`categories=[]` 表示全部分类。所选范围没有已通过相关性审核的新闻时返回 `422`。
+`keyword_category_id` 来自 `GET /api/keyword-categories`。一份日报只汇总命中该关键词分类、通过相关性审核且业务分析成功的文章；例如“贸易政策”和“关税调整”会生成两份独立日报。所选范围没有合格新闻时返回 `422`。
 
 ### `GET /api/reports?limit=50`
 
@@ -252,7 +252,7 @@
 
 ### `GET /api/reports/{report_id}`
 
-返回日报结构化内容和全部依据文章。关键进展包含 `category` 和 `article_id`；风险、机会、建议动作和监控清单中的每一项包含 `category`、`content` 与 `article_ids`。后端会剔除不属于本次日报输入的来源 ID，页面利用有效 ID 展示发布方和原文链接。
+返回日报结构化内容和全部依据文章。顶层包含 `keyword_category_id`、`keyword_category_name` 和经校验的 `sources`。关键进展包含 `category`、`article_id` 与 `sources`；风险、机会、建议动作和监控清单中的每一项包含 `category`、`content`、`article_ids` 与 `sources`。这里的 `category` 是 AI 业务影响标签，不决定日报收录范围。后端会剔除不属于本次日报输入的来源 ID，再附加文章标题、发布方和 `source_url`。
 
 ## 错误约定
 
