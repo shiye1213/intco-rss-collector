@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 10 课：前端与实时轮询</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar"><div class="shell"><span class="brand">第 10 课 · 前端</span><nav class="nav"><a href="0009-deepseek-analysis-state-machine.html">上一课</a><a href="../reference/course-map.html">课程地图</a><a href="0011-testing-debugging-and-security.html">下一课</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Tangible win · 30 min</p>
+    <h1>看懂页面如何调用 API 并自动更新</h1>
+    <p class="lead">你将理解 HTML、CSS、DOM、fetch、async/await、事件监听和两秒轮询。</p>
+
+    <h2>1. 三种前端文件各管什么？</h2>
+    <div class="grid">
+      <section class="card"><h3>HTML</h3><p><code>static/index.html</code> 定义标题、按钮、表格和弹窗等结构。</p></section>
+      <section class="card"><h3>CSS</h3><p><code>static/styles.css</code> 决定布局、颜色、间距和响应式显示。</p></section>
+      <section class="card"><h3>JavaScript</h3><p><code>static/app.js</code> 请求数据、响应点击并修改页面内容。</p></section>
+      <section class="card"><h3>DOM</h3><p>浏览器把 HTML 变成可由 JavaScript 查找和修改的对象树。</p></section>
+    </div>
+
+    <h2>2. api() 是前端统一服务窗口</h2>
+    <pre><code>async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!response.ok) throw new Error(...);
+  return response.json();
+}</code></pre>
+    <p><code>async</code> 表示函数包含异步操作，<code>await</code> 等待网络结果但不冻结整个浏览器。统一函数让错误处理和 JSON 解析只写一次。</p>
+
+    <h2>3. 从 JSON 到页面</h2>
+    <pre><code>const data = await api("/api/status");
+$("metric-articles").textContent = data.article_count;</code></pre>
+    <p><code>$()</code> 是项目自己的简写，内部调用 <code>document.getElementById()</code>。第二行把 JSON 中的文章数写进页面元素。</p>
+
+    <h2>4. 事件把用户动作连接到函数</h2>
+    <pre><code>button.addEventListener("click", startCollection);</code></pre>
+    <p>注册事件后，浏览器不会立即运行 <code>startCollection</code>；只有点击发生时才调用。表单提交、下拉变化和输入都使用类似方式。</p>
+
+    <h2>5. 为什么页面能自动同步？</h2>
+    <pre><code>window.setInterval(pollLiveState, 2000);</code></pre>
+    <p>页面每两秒调用一次 <code>pollLiveState()</code>，并行刷新采集状态与 AI 状态。后台任务完成后，下一轮查询就能看到新值。</p>
+    <p><code>state.pollInFlight</code> 防止上一轮还没结束又启动下一轮；<code>Promise.allSettled()</code> 让一个状态接口失败时另一个仍可完成。</p>
+
+    <h2>6. 列表不是自动更新的</h2>
+    <p>实时状态会轮询，但关键词列表通常在进入页面、保存或手动刷新时重新加载。这解释了为什么数据库已更新后，旧页面可能需要重新进入或 Ctrl+F5。</p>
+
+    <h2>7. 真实案例：关键词命中统计</h2>
+    <p>新增一个统计展示通常要同时完成：</p>
+    <ol class="checklist"><li>后端提供 <code>/api/keyword-hit-stats</code>。</li><li>JavaScript 调用接口并保存数据。</li><li>渲染函数把结果写入表格或卡片。</li><li>在保存、采集完成或刷新时重新加载。</li></ol>
+
+    <div class="quiz" data-quiz data-answer="A" data-correct-feedback="轮询让浏览器周期性询问后端，而不是等待后端主动推送。" data-retry-feedback="查看 setInterval 每两秒做了什么。">
+      <h3>即时检查：当前项目如何同步后台任务状态？</h3>
+      <div class="choices"><button class="choice" data-choice="A">定时轮询</button><button class="choice" data-choice="B">主动推送</button></div>
+      <p class="feedback" aria-live="polite">先选择一个答案。</p>
+    </div>
+
+    <h2>8. 动手练习</h2>
+    <div class="card"><ol class="checklist"><li>在 <code>static/app.js</code> 找到 <code>loadStatus()</code>、<code>pollLiveState()</code> 和 <code>initialize()</code>。</li><li>画出 <code>initialize → setInterval → pollLiveState → loadStatus</code> 调用链。</li><li>解释为什么关键词保存成功后代码会执行 <code>loadCatalogs()</code>。</li></ol></div>
+
+    <h2>课末回忆</h2>
+    <p>HTML、CSS、JavaScript 各负责什么？async/await 解决什么？轮询与列表刷新有什么区别？</p>
+    <p>依据：<a href="https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API">MDN Fetch API</a>。</p>
+  </main>
+  <footer><div class="shell">下一课：用测试和可复现信号调试项目。</div></footer>
+  <script src="../assets/quiz.js"></script>
+</body>
+</html>

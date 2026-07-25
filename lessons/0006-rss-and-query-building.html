@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 6 课：RSS、XML 与查询构造</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar"><div class="shell"><span class="brand">第 6 课 · RSS 查询</span><nav class="nav"><a href="0005-sqlite-and-persistence.html">上一课</a><a href="../reference/course-map.html">课程地图</a><a href="0007-collection-cursors-and-dedup.html">下一课</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Tangible win · 30 min</p>
+    <h1>从关键词到一份可解析的新闻清单</h1>
+    <p class="lead">你将理解 RSS/XML、搜索型与直连型来源、Google News 查询表达式，以及中英文关键词为何必须分流。</p>
+
+    <h2>1. RSS 是网站提供的更新清单</h2>
+    <pre><code>&lt;rss&gt;
+  &lt;channel&gt;
+    &lt;title&gt;Example News&lt;/title&gt;
+    &lt;item&gt;
+      &lt;title&gt;New tariff policy&lt;/title&gt;
+      &lt;link&gt;https://example.com/article&lt;/link&gt;
+      &lt;pubDate&gt;...&lt;/pubDate&gt;
+      &lt;description&gt;...&lt;/description&gt;
+    &lt;/item&gt;
+  &lt;/channel&gt;
+&lt;/rss&gt;</code></pre>
+    <p>XML 用成对标签表示结构。一个 <code>channel</code> 包含多个 <code>item</code>。RSS 通常只有标题、摘要和链接，不等于完整正文。</p>
+
+    <h2>2. 两种来源模式</h2>
+    <div class="grid">
+      <section class="card"><h3>search 搜索型</h3><p>URL 模板包含 <code>{query}</code>。系统为每个关键词组生成查询，再替换并编码。</p></section>
+      <section class="card"><h3>direct 直连型</h3><p>使用机构固定 RSS 地址，下载一次后在本地按关键词匹配。</p></section>
+    </div>
+
+    <h2>3. 查询不是简单的 q={query}</h2>
+    <p><a href="../app/query_builder.py"><code>app/query_builder.py</code></a> 统一生成：</p>
+    <pre><code>("医疗手套" OR "丁腈手套")
+AND ("关税")
+-"拳击"
+when:30d</code></pre>
+    <ul class="checklist">
+      <li>主题词组：至少命中一个关注对象。</li>
+      <li>语境词组：至少命中一个业务信号。</li>
+      <li>排除词：过滤已知歧义。</li>
+      <li><code>when:30d</code>：限制搜索回溯范围。</li>
+    </ul>
+    <p>项目把表达式限制在 200 字符内。超长查询不但不稳定，也会把不同业务问题混在一起。</p>
+
+    <h2>4. 最短公共词优先</h2>
+    <p>采集后的匹配使用子串规则，因此 <code>关税</code> 已覆盖“加征关税、进口关税、关税调整”。把这些全部列为 OR 备选不会分类，只会增加长度。不同产品或法律工具则不能随便合并：</p>
+    <ul class="checklist">
+      <li><code>丁腈手套</code> 与 <code>一次性手套</code> 范围不同，应保留。</li>
+      <li><code>Section 301</code> 与 <code>Section 232</code> 是不同法律工具，应保留。</li>
+      <li><code>反倾销</code> 能覆盖“反倾销税、反倾销调查、反倾销终裁”，适合使用词根。</li>
+    </ul>
+
+    <h2>5. 中英文只进入对应来源</h2>
+    <p><code>localize_keyword_for_source()</code> 检测汉字和拉丁字母。中文来源只收到中文词，英文来源只收到英文词；没有对应语言主题词时，整个“来源 × 关键词”组合跳过。</p>
+    <pre><code>localize_keyword_for_source(keyword, "zh-CN")
+localize_keyword_for_source(keyword, "en-US")</code></pre>
+
+    <div class="quiz" data-quiz data-answer="A" data-correct-feedback="含汉字的主题词会被保留给中文来源。" data-retry-feedback="语言路由先检测关键词使用的文字。">
+      <h3>即时检查：“医用手套”应该进入哪个来源？</h3>
+      <div class="choices"><button class="choice" data-choice="A">中文来源</button><button class="choice" data-choice="B">英文来源</button></div>
+      <p class="feedback" aria-live="polite">先选择一个答案。</p>
+    </div>
+
+    <h2>6. 动手练习</h2>
+    <div class="card"><ol class="checklist"><li>打开关键词页面，预览主题词 <code>关税</code>、语境词 <code>政策</code>、回溯 30 天。</li><li>写出你预期生成的表达式，再与页面比较。</li><li>解释为什么“关税”和“tariff”可以放在不同关键词组，也可以由语言路由从混合组中切开。</li></ol></div>
+
+    <h2>课末回忆</h2>
+    <p>RSS 与完整正文有什么区别？search 与 direct 来源有什么区别？为什么查询词不是越多越好？</p>
+    <p>依据：<a href="https://www.rssboard.org/rss-specification">RSS 2.0 规范</a>。</p>
+  </main>
+  <footer><div class="shell">下一课：增量采集、游标和去重。</div></footer>
+  <script src="../assets/quiz.js"></script>
+</body>
+</html>

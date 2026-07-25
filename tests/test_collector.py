@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
@@ -12,8 +13,12 @@ from app.collector import (
     canonicalize_url,
     parse_feed,
 )
-from app.database import DEFAULT_SOURCES, Database
-from app.query_builder import build_keyword_query
+from app.database import DEFAULT_KEYWORDS, DEFAULT_SOURCES, Database
+from app.query_builder import (
+    MAX_GOOGLE_NEWS_QUERY_CHARS,
+    build_keyword_query,
+    localize_keyword_for_source,
+)
 
 
 RSS_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -124,6 +129,135 @@ def test_default_sources_include_site_limited_malaysia_publishers() -> None:
     assert the_star["country"] == the_edge["country"] == "MY"
 
 
+def test_default_tariff_keyword_strategies_are_valid_and_language_specific(
+    tmp_path,
+) -> None:
+    chinese_names = {
+        "医疗手套关税（中文）",
+        "美国关税法律工具（中文）",
+        "贸易救济案件（中文）",
+        "手套原材料关税（中文）",
+        "通用关税政策（中文）",
+    }
+    english_names = {
+        "医疗手套关税（英文）",
+        "美国关税法律工具（英文）",
+        "贸易救济案件（英文）",
+        "手套原材料关税（英文）",
+        "通用关税政策（英文）",
+    }
+    strategies = {
+        item["name"]: item
+        for item in DEFAULT_KEYWORDS
+        if item["name"] in chinese_names | english_names
+    }
+
+    assert set(strategies) == chinese_names | english_names
+    assert strategies["通用关税政策（中文）"]["match_terms"] == ["关税"]
+    assert strategies["通用关税政策（英文）"]["match_terms"] == ["tariff"]
+    assert strategies["医疗手套关税（中文）"]["context_terms"] == ["关税"]
+    assert strategies["贸易救济案件（中文）"]["match_terms"] == [
+        "反倾销",
+        "反补贴",
+        "保障措施",
+        "贸易救济",
+    ]
+    assert strategies["贸易救济案件（英文）"]["match_terms"] == [
+        "anti-dumping",
+        "countervailing",
+        "safeguard",
+        "trade remedy",
+    ]
+    for name, strategy in strategies.items():
+        query = build_keyword_query(
+            strategy["match_terms"],
+            context_terms=strategy["context_terms"],
+            exclude_terms=strategy["exclude_terms"],
+            lookback_days=strategy["lookback_days"],
+        )
+        localized_keyword = {**strategy, "query": query}
+
+        assert len(query) <= MAX_GOOGLE_NEWS_QUERY_CHARS
+        if name in chinese_names:
+            assert localize_keyword_for_source(localized_keyword, "zh-CN")
+            assert localize_keyword_for_source(localized_keyword, "en-US") is None
+        else:
+            assert localize_keyword_for_source(localized_keyword, "en-US")
+            assert localize_keyword_for_source(localized_keyword, "zh-CN") is None
+
+    database = Database(tmp_path / "tariff-keywords.db")
+    database.initialize()
+    seeded_names = {item["name"] for item in database.get_keywords()}
+    assert chinese_names | english_names <= seeded_names
+
+
+def test_initialize_upgrades_the_original_generic_tariff_defaults(tmp_path) -> None:
+    database = Database(tmp_path / "outdated-tariff-keywords.db")
+    database.initialize()
+    old_match_terms = [
+        "加征关税",
+        "关税调整",
+        "进口关税",
+        "对等关税",
+        "进口附加费",
+    ]
+    old_context_terms = ["公告", "实施", "税率", "豁免", "暂停"]
+    old_query = build_keyword_query(
+        old_match_terms,
+        context_terms=old_context_terms,
+        lookback_days=30,
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            UPDATE keywords
+            SET query = ?, match_terms = ?, context_terms = ?
+            WHERE name = '通用关税政策（中文）'
+            """,
+            (
+                old_query,
+                json.dumps(old_match_terms, ensure_ascii=False),
+                json.dumps(old_context_terms, ensure_ascii=False),
+            ),
+        )
+
+    database.initialize()
+
+    keyword = next(
+        item
+        for item in database.get_keywords()
+        if item["name"] == "通用关税政策（中文）"
+    )
+    assert keyword["match_terms"] == ["关税"]
+    assert keyword["context_terms"] == [
+        "政策",
+        "调整",
+        "加征",
+        "豁免",
+        "税率",
+        "公告",
+        "生效",
+    ]
+
+    custom_match_terms = ["自定义关税"]
+    with database.connect() as connection:
+        connection.execute(
+            """
+            UPDATE keywords
+            SET match_terms = ?
+            WHERE name = '通用关税政策（中文）'
+            """,
+            (json.dumps(custom_match_terms, ensure_ascii=False),),
+        )
+    database.initialize()
+    customized_keyword = next(
+        item
+        for item in database.get_keywords()
+        if item["name"] == "通用关税政策（中文）"
+    )
+    assert customized_keyword["match_terms"] == custom_match_terms
+
+
 def test_keyword_query_is_generated_only_from_match_terms() -> None:
     query = build_keyword_query(
         ["PE手套", "聚乙烯手套", "polyethylene gloves", "PE手套"]
@@ -210,6 +344,123 @@ def test_initialize_migrates_keyword_categories_and_supports_assignment(tmp_path
         item for item in database.get_keywords() if item["id"] == legacy_keyword["id"]
     )
     assert assigned["category_name"] == "关税调整"
+
+
+def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "keyword-hit-stats.db")
+    database.initialize()
+    categories = {
+        item["name"]: item["id"] for item in database.get_keyword_categories()
+    }
+    with database.connect() as connection:
+        connection.execute("UPDATE keywords SET archived = 1")
+
+    policy_keyword_id = database.create_keyword(
+        {
+            "name": "测试贸易政策",
+            "category_id": categories["贸易政策"],
+            "match_terms": ["tariff"],
+            "active": True,
+        }
+    )
+    remedy_keyword_id = database.create_keyword(
+        {
+            "name": "测试贸易救济",
+            "category_id": categories["贸易政策"],
+            "match_terms": ["anti-dumping"],
+            "active": True,
+        }
+    )
+    regulation_keyword_id = database.create_keyword(
+        {
+            "name": "测试法规",
+            "category_id": categories["行业法规"],
+            "match_terms": ["medical regulation"],
+            "active": True,
+        }
+    )
+
+    now = "2026-07-25T00:00:00Z"
+    with database.connect() as connection:
+        article_ids = []
+        for index in range(1, 5):
+            url = f"https://example.com/hit-{index}"
+            cursor = connection.execute(
+                """
+                INSERT INTO articles
+                    (title, url, canonical_url, fingerprint, published_at,
+                     collected_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (f"Article {index}", url, url, f"hit-{index}", now, now),
+            )
+            article_ids.append(int(cursor.lastrowid))
+
+        connection.executemany(
+            """
+            INSERT INTO article_keywords
+                (article_id, keyword_id, matched_terms)
+            VALUES (?, ?, '[]')
+            """,
+            [
+                (article_ids[0], policy_keyword_id),
+                (article_ids[0], remedy_keyword_id),
+                (article_ids[1], policy_keyword_id),
+                (article_ids[2], remedy_keyword_id),
+                (article_ids[3], regulation_keyword_id),
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO article_relevance_reviews
+                (article_id, status, is_relevant, reviewed_at)
+            VALUES (?, 'success', ?, ?)
+            """,
+            [
+                (article_ids[0], 1, now),
+                (article_ids[1], 0, now),
+                (article_ids[3], 1, now),
+            ],
+        )
+
+    stats = database.keyword_hit_stats()
+    policy_stats = next(
+        item
+        for item in stats["categories"]
+        if item["category_name"] == "贸易政策"
+    )
+    policy_keyword_stats = next(
+        item
+        for item in stats["keywords"]
+        if item["keyword_id"] == policy_keyword_id
+    )
+    remedy_keyword_stats = next(
+        item
+        for item in stats["keywords"]
+        if item["keyword_id"] == remedy_keyword_id
+    )
+
+    assert policy_stats["keyword_count"] == 2
+    assert policy_stats["hit_count"] == 3
+    assert policy_stats["reviewed_count"] == 2
+    assert policy_stats["relevant_count"] == 1
+    assert policy_stats["pending_review_count"] == 1
+    assert policy_stats["hit_rate"] == 0.5
+    assert policy_keyword_stats["hit_count"] == 2
+    assert policy_keyword_stats["relevant_count"] == 1
+    assert policy_keyword_stats["hit_rate"] == 0.5
+    assert remedy_keyword_stats["hit_count"] == 2
+    assert remedy_keyword_stats["reviewed_count"] == 1
+    assert remedy_keyword_stats["pending_review_count"] == 1
+    assert remedy_keyword_stats["hit_rate"] == 1.0
+    assert stats["overall"]["keyword_count"] == 3
+    assert stats["overall"]["hit_count"] == 4
+    assert stats["overall"]["reviewed_count"] == 3
+    assert stats["overall"]["relevant_count"] == 2
+    assert stats["overall"]["pending_review_count"] == 1
+    assert stats["overall"]["hit_rate"] == pytest.approx(2 / 3)
 
 
 def test_search_sources_receive_only_matching_language_terms(tmp_path) -> None:

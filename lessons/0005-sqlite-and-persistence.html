@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 5 课：SQLite、SQL 与持久化</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar"><div class="shell"><span class="brand">第 5 课 · 数据库</span><nav class="nav"><a href="0004-http-fastapi-pydantic.html">上一课</a><a href="../reference/course-map.html">课程地图</a><a href="0006-rss-and-query-building.html">下一课</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Tangible win · 30 min</p>
+    <h1>理解项目为什么重启后还能记住一切</h1>
+    <p class="lead">你将读懂表、行、主键、外键、SQL、事务和迁移，并理解刚刚遇到的“代码改了但页面没变”。</p>
+
+    <h2>1. SQLite 是一个数据库文件</h2>
+    <p>本项目把数据保存在 <code>data/rss_collector.db</code>。Python 进程结束后，文件仍然存在，所以新闻、关键词和任务记录不会丢失。</p>
+    <div class="grid">
+      <section class="card"><h3>表 Table</h3><p>结构固定的一类数据，例如 <code>articles</code> 或 <code>keywords</code>。</p></section>
+      <section class="card"><h3>行 Row</h3><p>表中的一条具体记录，例如某篇新闻。</p></section>
+      <section class="card"><h3>主键 Primary Key</h3><p>唯一识别一行的 ID。</p></section>
+      <section class="card"><h3>外键 Foreign Key</h3><p>保存另一张表的 ID，建立关系。</p></section>
+    </div>
+
+    <h2>2. 用 SQL 对数据库说话</h2>
+    <pre><code>SELECT id, name, active
+FROM keywords
+WHERE archived = 0
+ORDER BY name;</code></pre>
+    <p><code>SELECT</code> 选择字段，<code>FROM</code> 指定表，<code>WHERE</code> 过滤行，<code>ORDER BY</code> 排序。写入则使用 INSERT、UPDATE 和 DELETE。</p>
+
+    <h2>3. 永远绑定参数，不拼接用户输入</h2>
+    <pre><code>connection.execute(
+    "SELECT * FROM keywords WHERE id = ?",
+    (keyword_id,),
+)</code></pre>
+    <p>问号是参数占位符。SQLite 驱动负责安全传值，也能避免引号错误和 SQL 注入。不要写成 <code>f"... WHERE id = {keyword_id}"</code>。</p>
+
+    <h2>4. 事务：一组修改要么全成功，要么全失败</h2>
+    <pre><code>with database.connect() as connection:
+    connection.execute("UPDATE ...")
+    connection.execute("INSERT ...")</code></pre>
+    <p>上下文正常结束时提交；中途抛出异常时回滚。这样不会出现“文章写入了，但关键词关系没写入”的半成品。</p>
+
+    <h2>5. 迁移：代码结构变了，旧数据库也要跟上</h2>
+    <p>修改 Python 中的默认关键词，不等于修改已经存在的数据库行。<code>INSERT OR IGNORE</code> 遇到同名记录会跳过，这正是“代码已经变成关税，页面仍显示旧词”的原因。</p>
+    <pre><code>if "new_column" not in existing_columns:
+    connection.execute(
+        "ALTER TABLE keywords ADD COLUMN new_column TEXT"
+    )</code></pre>
+    <p>迁移必须保护用户数据。本项目对旧关税默认值采用条件升级：只有记录仍与旧默认值完全一致才替换；用户改过就保留。</p>
+
+    <h2>6. Repository：把 SQL 集中起来</h2>
+    <p><code>Database.get_keywords()</code>、<code>create_keyword()</code> 和 <code>update_keyword()</code> 把 SQL 封装成业务可以理解的方法。路由不需要到处复制 SQL。</p>
+
+    <div class="quiz" data-quiz data-answer="B" data-correct-feedback="参数绑定让驱动安全处理值，避免把输入当成 SQL。" data-retry-feedback="想想问号占位符的目的。">
+      <h3>即时检查：把外部值放进 SQL 应该怎样做？</h3>
+      <div class="choices"><button class="choice" data-choice="A">拼接参数</button><button class="choice" data-choice="B">绑定参数</button></div>
+      <p class="feedback" aria-live="polite">先选择一个答案。</p>
+    </div>
+
+    <h2>7. 动手练习</h2>
+    <div class="card"><ol class="checklist"><li>打开 <code>app/database.py</code> 顶部，找到 <code>keywords</code> 和 <code>articles</code> 的建表语句。</li><li>分别指出主键和两个普通字段。</li><li>找到 <code>collection_cursors</code>，解释它为什么同时保存来源 ID 和关键词 ID。</li></ol></div>
+
+    <h2>课末回忆</h2>
+    <p>表和行有什么区别？事务防止什么问题？为什么修改默认常量不一定改变页面数据？</p>
+    <p>依据：<a href="https://www.sqlite.org/quickstart.html">SQLite Quickstart</a>。</p>
+  </main>
+  <footer><div class="shell">下一课：RSS、XML 和 Google News 查询。</div></footer>
+  <script src="../assets/quiz.js"></script>
+</body>
+</html>

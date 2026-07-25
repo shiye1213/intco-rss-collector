@@ -356,6 +356,7 @@ Prompt 明确把正文中的指令、代码和 Prompt 视为不可信新闻数�
 | `/api/articles` | RSS 候选文章查询 |
 | `/api/sources` | RSS 源增删改查和归档 |
 | `/api/keywords` | 关键词组增删改查和归档 |
+| `/api/keyword-hit-stats` | 关键词及分类的候选、已审核、真正相关数量和命中率 |
 | `/api/settings` | 采集时间配置 |
 | `/api/ai/status` | 全文与 AI 流水线状态 |
 | `/api/ai/analyze` | 启动全文、审核和业务分析任务 |

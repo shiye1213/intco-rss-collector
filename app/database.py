@@ -640,7 +640,214 @@ DEFAULT_KEYWORDS = (
         "lookback_days": 14,
         "active": True,
     },
+    {
+        "name": "医疗手套关税（中文）",
+        "match_terms": ["丁腈手套", "医用手套", "一次性手套"],
+        "context_terms": ["关税"],
+        "exclude_terms": ["拳击", "足球"],
+        "lookback_days": 365,
+        "active": True,
+    },
+    {
+        "name": "医疗手套关税（英文）",
+        "match_terms": [
+            "medical gloves",
+            "nitrile gloves",
+            "surgical gloves",
+        ],
+        "context_terms": ["tariff", "import duty"],
+        "exclude_terms": ["boxing", "football", "baseball"],
+        "lookback_days": 365,
+        "active": True,
+    },
+    {
+        "name": "美国关税法律工具（中文）",
+        "match_terms": [
+            "301条款",
+            "232条款",
+            "122条款",
+            "对等关税",
+            "进口附加费",
+        ],
+        "context_terms": ["加征", "调整", "豁免", "暂停", "生效"],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "美国关税法律工具（英文）",
+        "match_terms": [
+            "Section 301",
+            "Section 232",
+            "Section 122",
+            "reciprocal tariff",
+        ],
+        "context_terms": [
+            "tariff",
+            "duty",
+            "exclusion",
+            "proclamation",
+            "executive order",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "贸易救济案件（中文）",
+        "match_terms": [
+            "反倾销",
+            "反补贴",
+            "保障措施",
+            "贸易救济",
+        ],
+        "context_terms": [
+            "立案调查",
+            "初裁",
+            "终裁",
+            "行政复审",
+            "日落复审",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "贸易救济案件（英文）",
+        "match_terms": [
+            "anti-dumping",
+            "countervailing",
+            "safeguard",
+            "trade remedy",
+        ],
+        "context_terms": [
+            "investigation",
+            "preliminary determination",
+            "final determination",
+            "review",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "手套原材料关税（中文）",
+        "match_terms": ["丁腈胶乳", "PVC树脂", "合成橡胶"],
+        "context_terms": ["关税", "反倾销", "反补贴", "进口税"],
+        "exclude_terms": ["轮胎", "汽车"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "手套原材料关税（英文）",
+        "match_terms": ["NBR latex", "PVC resin", "synthetic rubber"],
+        "context_terms": [
+            "tariff",
+            "anti-dumping",
+            "countervailing duty",
+            "import duty",
+        ],
+        "exclude_terms": ["tire", "tyre", "automotive"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "通用关税政策（中文）",
+        "match_terms": ["关税"],
+        "context_terms": [
+            "政策",
+            "调整",
+            "加征",
+            "豁免",
+            "税率",
+            "公告",
+            "生效",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "通用关税政策（英文）",
+        "match_terms": ["tariff"],
+        "context_terms": [
+            "policy",
+            "increase",
+            "exemption",
+            "rate",
+            "announced",
+            "effective",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
 )
+
+
+LEGACY_TARIFF_KEYWORD_DEFAULTS = {
+    "医疗手套关税（中文）": {
+        "match_terms": ["丁腈手套", "医用手套", "一次性手套"],
+        "context_terms": ["关税", "加征关税"],
+        "exclude_terms": ["拳击", "足球"],
+        "lookback_days": 365,
+    },
+    "贸易救济案件（中文）": {
+        "match_terms": ["反倾销税", "反补贴税", "保障措施", "贸易救济"],
+        "context_terms": [
+            "立案调查",
+            "初裁",
+            "终裁",
+            "行政复审",
+            "日落复审",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+    },
+    "贸易救济案件（英文）": {
+        "match_terms": [
+            "anti-dumping duty",
+            "countervailing duty",
+            "safeguard measure",
+        ],
+        "context_terms": [
+            "investigation",
+            "preliminary determination",
+            "final determination",
+            "review",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+    },
+    "通用关税政策（中文）": {
+        "match_terms": [
+            "加征关税",
+            "关税调整",
+            "进口关税",
+            "对等关税",
+            "进口附加费",
+        ],
+        "context_terms": ["公告", "实施", "税率", "豁免", "暂停"],
+        "exclude_terms": [],
+        "lookback_days": 30,
+    },
+    "通用关税政策（英文）": {
+        "match_terms": [
+            "tariff increase",
+            "import tariff",
+            "reciprocal tariff",
+            "import surcharge",
+        ],
+        "context_terms": [
+            "announced",
+            "effective",
+            "exemption",
+            "suspension",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+    },
+}
 
 
 def utc_now_iso() -> str:
@@ -992,6 +1199,62 @@ class Database:
                         now,
                     ),
                 )
+            default_keywords_by_name = {
+                keyword["name"]: keyword for keyword in DEFAULT_KEYWORDS
+            }
+            for name, legacy_strategy in LEGACY_TARIFF_KEYWORD_DEFAULTS.items():
+                keyword_row = connection.execute(
+                    """
+                    SELECT id, match_terms, context_terms, exclude_terms,
+                           lookback_days
+                    FROM keywords
+                    WHERE name = ? AND archived = 0
+                    """,
+                    (name,),
+                ).fetchone()
+                if keyword_row is None:
+                    continue
+                try:
+                    current_strategy = {
+                        "match_terms": json.loads(keyword_row["match_terms"]),
+                        "context_terms": json.loads(keyword_row["context_terms"]),
+                        "exclude_terms": json.loads(keyword_row["exclude_terms"]),
+                        "lookback_days": int(keyword_row["lookback_days"]),
+                    }
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if current_strategy != legacy_strategy:
+                    continue
+                current_default = default_keywords_by_name[name]
+                generated_query = build_keyword_query(
+                    current_default["match_terms"],
+                    context_terms=current_default["context_terms"],
+                    exclude_terms=current_default["exclude_terms"],
+                    lookback_days=current_default["lookback_days"],
+                )
+                connection.execute(
+                    """
+                    UPDATE keywords
+                    SET query = ?, match_terms = ?, context_terms = ?,
+                        exclude_terms = ?, lookback_days = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        generated_query,
+                        json.dumps(
+                            current_default["match_terms"], ensure_ascii=False
+                        ),
+                        json.dumps(
+                            current_default["context_terms"], ensure_ascii=False
+                        ),
+                        json.dumps(
+                            current_default["exclude_terms"], ensure_ascii=False
+                        ),
+                        current_default["lookback_days"],
+                        now,
+                        keyword_row["id"],
+                    ),
+                )
             keyword_rows = connection.execute(
                 """
                 SELECT id, query, match_terms, context_terms,
@@ -1060,6 +1323,128 @@ class Database:
                 """
             ).fetchall()
         return self.rows(rows)
+
+    def keyword_hit_stats(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    k.id AS keyword_id,
+                    k.name AS keyword_name,
+                    k.category_id,
+                    kc.name AS category_name,
+                    COUNT(DISTINCT ak.article_id) AS hit_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success' THEN ak.article_id
+                    END) AS reviewed_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success'
+                         AND rr.is_relevant = 1
+                        THEN ak.article_id
+                    END) AS relevant_count
+                FROM keywords k
+                LEFT JOIN keyword_categories kc ON kc.id = k.category_id
+                LEFT JOIN article_keywords ak ON ak.keyword_id = k.id
+                LEFT JOIN article_relevance_reviews rr
+                  ON rr.article_id = ak.article_id
+                WHERE k.archived = 0
+                GROUP BY k.id, k.name, k.category_id, kc.name
+                ORDER BY COALESCE(kc.sort_order, 999999), k.id
+                """
+            ).fetchall()
+            category_rows = connection.execute(
+                """
+                SELECT
+                    kc.id AS category_id,
+                    kc.name AS category_name,
+                    kc.sort_order,
+                    COUNT(DISTINCT k.id) AS keyword_count,
+                    COUNT(DISTINCT ak.article_id) AS hit_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success' THEN ak.article_id
+                    END) AS reviewed_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success'
+                         AND rr.is_relevant = 1
+                        THEN ak.article_id
+                    END) AS relevant_count
+                FROM keyword_categories kc
+                LEFT JOIN keywords k
+                  ON k.category_id = kc.id AND k.archived = 0
+                LEFT JOIN article_keywords ak ON ak.keyword_id = k.id
+                LEFT JOIN article_relevance_reviews rr
+                  ON rr.article_id = ak.article_id
+                WHERE kc.active = 1
+                GROUP BY kc.id, kc.name, kc.sort_order
+                UNION ALL
+                SELECT
+                    NULL AS category_id,
+                    NULL AS category_name,
+                    999999 AS sort_order,
+                    COUNT(DISTINCT k.id) AS keyword_count,
+                    COUNT(DISTINCT ak.article_id) AS hit_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success' THEN ak.article_id
+                    END) AS reviewed_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success'
+                         AND rr.is_relevant = 1
+                        THEN ak.article_id
+                    END) AS relevant_count
+                FROM keywords k
+                LEFT JOIN article_keywords ak ON ak.keyword_id = k.id
+                LEFT JOIN article_relevance_reviews rr
+                  ON rr.article_id = ak.article_id
+                WHERE k.archived = 0 AND k.category_id IS NULL
+                ORDER BY sort_order, category_id
+                """
+            ).fetchall()
+            overall_row = connection.execute(
+                """
+                SELECT
+                    COUNT(DISTINCT k.id) AS keyword_count,
+                    COUNT(DISTINCT ak.article_id) AS hit_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success' THEN ak.article_id
+                    END) AS reviewed_count,
+                    COUNT(DISTINCT CASE
+                        WHEN rr.status = 'success'
+                         AND rr.is_relevant = 1
+                        THEN ak.article_id
+                    END) AS relevant_count
+                FROM keywords k
+                LEFT JOIN article_keywords ak ON ak.keyword_id = k.id
+                LEFT JOIN article_relevance_reviews rr
+                  ON rr.article_id = ak.article_id
+                WHERE k.archived = 0
+                """
+            ).fetchone()
+
+        def add_rates(item: dict[str, Any]) -> dict[str, Any]:
+            reviewed = int(item["reviewed_count"] or 0)
+            relevant = int(item["relevant_count"] or 0)
+            hit_count = int(item["hit_count"] or 0)
+            item["pending_review_count"] = max(0, hit_count - reviewed)
+            item["hit_rate"] = relevant / reviewed if reviewed else None
+            return item
+
+        keywords: list[dict[str, Any]] = []
+        for row in rows:
+            keywords.append(add_rates(dict(row)))
+
+        categories: list[dict[str, Any]] = []
+        for row in category_rows:
+            item = dict(row)
+            item.pop("sort_order", None)
+            item["category_name"] = item["category_name"] or "未分类"
+            categories.append(add_rates(item))
+
+        overall = add_rates(dict(overall_row))
+        return {
+            "overall": overall,
+            "categories": categories,
+            "keywords": keywords,
+        }
 
     def get_keywords(self, active_only: bool = False) -> list[dict[str, Any]]:
         where = "WHERE k.archived = 0"

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 3 课：模块、对象、类型与异常</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar"><div class="shell"><span class="brand">第 3 课 · 代码组织</span><nav class="nav"><a href="0002-python-for-this-project.html">上一课</a><a href="../reference/course-map.html">课程地图</a><a href="0004-http-fastapi-pydantic.html">下一课</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Tangible win · 25 min</p>
+    <h1>看懂项目里的“机器图纸”和错误通道</h1>
+    <p class="lead">你将理解模块、类、对象、dataclass、Protocol 和异常，并看懂为什么正文读取器可以被替换。</p>
+
+    <h2>1. 模块与 import</h2>
+    <p>一个 Python 文件就是一个模块。<code>app/main.py</code> 可以使用其他模块公开的名字：</p>
+    <pre><code>from .database import Database
+from .llm import DeepSeekClient, OpenAIWebContentReader</code></pre>
+    <p>开头的点表示“从同一个 <code>app</code> 包中导入”。阅读时先问：这个名字在哪里定义？再跳到对应文件，不要猜。</p>
+
+    <h2>2. 类是图纸，对象是机器</h2>
+    <pre><code>class Database:
+    def __init__(self, path: Path) -&gt; None:
+        self.path = path
+
+database = Database(Path("data/rss_collector.db"))</code></pre>
+    <p><code>class Database</code> 定义图纸；最后一行创建具体对象。<code>self.path</code> 是这台对象自己的状态，方法则是它能执行的动作。</p>
+
+    <h2>3. dataclass：只想清楚描述数据</h2>
+    <p><a href="../app/content.py"><code>app/content.py</code></a> 使用 dataclass 表示文章引用和读取结果：</p>
+    <pre><code>@dataclass(frozen=True)
+class ArticleReference:
+    title: str
+    publisher: str
+    urls: tuple[str, ...]
+
+@dataclass(frozen=True)
+class ContentDocument:
+    requested_url: str
+    final_url: str
+    full_text: str
+    content_hash: str
+    content_chars: int
+    # 还包含 HTTP 状态、内容类型和提取器名称</code></pre>
+    <p><code>@dataclass</code> 自动生成初始化等重复代码；<code>frozen=True</code> 表示创建后不应修改。它适合“数据包”，而不是复杂业务机器。</p>
+
+    <h2>4. Protocol：约定能力，不绑定厂家</h2>
+    <pre><code>class ArticleContentReader(Protocol):
+    @property
+    def configured(self) -&gt; bool: ...
+
+    def read(self, article: ArticleReference) -&gt; ContentDocument: ...</code></pre>
+    <p>这个协议只要求正文读取器具备 <code>configured</code> 和 <code>read()</code>。真正实现可以是 GPT 网页搜索，也可以是测试中的假读取器。业务层只依赖“能做什么”，不依赖“由谁做”。</p>
+
+    <h2>5. 异常：失败也要走清晰通道</h2>
+    <pre><code>class ContentFetchError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_kind: str,
+        retryable: bool,
+    ):
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.retryable = retryable
+
+try:
+    document = reader.read(article)
+except ContentFetchError as error:
+    save_failure(error.failure_kind, error.retryable)</code></pre>
+    <p><code>raise</code> 抛出异常，<code>try/except</code> 捕获异常。本项目不仅保存文字错误，还保存失败类型和是否可重试，才能决定后续动作。</p>
+
+    <div class="quiz" data-quiz data-answer="A" data-correct-feedback="Protocol 描述调用方需要的能力，不规定唯一实现。" data-retry-feedback="Protocol 的重点是约定方法，而不是创建具体客户端。">
+      <h3>即时检查：ArticleContentReader 主要表达什么？</h3>
+      <div class="choices"><button class="choice" data-choice="A">调用约定</button><button class="choice" data-choice="B">固定实现</button></div>
+      <p class="feedback" aria-live="polite">先选择一个答案。</p>
+    </div>
+
+    <h2>6. 动手练习</h2>
+    <div class="card"><ol class="checklist"><li>在 <a href="../app/llm.py"><code>app/llm.py</code></a> 找到 <code>OpenAIWebContentReader</code>。</li><li>确认它拥有 <code>configured</code> 和 <code>read()</code>。</li><li>在测试目录搜索假客户端或假读取器，解释为什么测试不需要真的付费调用模型。</li></ol></div>
+
+    <h2>课末回忆</h2>
+    <p>类与对象的区别是什么？dataclass 适合什么？为什么保存异常分类比只保存错误文字更有用？</p>
+  </main>
+  <footer><div class="shell">下一课：浏览器请求如何进入 FastAPI。</div></footer>
+  <script src="../assets/quiz.js"></script>
+</body>
+</html>

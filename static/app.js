@@ -2,6 +2,7 @@ const state = {
   view: "articles",
   sources: [],
   keywords: [],
+  keywordHitStats: { overall: null, categories: [], keywords: [] },
   keywordCategories: [],
   keywordCategoryId: "all",
   articleOffset: 0,
@@ -65,6 +66,10 @@ function formatFullTime(value) {
     timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   }).format(date);
+}
+
+function formatPercent(value) {
+  return value == null ? "-" : `${Math.round(Number(value) * 100)}%`;
 }
 
 function statusLabel(status) {
@@ -180,12 +185,14 @@ async function startCollection() {
 }
 
 async function loadCatalogs() {
-  const [sourceData, keywordData, categoryData] = await Promise.all([
+  const [sourceData, keywordData, categoryData, hitStatsData] = await Promise.all([
     api("/api/sources"), api("/api/keywords"), api("/api/keyword-categories"),
+    api("/api/keyword-hit-stats"),
   ]);
   state.sources = sourceData.items;
   state.keywords = keywordData.items;
   state.keywordCategories = categoryData.items;
+  state.keywordHitStats = hitStatsData;
   fillFilters();
   renderSources();
   renderKeywords();
@@ -659,30 +666,63 @@ function renderKeywords() {
   if (!["all", "unclassified"].includes(state.keywordCategoryId) && !validCategories.has(state.keywordCategoryId)) {
     state.keywordCategoryId = "all";
   }
+  const emptyStats = {
+    keyword_count: 0,
+    hit_count: 0,
+    reviewed_count: 0,
+    relevant_count: 0,
+    pending_review_count: 0,
+    hit_rate: null,
+  };
+  const categoryStatsById = new Map(
+    state.keywordHitStats.categories.map((item) => [
+      item.category_id == null ? "unclassified" : String(item.category_id),
+      item,
+    ]),
+  );
+  const keywordStatsById = new Map(
+    state.keywordHitStats.keywords.map((item) => [Number(item.keyword_id), item]),
+  );
   const menuItems = [
-    { id: "all", name: "全部", count: state.keywords.length },
+    { id: "all", name: "全部", stats: state.keywordHitStats.overall || emptyStats },
     ...state.keywordCategories.map((category) => ({
       id: String(category.id),
       name: category.name,
-      count: state.keywords.filter((item) => Number(item.category_id) === Number(category.id)).length,
+      stats: categoryStatsById.get(String(category.id)) || emptyStats,
     })),
-    { id: "unclassified", name: "未分类", count: state.keywords.filter((item) => item.category_id == null).length },
+    { id: "unclassified", name: "未分类", stats: categoryStatsById.get("unclassified") || emptyStats },
   ];
-  $("keyword-category-menu").innerHTML = menuItems.map((item) => `<button class="button secondary keyword-category-button${state.keywordCategoryId === item.id ? " active" : ""}" data-category-id="${escapeHtml(item.id)}" type="button">${escapeHtml(item.name)} · ${item.count}</button>`).join("");
+  $("keyword-category-menu").innerHTML = menuItems.map((item) => `<button class="button secondary keyword-category-button${state.keywordCategoryId === item.id ? " active" : ""}" data-category-id="${escapeHtml(item.id)}" type="button">${escapeHtml(item.name)} · 相关 ${item.stats.relevant_count} · ${formatPercent(item.stats.hit_rate)}</button>`).join("");
+  const selectedStats = menuItems.find((item) => item.id === state.keywordCategoryId)?.stats || emptyStats;
+  const summaryMetrics = [
+    ["关键词组", selectedStats.keyword_count, "当前范围内未归档的关键词组"],
+    ["候选命中", selectedStats.hit_count, "关键词初筛命中的去重文章"],
+    ["已审核", selectedStats.reviewed_count, "已完成 AI 相关性判断"],
+    ["真正相关", selectedStats.relevant_count, "AI 审核确认与业务真正相关"],
+    ["命中率", formatPercent(selectedStats.hit_rate), "真正相关 ÷ 已审核"],
+    ["待审核", selectedStats.pending_review_count, "尚不能计入命中率"],
+  ];
+  $("keyword-hit-summary").innerHTML = summaryMetrics.map(([label, value, hint]) => `<div class="keyword-hit-metric"><span>${label}</span><strong>${value}</strong><small>${hint}</small></div>`).join("");
   const visibleKeywords = state.keywords.filter((item) => {
     if (state.keywordCategoryId === "all") return true;
     if (state.keywordCategoryId === "unclassified") return item.category_id == null;
     return Number(item.category_id) === Number(state.keywordCategoryId);
   });
-  $("keyword-rows").innerHTML = visibleKeywords.map((item) => `<tr>
+  $("keyword-rows").innerHTML = visibleKeywords.map((item) => {
+    const stats = keywordStatsById.get(Number(item.id)) || emptyStats;
+    return `<tr>
     <td><strong>${escapeHtml(item.name)}</strong></td>
     <td><span class="tag">${escapeHtml(item.category_name || "未分类")}</span></td>
     <td class="url-cell" title="${escapeHtml(item.query)}">${escapeHtml(item.query)}</td>
     <td><div class="keyword-list">${item.match_terms.slice(0, 5).map((term) => `<span class="tag">${escapeHtml(term)}</span>`).join("")}${item.match_terms.length > 5 ? `<span class="tag">+${item.match_terms.length - 5}</span>` : ""}</div></td>
     <td><span class="cell-subtitle">信号 ${item.context_terms.length} 个 · 排除 ${item.exclude_terms.length} 个</span><span class="cell-meta">回溯 ${item.lookback_days} 天</span></td>
+    <td><strong>${stats.hit_count}</strong><span class="cell-subtitle">待审核 ${stats.pending_review_count}</span></td>
+    <td><strong>${stats.relevant_count}</strong><span class="cell-subtitle">已审核 ${stats.reviewed_count}</span></td>
+    <td><strong>${formatPercent(stats.hit_rate)}</strong><span class="cell-subtitle">相关 / 已审核</span></td>
     <td>${toggleMarkup("keyword", item)}</td>
     <td><div class="row-actions"><button class="icon-button keyword-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button keyword-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
-  </tr>`).join("");
+  </tr>`;
+  }).join("");
   $("keyword-empty").classList.toggle("hidden", visibleKeywords.length > 0);
   refreshIcons();
 }

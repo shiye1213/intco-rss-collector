@@ -82,6 +82,12 @@
 
 返回全部未归档关键词组。
 
+### `GET /api/keyword-hit-stats`
+
+返回全部关键词、各关键词分类及总体的命中效果。`hit_count` 是关键词初筛命中的去重候选文章数，`reviewed_count` 是已成功完成相关性审核的文章数，`relevant_count` 是审核确认真正相关的文章数，`pending_review_count` 是尚未成功完成审核的候选数。
+
+`hit_rate` 按 `relevant_count / reviewed_count` 计算；没有已审核文章时返回 `null`，不会把待审核文章误算为无关。同一文章命中同一分类下多个关键词时，分类和总体汇总均只计一次。
+
 ### `POST /api/keywords`
 
 ```json

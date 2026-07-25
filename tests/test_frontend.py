@@ -32,8 +32,11 @@ def test_pending_cleanup_and_keyword_category_controls_are_wired() -> None:
     assert 'id="clear-pending"' in html
     assert 'id="keyword-category-menu"' in html
     assert 'id="keyword-category"' in html
+    assert 'id="keyword-hit-summary"' in html
     assert 'api("/api/ai/pending/clear"' in javascript
     assert 'api("/api/keyword-categories")' in javascript
+    assert 'api("/api/keyword-hit-stats")' in javascript
+    assert "真正相关 ÷ 已审核" in javascript
     assert "category_id:" in javascript
 
 def test_incremental_collection_setting_is_wired() -> None:

@@ -353,6 +353,10 @@ def create_app(
     def list_keyword_categories():
         return {"items": database.get_keyword_categories()}
 
+    @app.get("/api/keyword-hit-stats")
+    def keyword_hit_stats():
+        return database.keyword_hit_stats()
+
     @app.get("/api/keywords")
     def list_keywords():
         return {"items": database.get_keywords()}

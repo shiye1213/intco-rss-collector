@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 1 课：一篇新闻如何穿过整个系统</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell">
+      <span class="brand">第 1 课 · 系统地图</span>
+      <nav class="nav"><a href="../reference/course-map.html">课程地图</a><a href="../reference/glossary.html">术语表</a><a href="#practice">练习</a></nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <p class="eyebrow">Tangible win · 20 min</p>
+    <h1>追踪一篇新闻，第一次看懂整个项目</h1>
+    <p class="lead">学完这一课，你不需要会写 Python，但应该能指出一次操作经过哪些层、每个核心文件负责什么，以及出错时先去哪里找。</p>
+    <div class="meta"><span class="tag">零基础</span><span class="tag">架构</span><span class="tag">数据流</span><span class="tag">不调用收费接口</span></div>
+
+    <div class="callout">
+      <strong>先记住一个原则：</strong>阅读项目不是从第一行读到最后一行，而是选择一个用户动作，沿着数据经过的边界追踪。
+    </div>
+
+    <h2>1. 四层地图：这个项目由谁组成？</h2>
+    <div class="flow" aria-label="四层系统架构">
+      <div class="flow-step"><strong>① 浏览器前端</strong><small>展示状态、接收点击、调用 API<br><code>static/</code></small></div>
+      <div class="flow-step"><strong>② FastAPI 后端</strong><small>接请求、执行规则、编排任务<br><code>app/</code></small></div>
+      <div class="flow-step"><strong>③ SQLite 数据库</strong><small>让新闻和任务状态在重启后仍存在<br><code>data/*.db</code></small></div>
+      <div class="flow-step"><strong>④ 外部服务</strong><small>RSS 站点、GPT 网页读取、DeepSeek 分析</small></div>
+    </div>
+
+    <p>“层”不是某种神秘技术，只是职责分工。浏览器负责交互，后端负责规则，数据库负责长期记忆，外部服务提供项目自身没有的数据或能力。</p>
+
+    <div class="grid">
+      <section class="card"><h3>把代码词翻译成人话</h3><ul class="checklist"><li>文件：一个有明确职责的工作间</li><li>函数：可以反复执行的动作</li><li>类：一种机器的设计图</li><li>对象：正在工作的那台具体机器</li></ul></section>
+      <section class="card"><h3>把系统词翻译成人话</h3><ul class="checklist"><li>API 路由：后端对外的服务窗口</li><li>JSON：窗口交接的数据单</li><li>数据库：不会随进程关闭而忘记的账本</li><li>后台任务：接单后慢慢完成的耗时工作</li></ul></section>
+    </div>
+
+    <h2>2. 先追一条最短路径：页面读取状态</h2>
+    <p>页面需要知道采集和 AI 分析是否正在运行。前端在 <a href="../static/app.js"><code>static/app.js</code></a> 发出请求：</p>
+    <pre><code>const data = await api("/api/status");
+$("metric-articles").textContent = data.article_count;</code></pre>
+    <p>可以先把它读成：“去后端的 <code>/api/status</code> 窗口拿一份状态，再把文章数量画到页面上。”</p>
+
+    <p>后端在 <a href="../app/main.py"><code>app/main.py</code></a> 找到同名窗口。真实代码会比下面多一些字段，但结构就是：</p>
+    <pre><code>@app.get("/api/status")
+def get_status():
+    return {
+        "running": manager.running_run_id is not None,
+        "article_count": database.article_count(),
+    }</code></pre>
+    <p><code>@app.get(...)</code> 把 URL 和函数绑定起来。浏览器发 GET 请求时，FastAPI 调用函数，再把 Python 字典自动转换成 JSON 响应。</p>
+
+    <div class="flow" aria-label="状态请求流">
+      <div class="flow-step"><strong>用户打开页面</strong><small>JavaScript 准备刷新状态</small></div>
+      <div class="flow-step"><strong>GET /api/status</strong><small>HTTP 请求进入 FastAPI</small></div>
+      <div class="flow-step"><strong>读取当前状态</strong><small>后端汇总任务与数据库信息</small></div>
+      <div class="flow-step"><strong>渲染 JSON</strong><small>浏览器更新文字和数字</small></div>
+    </div>
+
+    <div class="quiz" data-quiz data-answer="A" data-correct-feedback="浏览器先通过 API 找后端，后端才读取并组织数据。" data-retry-feedback="从发起动作的一方开始，再寻找系统边界。">
+      <h3>即时检查：用户刷新状态时，正确顺序是？</h3>
+      <div class="choices">
+        <button class="choice" data-choice="A">浏览器 → FastAPI → 数据库</button>
+        <button class="choice" data-choice="B">数据库 → 浏览器 → FastAPI</button>
+        <button class="choice" data-choice="C">FastAPI → 数据库 → 浏览器</button>
+      </div>
+      <p class="feedback" aria-live="polite">先选择一个答案。</p>
+    </div>
+
+    <h2>3. 再看完整业务路径：从关键词到情报</h2>
+    <p>这个项目不是“抓到标题就结束”。它先收集候选新闻，再读正文、判断真相关、分析业务影响，最后生成日报。</p>
+    <ol class="checklist">
+      <li><strong>构造查询：</strong><code>app/query_builder.py</code> 根据关键词语言生成合适的 RSS 查询。</li>
+      <li><strong>采集候选：</strong><code>app/collector.py</code> 读取 RSS、解析 XML、初步匹配并去重。</li>
+      <li><strong>保存事实：</strong><code>app/database.py</code> 把候选文章和任务状态写入 SQLite。</li>
+      <li><strong>读取正文：</strong><code>app/llm.py</code> 中的 GPT 客户端用网页搜索读取链接内容，并保存正文、最终地址和内容哈希。</li>
+      <li><strong>判断相关：</strong><code>app/intelligence.py</code> 编排 DeepSeek，先判断是否真相关，再做业务分析。</li>
+      <li><strong>呈现进度：</strong><code>static/app.js</code> 周期性请求状态，使运行中的结果自动出现在页面。</li>
+    </ol>
+
+    <div class="callout warn"><strong>为什么先存候选文章，再调用 AI？</strong>网络和模型都可能超时或限流。先保存候选，失败后才能知道“哪篇做到哪一步”，并继续重试，而不是从 RSS 重新开始。</div>
+
+    <h2>4. 出错时，用“哪一层”缩小范围</h2>
+    <div class="grid">
+      <section class="card"><h3>页面不更新</h3><p>先查浏览器请求和 <code>static/app.js</code> 的轮询，再看 <code>/api/status</code> 是否返回新状态。</p></section>
+      <section class="card"><h3>接口返回 500</h3><p>从 <code>app/main.py</code> 对应路由进入，沿调用链看后端日志和异常。</p></section>
+      <section class="card"><h3>重启后数据消失</h3><p>查写入数据库的路径、事务是否提交，以及应用实际连接的是哪个数据库文件。</p></section>
+      <section class="card"><h3>出现 HTTP 429</h3><p>这是外部服务层的限流信号；检查并发、重试间隔、配额和接口能力，不要只刷新页面。</p></section>
+    </div>
+
+    <section id="practice">
+      <h2>5. 不看上文，完成检索练习</h2>
+      <p>先滚动到这里，再凭记忆回答。答错不是失败，它能告诉我们下一课要补哪里。</p>
+      <div class="card">
+        <ol class="checklist">
+          <li>写出本项目的四层，并给每层说一个职责。</li>
+          <li>页面请求 <code>/api/status</code> 时，最先应该在哪个 Python 文件寻找路由？</li>
+          <li>用自己的话解释：为什么系统要先保存候选新闻，再调用 GPT 和 DeepSeek？</li>
+        </ol>
+      </div>
+      <p><strong>完成方式：</strong>把三个答案直接回复给我。我会根据你的真实回答修正理解、记录已掌握内容，并继续第 2 课，而不是机械推进。</p>
+    </section>
+
+    <h2>本课依据与下一步</h2>
+    <p>这节课直接对应本项目源码，并参考 <a href="https://fastapi.tiangolo.com/tutorial/">FastAPI 官方教程</a>、<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Overview">MDN HTTP 概览</a>和<a href="https://www.sqlite.org/quickstart.html">SQLite Quickstart</a>。完整资料见 <a href="../RESOURCES.md"><code>RESOURCES.md</code></a>。</p>
+    <p><strong>下一课：</strong>只学读懂本项目所需的 Python——变量、列表、字典、条件、循环和函数。</p>
+  </main>
+
+  <footer><div class="shell">RSS Collector 从零接管课程 · 第 1/12 课</div></footer>
+  <script src="../assets/quiz.js"></script>
+</body>
+</html>

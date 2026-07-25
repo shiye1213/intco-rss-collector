@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 12 课：端到端综合项目</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar"><div class="shell"><span class="brand">第 12 课 · 综合项目</span><nav class="nav"><a href="0011-testing-debugging-and-security.html">上一课</a><a href="../reference/course-map.html">课程地图</a><a href="../reference/glossary.html">术语表</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Capstone · 2–4 hours</p>
+    <h1>独立增加“关键词政策优先级”功能</h1>
+    <p class="lead">这一课不是阅读练习，而是把数据库、API、前端和测试连接起来。完成后，你就经历了一次真实的端到端开发。</p>
+
+    <div class="callout warn"><strong>注意：</strong>下面是待你实现的综合任务，不是当前项目已经存在的功能。先建立分支和测试，不要直接修改正式数据库。</div>
+
+    <h2>1. 先写清楚需求</h2>
+    <p>每个关键词组增加政策优先级：</p>
+    <ul class="checklist">
+      <li>允许值：<code>low</code>、<code>medium</code>、<code>high</code>。</li>
+      <li>旧关键词默认 <code>medium</code>。</li>
+      <li>新增和编辑弹窗可以选择。</li>
+      <li>关键词列表显示中文标签：低、中、高。</li>
+      <li>API 拒绝其他值并返回 422。</li>
+      <li>暂时不改变采集顺序，避免扩大需求。</li>
+    </ul>
+
+    <h2>2. 画出改动链</h2>
+    <div class="flow">
+      <div class="flow-step"><strong>SQLite</strong><small>增加 priority 字段与迁移</small></div>
+      <div class="flow-step"><strong>Pydantic/API</strong><small>校验、读写与响应</small></div>
+      <div class="flow-step"><strong>前端</strong><small>表单选择和列表标签</small></div>
+      <div class="flow-step"><strong>pytest</strong><small>旧库升级与接口行为</small></div>
+    </div>
+
+    <h2>3. 第一步：先写失败测试</h2>
+    <pre><code>def test_legacy_database_adds_keyword_priority(tmp_path):
+    # 建立不含 priority 的旧表
+    # 执行 database.initialize()
+    # 断言旧关键词 priority == "medium"
+
+def test_keyword_rejects_invalid_priority(client):
+    # POST /api/keywords，priority="urgent"
+    # 断言状态码为 422</code></pre>
+    <p>先看到测试失败，再写实现。这样你知道测试真的能捕获缺失功能。</p>
+
+    <h2>4. 第二步：数据库迁移</h2>
+    <pre><code>if "priority" not in keyword_columns:
+    connection.execute(
+        """
+        ALTER TABLE keywords
+        ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'
+        """
+    )</code></pre>
+    <p>同时修改建表 SQL、查询返回、创建和更新方法。所有 SQL 参数数量必须同步调整。</p>
+
+    <h2>5. 第三步：请求模型</h2>
+    <pre><code>from typing import Literal
+
+class KeywordPayload(KeywordQueryPayload):
+    priority: Literal["low", "medium", "high"] = "medium"</code></pre>
+    <p><code>Literal</code> 让 Pydantic 自动拒绝非法值。然后把字段传给 <code>create_keyword()</code> 和 <code>update_keyword()</code>。</p>
+
+    <h2>6. 第四步：前端表单和展示</h2>
+    <ol class="checklist">
+      <li>在 <code>static/index.html</code> 的关键词弹窗增加 select。</li>
+      <li><code>openKeywordDialog()</code> 回填现有优先级。</li>
+      <li><code>saveKeyword()</code> 把 priority 放进 JSON。</li>
+      <li><code>renderKeywords()</code> 显示优先级标签。</li>
+      <li>使用 <code>escapeHtml()</code> 处理显示内容。</li>
+    </ol>
+
+    <h2>7. 第五步：验证完整路径</h2>
+    <div class="card"><ol class="checklist"><li>运行单个迁移测试。</li><li>运行关键词 API 测试。</li><li>运行全部 pytest。</li><li>启动本地应用，新增 high 关键词。</li><li>刷新页面，确认仍为 high。</li><li>检查 SQLite 记录。</li><li>确认 <code>.env</code> 和数据库文件没有进入 Git。</li></ol></div>
+
+    <h2>8. 完成定义</h2>
+    <p>只有同时满足以下条件才算完成：</p>
+    <ul class="checklist">
+      <li>新数据库和旧数据库都能启动。</li>
+      <li>API 对合法与非法输入行为明确。</li>
+      <li>保存后刷新页面数据不丢失。</li>
+      <li>完整测试通过。</li>
+      <li>Git diff 中没有密钥、数据库和无关文件。</li>
+      <li>你能用自己的话解释每个文件为什么要改。</li>
+    </ul>
+
+    <div class="quiz" data-quiz data-answer="A" data-correct-feedback="先让测试失败，才能证明它能捕获尚未实现的需求。" data-retry-feedback="如果先写实现，测试一开始就通过，可能从未验证过红灯能力。">
+      <h3>即时检查：综合功能应该先完成什么？</h3>
+      <div class="choices"><button class="choice" data-choice="A">失败测试</button><button class="choice" data-choice="B">页面样式</button></div>
+      <p class="feedback" aria-live="polite">先选择一个答案。</p>
+    </div>
+
+    <h2>最终讲解挑战</h2>
+    <p>不用看代码，向另一个人讲清楚：</p>
+    <ol class="checklist"><li>点击“保存关键词”后数据经过哪些层？</li><li>为什么旧数据库需要迁移？</li><li>为什么页面刷新后仍能看到优先级？</li><li>哪个测试最能证明功能真的完成？</li></ol>
+    <p>如果你能完成实现并回答这四题，就已经具备独立接管本项目小功能的基本能力。</p>
+  </main>
+  <footer><div class="shell">课程完成不是结束：下一步用真实小需求重复“需求 → 测试 → 实现 → 验证”。</div></footer>
+  <script src="../assets/quiz.js"></script>
+</body>
+</html>

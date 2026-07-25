@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 8 课：GPT 网页读取与证据保存</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar"><div class="shell"><span class="brand">第 8 课 · 正文读取</span><nav class="nav"><a href="0007-collection-cursors-and-dedup.html">上一课</a><a href="../reference/course-map.html">课程地图</a><a href="0009-deepseek-analysis-state-machine.html">下一课</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Tangible win · 30 min</p>
+    <h1>看懂 GPT 如何从链接得到可追溯正文</h1>
+    <p class="lead">你将理解 CCTQ/OpenAI Responses 请求、强制网页搜索、结果解析、安全校验和失败分类。</p>
+
+    <h2>1. RSS 候选不等于正文</h2>
+    <p>RSS 常只有标题、短摘要和 Google News 跳转链接。相关性判断需要原文证据，因此流程是：</p>
+    <div class="flow">
+      <div class="flow-step"><strong>候选文章</strong><small>标题、发布方、多个 URL</small></div>
+      <div class="flow-step"><strong>GPT 网页搜索</strong><small>打开候选或规范页面</small></div>
+      <div class="flow-step"><strong>结构化正文</strong><small>正文、最终 URL、内容哈希</small></div>
+      <div class="flow-step"><strong>SQLite 保存</strong><small>后续分析可复用</small></div>
+    </div>
+
+    <h2>2. ArticleContentReader 是边界</h2>
+    <p><code>ArticleAnalysisManager</code> 只调用：</p>
+    <pre><code>document = content_reader.read(
+    ArticleReference(
+        title=article["title"],
+        publisher=article["publisher"],
+        urls=tuple(urls),
+    )
+)</code></pre>
+    <p>具体实现 <a href="../app/llm.py"><code>OpenAIWebContentReader</code></a> 可以变化，分析管理器不用知道 HTTP 请求细节。</p>
+
+    <h2>3. Responses API 请求的核心</h2>
+    <pre><code>{
+  "model": "gpt-5.4-mini",
+  "tools": [{"type": "web_search"}],
+  "tool_choice": "required",
+  "include": ["web_search_call.action.sources"],
+  "store": false
+}</code></pre>
+    <ul class="checklist">
+      <li><code>web_search</code>：允许模型搜索和打开网页。</li>
+      <li><code>tool_choice: required</code>：不能只凭标题和模型记忆回答。</li>
+      <li><code>include</code>：要求服务返回搜索来源，用来确认网页工具实际执行。</li>
+      <li><code>store: false</code>：请求不要求服务端持久保存。</li>
+    </ul>
+    <p>提示词明确要求：只保存真正读到的页面正文，不根据标题、摘要或背景知识重构文章。</p>
+
+    <h2>4. 结果必须同时通过多项检查</h2>
+    <ul class="checklist">
+      <li>HTTP 请求成功。</li>
+      <li>响应 JSON 结构正确。</li>
+      <li>网页搜索调用已经完成。</li>
+      <li>模型返回 <code>success=true</code>。</li>
+      <li>正文长度达到最低要求。</li>
+      <li>最终 URL 合法，正文可生成稳定内容哈希。</li>
+    </ul>
+    <p>任一步失败都会生成 <code>ContentFetchError</code>，携带 <code>failure_kind</code> 和 <code>retryable</code>。当前持久化对象保存正文、最终地址、哈希、字符数和 HTTP 元数据；不会把模型返回的完整搜索来源列表写入数据库。</p>
+
+    <h2>5. URL 安全不是可选项</h2>
+    <p><code>validate_public_http_url()</code> 只允许公开的 HTTP/HTTPS 地址，阻止模型读取本机、内网或其他危险地址。这类防护叫 SSRF 防护。</p>
+
+    <h2>6. 为什么正文要保存？</h2>
+    <ul class="checklist">
+      <li>相关性审核和业务分析复用同一份证据。</li>
+      <li>失败重试不必重复已经成功的收费调用。</li>
+      <li>正文哈希能判断旧审核是否仍适用于新内容。</li>
+      <li>用户可以追溯模型判断依据。</li>
+    </ul>
+
+    <div class="quiz" data-quiz data-answer="A" data-correct-feedback="required 强制模型实际使用网页搜索工具。" data-retry-feedback="想想怎样防止模型只根据标题猜正文。">
+      <h3>即时检查：怎样确保模型必须调用网页搜索？</h3>
+      <div class="choices"><button class="choice" data-choice="A">强制工具</button><button class="choice" data-choice="B">建议工具</button></div>
+      <p class="feedback" aria-live="polite">先选择一个答案。</p>
+    </div>
+
+    <h2>7. 动手练习</h2>
+    <div class="card"><ol class="checklist"><li>打开 <code>app/llm.py</code>，找到 <code>_request_payload()</code>。</li><li>列出系统要求模型返回的四个字段。</li><li>在 <code>tests/test_intelligence.py</code> 找到假正文读取器，说明测试为什么不访问真实网页。</li></ol></div>
+
+    <h2>课末回忆</h2>
+    <p>为什么不能直接让 DeepSeek根据标题判断？<code>tool_choice: required</code> 解决什么问题？正文哈希有什么用？</p>
+    <p>依据：<a href="https://developers.openai.com/api/docs/guides/tools-web-search">OpenAI Web Search 指南</a>。</p>
+  </main>
+  <footer><div class="shell">下一课：相关性审核、业务分析和任务状态机。</div></footer>
+  <script src="../assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RSS Collector 术语速查</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <header class="topbar"><div class="shell"><span class="brand">项目术语速查</span><nav class="nav"><a href="course-map.html">课程地图</a><a href="../lessons/0001-one-news-through-the-system.html">第 1 课</a></nav></div></header>
+  <main class="shell">
+    <p class="eyebrow">Quick reference</p>
+    <h1>先听懂大家在说什么</h1>
+    <p class="lead">不要求一次背完。遇到陌生词回来查，并尽量把它对应到一个真实文件。</p>
+
+    <h2>系统与网络</h2>
+    <dl>
+      <div class="term"><dt>前端 Frontend</dt><dd>用户看到并操作的页面。本项目主要是 <code>static/index.html</code>、<code>static/styles.css</code> 和 <code>static/app.js</code>。</dd></div>
+      <div class="term"><dt>后端 Backend</dt><dd>在服务器进程中处理请求和业务规则的代码。本项目入口是 <code>app/main.py</code>。</dd></div>
+      <div class="term"><dt>API / 路由 Route</dt><dd>前后端约定好的“服务窗口”。例如浏览器请求 <code>GET /api/status</code>，后端返回 JSON 状态。</dd></div>
+      <div class="term"><dt>HTTP</dt><dd>浏览器、新闻站点和 API 服务之间传递请求与响应的规则。常见状态码有 200、403、429、500。</dd></div>
+      <div class="term"><dt>JSON</dt><dd>网络接口常用的数据文本格式，由对象、数组、字符串、数字、布尔值和 null 组成。</dd></div>
+      <div class="term"><dt>RSS / XML</dt><dd>网站发布更新的一种订阅格式；RSS 文档通常用 XML 表示，多篇新闻放在多个 <code>item</code> 中。</dd></div>
+    </dl>
+
+    <h2>Python 代码</h2>
+    <dl>
+      <div class="term"><dt>模块 Module</dt><dd>一个可导入的 Python 文件，例如 <code>app/collector.py</code>。</dd></div>
+      <div class="term"><dt>函数 Function</dt><dd>有名字、可重复调用的一段动作；输入是参数，结果可通过 <code>return</code> 返回。</dd></div>
+      <div class="term"><dt>类 Class / 对象 Object</dt><dd>类像机器图纸，对象是按图纸造出的具体机器。对象把数据和能操作数据的方法放在一起。</dd></div>
+      <div class="term"><dt>类型标注 Type hint</dt><dd>写给人和工具看的数据形状提示，例如 <code>query: str</code> 表示 query 应是字符串。</dd></div>
+      <div class="term"><dt>异常 Exception</dt><dd>代码无法正常继续时抛出的结构化错误；上层可以捕获它并决定重试、返回错误或记录失败。</dd></div>
+      <div class="term"><dt>异步 / 后台任务</dt><dd>耗时工作不阻塞当前页面请求；页面先得到“任务已开始”，再通过轮询查看进度。</dd></div>
+    </dl>
+
+    <h2>框架、数据与 AI</h2>
+    <dl>
+      <div class="term"><dt>FastAPI / Uvicorn</dt><dd>FastAPI 定义后端接口，Uvicorn 负责真正监听端口并把 HTTP 请求交给应用。</dd></div>
+      <div class="term"><dt>Pydantic</dt><dd>根据 Python 类型定义检查外部数据，把错误输入挡在业务逻辑之前。</dd></div>
+      <div class="term"><dt>SQLite / 表 / 行</dt><dd>SQLite 是保存在单个文件里的关系数据库；表像结构固定的表格，行是一条记录。</dd></div>
+      <div class="term"><dt>迁移 Migration</dt><dd>在保留旧数据的前提下修改数据库结构，例如增加一列或新建一张表。</dd></div>
+      <div class="term"><dt>LLM / Prompt / Token</dt><dd>LLM 是大语言模型；prompt 是输入指令；token 是模型处理文本时使用的计量单位。</dd></div>
+      <div class="term"><dt>429 / Retry / Backoff</dt><dd>429 常表示请求过多；retry 是重试，backoff 是逐渐延长等待，避免立刻再次撞上限流。</dd></div>
+      <div class="term"><dt>测试 / Mock</dt><dd>测试自动验证行为；mock 用可控的替身代替真实网络或收费模型，使测试快速、稳定。</dd></div>
+    </dl>
+  </main>
+  <footer><div class="shell">术语必须最终回到代码中理解，而不是孤立背诵。</div></footer>
+</body>
+</html>
