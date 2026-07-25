@@ -647,7 +647,7 @@ function renderSources() {
   $("source-rows").innerHTML = state.sources.map((item) => `<tr>
     <td><strong>${escapeHtml(item.name)}</strong></td>
     <td><span class="tag">${item.mode === "search" ? "搜索型" : "直连型"}</span></td>
-    <td>${escapeHtml(item.language || "-")}</td><td>${escapeHtml(item.country || "-")}</td><td class="url-cell" title="${escapeHtml(item.url_template)}">${escapeHtml(item.url_template)}</td>
+    <td>${escapeHtml(item.language || "-")}</td><td>${escapeHtml(item.country || "-")}</td><td>${escapeHtml(item.site_domain || "-")}</td><td class="url-cell" title="${escapeHtml(item.url_template)}">${escapeHtml(item.url_template)}</td>
     <td>${toggleMarkup("source", item)}</td>
     <td><div class="row-actions"><button class="icon-button source-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button source-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
   </tr>`).join("");
@@ -687,6 +687,13 @@ function renderKeywords() {
   refreshIcons();
 }
 
+function syncSourceSiteField() {
+  const siteInput = $("source-site-domain");
+  const isSearch = $("source-mode").value === "search";
+  if (!isSearch) siteInput.value = "";
+  siteInput.disabled = !isSearch;
+}
+
 function openSourceDialog(item = null) {
   $("source-dialog-title").textContent = item ? "编辑 RSS 源" : "新增 RSS 源";
   $("source-id").value = item?.id || "";
@@ -694,8 +701,10 @@ function openSourceDialog(item = null) {
   $("source-mode").value = item?.mode || "search";
   $("source-language").value = item?.language || "";
   $("source-country").value = item?.country || "";
+  $("source-site-domain").value = item?.site_domain || "";
   $("source-url").value = item?.url_template || "";
   $("source-active").checked = item?.active ?? true;
+  syncSourceSiteField();
   $("source-dialog").showModal();
 }
 
@@ -757,7 +766,7 @@ async function saveSource(event) {
   const payload = {
     name: $("source-name").value.trim(), mode: $("source-mode").value,
     language: $("source-language").value.trim(), country: $("source-country").value.trim().toUpperCase(), url_template: $("source-url").value.trim(),
-    active: $("source-active").checked,
+    site_domain: $("source-site-domain").value.trim(), active: $("source-active").checked,
   };
   try {
     await api(id ? `/api/sources/${id}` : "/api/sources", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
@@ -787,7 +796,7 @@ async function saveKeyword(event) {
 async function updateSourceActive(id, active) {
   const item = state.sources.find((source) => source.id === Number(id));
   if (!item) return;
-  await api(`/api/sources/${id}`, { method: "PUT", body: JSON.stringify({ name: item.name, url_template: item.url_template, mode: item.mode, language: item.language, country: item.country || "", active }) });
+  await api(`/api/sources/${id}`, { method: "PUT", body: JSON.stringify({ name: item.name, url_template: item.url_template, mode: item.mode, language: item.language, country: item.country || "", site_domain: item.site_domain || "", active }) });
   await Promise.all([loadCatalogs(), loadStatus()]);
 }
 
@@ -960,6 +969,7 @@ function bindEvents() {
   $("article-prev").addEventListener("click", () => { state.articleOffset = Math.max(0, state.articleOffset - state.articleLimit); loadArticles(); });
   $("article-next").addEventListener("click", () => { state.articleOffset += state.articleLimit; loadArticles(); });
   $("add-source").addEventListener("click", () => openSourceDialog());
+  $("source-mode").addEventListener("change", syncSourceSiteField);
   $("add-keyword").addEventListener("click", () => openKeywordDialog());
   $("source-form").addEventListener("submit", saveSource);
   $("keyword-form").addEventListener("submit", saveKeyword);

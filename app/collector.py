@@ -154,7 +154,11 @@ def fetch_feed(url: str, timeout: float = 30) -> bytes:
 def build_feed_url(source: dict[str, object], keyword: dict[str, object]) -> str:
     template = str(source["url_template"])
     if source["mode"] == "search":
-        return template.replace("{query}", quote_plus(str(keyword["query"])))
+        query = str(keyword["query"])
+        site_domain = str(source.get("site_domain", "")).strip()
+        if site_domain:
+            query = f"site:{site_domain} {query}"
+        return template.replace("{query}", quote_plus(query))
     return template
 
 
