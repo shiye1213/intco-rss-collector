@@ -261,7 +261,7 @@
 
         <section id="view-keywords" class="view">
           <div class="view-heading">
-            <div><h2>关键词</h2><p>主题词 × 业务信号 − 歧义噪声；系统按 RSS 源语言自动拆分中英文词</p></div>
+            <div><h2>关键词</h2><p>核心组保障命中率，拓展召回组减少漏报；候选文章仍须通过业务相关性与专项分类审核</p></div>
             <button id="add-keyword" class="button primary" type="button"><i data-lucide="plus"></i><span>新增关键词组</span></button>
           </div>
           <nav id="keyword-category-menu" class="keyword-category-menu" aria-label="关键词二级分类"></nav>
@@ -351,10 +351,11 @@
           <label><span>名称</span><input id="keyword-name" maxlength="100" required /></label>
           <label><span>所属分类</span><select id="keyword-category"><option value="">未分类</option></select></label>
           <label><span>查询表达式（自动生成）</span><textarea id="keyword-query" rows="4" maxlength="2000" readonly></textarea></label>
-          <label><span>主题词（文章标题或摘要必须命中）</span><textarea id="keyword-terms" rows="5" required placeholder="每行一个产品、企业或主题，例如 nitrile gloves"></textarea></label>
+          <label><span>主题词（构建查询，可选标题/摘要复核）</span><textarea id="keyword-terms" rows="5" required placeholder="每行一个产品、企业或主题，例如 nitrile gloves"></textarea></label>
           <label><span>业务信号词（Google News 至少命中一个）</span><textarea id="keyword-context-terms" rows="5" placeholder="每行一个，例如 tariff、regulation、price、demand、capacity"></textarea></label>
           <label><span>排除词</span><textarea id="keyword-exclude-terms" rows="4" placeholder="每行一个，例如 boxing、football、baseball"></textarea></label>
           <label><span>Google News 回溯天数</span><input id="keyword-lookback-days" type="number" min="1" max="365" value="30" required /></label>
+          <label class="switch-label"><span>标题/摘要必须命中主题词</span><input id="keyword-require-local-match" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
           <label class="switch-label"><span>启用</span><input id="keyword-active" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
         </div>
         <div class="modal-actions"><button class="button secondary close-dialog" type="button">取消</button><button class="button primary" type="submit">保存</button></div>

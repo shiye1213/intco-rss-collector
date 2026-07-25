@@ -203,7 +203,7 @@ def test_default_tariff_keyword_strategies_are_valid_and_language_specific(
     assert chinese_names | english_names <= seeded_names
 
 
-def test_focused_keyword_strategies_cover_each_report_category() -> None:
+def test_core_and_recall_keyword_strategies_cover_each_report_category() -> None:
     focused = {
         item["name"]: item
         for item in DEFAULT_KEYWORDS
@@ -217,12 +217,37 @@ def test_focused_keyword_strategies_cover_each_report_category() -> None:
         "医疗手套关税调整精准版（英文）",
         "医疗手套召回与进口警示（中文）",
         "医疗手套召回与进口警示（英文）",
+        "医疗手套贸易政策拓展召回（中文）",
+        "医疗手套贸易政策拓展召回（英文）",
+        "医疗手套关税调整拓展召回（中文）",
+        "医疗手套关税调整拓展召回（英文）",
+        "医疗手套行业法规拓展召回（中文）",
+        "医疗手套行业法规拓展召回（英文）",
     }
     assert {item["category_name"] for item in focused.values()} == {
         "贸易政策",
         "关税调整",
         "行业法规",
     }
+    for category_name in ("贸易政策", "关税调整", "行业法规"):
+        category_strategies = [
+            item
+            for item in focused.values()
+            if item["category_name"] == category_name
+        ]
+        recall_strategies = [
+            item for item in category_strategies if "拓展召回" in item["name"]
+        ]
+        assert len(category_strategies) == 4
+        assert len(recall_strategies) == 2
+        assert any("（中文）" in item["name"] for item in recall_strategies)
+        assert any("（英文）" in item["name"] for item in recall_strategies)
+        assert all(item["require_local_match"] for item in recall_strategies)
+        assert all(
+            not item.get("require_local_match", False)
+            for item in category_strategies
+            if item not in recall_strategies
+        )
     assert all(item["active"] for item in focused.values())
     assert all(item["lookback_days"] == 90 for item in focused.values())
     for item in focused.values():
@@ -370,6 +395,7 @@ def test_initialize_migrates_keyword_categories_and_supports_assignment(tmp_path
     )
     assert legacy_keyword["category_id"] is None
     assert legacy_keyword["category_name"] is None
+    assert legacy_keyword["require_local_match"] == 0
 
     updated = database.update_keyword(
         legacy_keyword["id"],
@@ -804,6 +830,62 @@ def test_search_source_can_skip_local_filter_but_direct_source_still_checks(
     assert database.article_count() == 1
 
 
+def test_keyword_can_require_local_match_when_global_filter_is_disabled(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "keyword-local-filter.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": "测试搜索源",
+            "url_template": "https://search.example/rss?q={query}",
+            "mode": "search",
+            "language": "en-US",
+            "country": "US",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Glove trade recall",
+            "match_terms": ["glove industry"],
+            "context_terms": ["trade restriction"],
+            "lookback_days": 30,
+            "require_local_match": True,
+            "active": True,
+        }
+    )
+    database.set_setting("search_local_keyword_filter", "false")
+    rss_without_subject = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>Search result</title><item>
+      <title>New international trade policy announced</title>
+      <link>https://example.com/trade-policy</link>
+      <source>Example News</source>
+      <guid>trade-policy-2</guid>
+      <pubDate>Mon, 20 Jul 2026 02:00:00 GMT</pubDate>
+      <description>Export rules were updated.</description>
+    </item></channel></rss>"""
+    collector = Collector(
+        database,
+        feed_fetcher=lambda _url, _timeout: rss_without_subject,
+    )
+    started = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-06-22T00:00:00Z"
+    )
+
+    collector.collect(run_id, started)
+
+    result = database.get_run(run_id)
+    assert result is not None
+    assert result["items_matched"] == 0
+    assert result["items_inserted"] == 0
+    assert database.article_count() == 0
+
+
 def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) -> None:
     database = Database(tmp_path / "keyword-strategy.db")
     database.initialize()
@@ -814,6 +896,7 @@ def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) ->
             "context_terms": ["tariff", "demand"],
             "exclude_terms": ["boxing", "football"],
             "lookback_days": 14,
+            "require_local_match": True,
             "active": True,
         }
     )
@@ -823,6 +906,7 @@ def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) ->
     assert keyword["context_terms"] == ["tariff", "demand"]
     assert keyword["exclude_terms"] == ["boxing", "football"]
     assert keyword["lookback_days"] == 14
+    assert keyword["require_local_match"] == 1
     assert keyword["query"] == (
         '("nitrile gloves"OR"medical gloves")'
         'AND("tariff"OR"demand")-"boxing"-"football"when:14d'
@@ -834,6 +918,73 @@ def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) ->
     assert "{query}" not in feed_url
     assert "when%3A14d" in feed_url
     assert "-%22boxing%22" in feed_url
+
+
+def test_updating_keyword_strategy_clears_stale_hits_and_cursor(tmp_path) -> None:
+    database = Database(tmp_path / "keyword-strategy-reset.db")
+    database.initialize()
+    keyword_id = database.create_keyword(
+        {
+            "name": "Recall strategy",
+            "match_terms": ["glove industry"],
+            "context_terms": ["trade restriction"],
+            "lookback_days": 30,
+            "active": True,
+        }
+    )
+    with database.connect() as connection:
+        source_id = connection.execute(
+            "SELECT id FROM rss_sources ORDER BY id LIMIT 1"
+        ).fetchone()["id"]
+        article_id = connection.execute(
+            """
+            INSERT INTO articles
+                (title, url, canonical_url, fingerprint, published_at, collected_at)
+            VALUES
+                ('Old candidate', 'https://example.com/old',
+                 'https://example.com/old', 'old-candidate',
+                 '2026-07-20T00:00:00Z', '2026-07-20T01:00:00Z')
+            """
+        ).lastrowid
+        connection.execute(
+            """
+            INSERT INTO article_keywords (article_id, keyword_id, matched_terms)
+            VALUES (?, ?, '["glove industry"]')
+            """,
+            (article_id, keyword_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO collection_cursors
+                (rss_source_id, keyword_id, last_collected_at)
+            VALUES (?, ?, '2026-07-20T01:00:00Z')
+            """,
+            (source_id, keyword_id),
+        )
+
+    assert database.update_keyword(
+        keyword_id,
+        {
+            "name": "Recall strategy",
+            "match_terms": ["rubber gloves"],
+            "context_terms": ["trade restriction"],
+            "lookback_days": 30,
+            "require_local_match": True,
+            "active": True,
+        },
+    )
+
+    with database.connect() as connection:
+        hit_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM article_keywords WHERE keyword_id = ?",
+            (keyword_id,),
+        ).fetchone()["count"]
+        cursor_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM collection_cursors WHERE keyword_id = ?",
+            (keyword_id,),
+        ).fetchone()["count"]
+    assert hit_count == 0
+    assert cursor_count == 0
 
 
 def test_keyword_query_rejects_oversized_google_expression() -> None:

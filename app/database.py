@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS keywords (
     context_terms TEXT NOT NULL DEFAULT '[]',
     exclude_terms TEXT NOT NULL DEFAULT '[]',
     lookback_days INTEGER NOT NULL DEFAULT 30,
+    require_local_match INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -564,6 +565,114 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": ["tariff", "duty", "boxing", "football", "baseball"],
         "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "医疗手套贸易政策拓展召回（中文）",
+        "category_name": "贸易政策",
+        "match_terms": ["橡胶手套", "手套行业", "手套企业", "手套厂商"],
+        "context_terms": [
+            "进口禁令",
+            "出口禁令",
+            "贸易限制",
+            "原产地规则",
+            "本地化要求",
+        ],
+        "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套贸易政策拓展召回（英文）",
+        "category_name": "贸易政策",
+        "match_terms": [
+            "rubber gloves",
+            "disposable gloves",
+            "glove industry",
+            "glove makers",
+        ],
+        "context_terms": [
+            "import ban",
+            "export ban",
+            "trade restriction",
+            "rules of origin",
+        ],
+        "exclude_terms": ["tariff", "duty", "boxing"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套关税调整拓展召回（中文）",
+        "category_name": "关税调整",
+        "match_terms": ["橡胶手套", "手套行业", "手套企业", "手套厂商"],
+        "context_terms": [
+            "关税上调",
+            "关税豁免",
+            "反倾销税",
+            "反补贴税",
+            "贸易救济",
+        ],
+        "exclude_terms": ["拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套关税调整拓展召回（英文）",
+        "category_name": "关税调整",
+        "match_terms": [
+            "rubber gloves",
+            "disposable gloves",
+            "glove sector",
+            "glove makers",
+        ],
+        "context_terms": [
+            "tariff increase",
+            "tariff exemption",
+            "anti-dumping duty",
+            "countervailing duty",
+        ],
+        "exclude_terms": ["boxing", "football", "baseball"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套行业法规拓展召回（中文）",
+        "category_name": "行业法规",
+        "match_terms": ["橡胶手套", "手套行业", "手套企业", "手套厂商"],
+        "context_terms": [
+            "手套召回",
+            "进口警示",
+            "产品认证",
+            "注册要求",
+            "医疗器械法规",
+        ],
+        "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套行业法规拓展召回（英文）",
+        "category_name": "行业法规",
+        "match_terms": [
+            "rubber gloves",
+            "disposable gloves",
+            "glove industry",
+            "glove makers",
+        ],
+        "context_terms": [
+            "FDA",
+            "glove recall",
+            "import alert",
+            "medical device rule",
+        ],
+        "exclude_terms": ["tariff", "duty", "boxing"],
+        "lookback_days": 90,
+        "require_local_match": True,
         "active": True,
     },
     {
@@ -1074,6 +1183,14 @@ class Database:
                 connection.execute(
                     "ALTER TABLE keywords ADD COLUMN lookback_days INTEGER NOT NULL DEFAULT 30"
                 )
+            added_require_local_match = "require_local_match" not in keyword_columns
+            if added_require_local_match:
+                connection.execute(
+                    """
+                    ALTER TABLE keywords
+                    ADD COLUMN require_local_match INTEGER NOT NULL DEFAULT 0
+                    """
+                )
             if "category_id" not in keyword_columns:
                 connection.execute(
                     """
@@ -1398,11 +1515,11 @@ class Database:
                     """
                     INSERT OR IGNORE INTO keywords
                         (category_id, name, query, match_terms, context_terms,
-                         exclude_terms, lookback_days, active,
+                         exclude_terms, lookback_days, require_local_match, active,
                          created_at, updated_at)
                     VALUES (
                         (SELECT id FROM keyword_categories WHERE name = ?),
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -1418,11 +1535,44 @@ class Database:
                         json.dumps(keyword["context_terms"], ensure_ascii=False),
                         json.dumps(keyword["exclude_terms"], ensure_ascii=False),
                         keyword["lookback_days"],
+                        int(keyword.get("require_local_match", False)),
                         int(keyword["active"]),
                         now,
                         now,
                     ),
                 )
+            if added_require_local_match:
+                for keyword in DEFAULT_KEYWORDS:
+                    if not keyword.get("require_local_match", False):
+                        continue
+                    connection.execute(
+                        """
+                        UPDATE keywords
+                        SET require_local_match = 1, updated_at = ?
+                        WHERE name = ? AND archived = 0
+                        """,
+                        (now, keyword["name"]),
+                    )
+                    connection.execute(
+                        """
+                        DELETE FROM article_keywords
+                        WHERE keyword_id IN (
+                            SELECT id FROM keywords
+                            WHERE name = ? AND archived = 0
+                        )
+                        """,
+                        (keyword["name"],),
+                    )
+                    connection.execute(
+                        """
+                        DELETE FROM collection_cursors
+                        WHERE keyword_id IN (
+                            SELECT id FROM keywords
+                            WHERE name = ? AND archived = 0
+                        )
+                        """,
+                        (keyword["name"],),
+                    )
             default_keywords_by_name = {
                 keyword["name"]: keyword for keyword in DEFAULT_KEYWORDS
             }
@@ -1852,8 +2002,9 @@ class Database:
                 """
                 INSERT INTO keywords
                     (category_id, name, query, match_terms, context_terms,
-                     exclude_terms, lookback_days, active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     exclude_terms, lookback_days, require_local_match, active,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     category_id,
@@ -1863,6 +2014,7 @@ class Database:
                     json.dumps(context_terms, ensure_ascii=False),
                     json.dumps(exclude_terms, ensure_ascii=False),
                     lookback_days,
+                    int(data.get("require_local_match", False)),
                     int(data.get("active", True)),
                     now,
                     now,
@@ -1888,12 +2040,36 @@ class Database:
                 (category_id,),
             ).fetchone() is None:
                 raise ValueError("关键词分类不存在")
+            current = connection.execute(
+                """
+                SELECT match_terms, context_terms, exclude_terms, lookback_days,
+                       require_local_match
+                FROM keywords
+                WHERE id = ? AND archived = 0
+                """,
+                (keyword_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            strategy_changed = any(
+                (
+                    current["match_terms"]
+                    != json.dumps(data["match_terms"], ensure_ascii=False),
+                    current["context_terms"]
+                    != json.dumps(context_terms, ensure_ascii=False),
+                    current["exclude_terms"]
+                    != json.dumps(exclude_terms, ensure_ascii=False),
+                    int(current["lookback_days"]) != lookback_days,
+                    bool(current["require_local_match"])
+                    != bool(data.get("require_local_match", False)),
+                )
+            )
             cursor = connection.execute(
                 """
                 UPDATE keywords
                 SET category_id = ?, name = ?, query = ?, match_terms = ?,
                     context_terms = ?, exclude_terms = ?, lookback_days = ?,
-                    active = ?, updated_at = ?
+                    require_local_match = ?, active = ?, updated_at = ?
                 WHERE id = ? AND archived = 0
                 """,
                 (
@@ -1904,11 +2080,21 @@ class Database:
                     json.dumps(context_terms, ensure_ascii=False),
                     json.dumps(exclude_terms, ensure_ascii=False),
                     lookback_days,
+                    int(data.get("require_local_match", False)),
                     int(data.get("active", True)),
                     now,
                     keyword_id,
                 ),
             )
+            if strategy_changed:
+                connection.execute(
+                    "DELETE FROM article_keywords WHERE keyword_id = ?",
+                    (keyword_id,),
+                )
+                connection.execute(
+                    "DELETE FROM collection_cursors WHERE keyword_id = ?",
+                    (keyword_id,),
+                )
             return cursor.rowcount > 0
 
     def archive_keyword(self, keyword_id: int) -> bool:

@@ -163,6 +163,7 @@ class KeywordQueryPayload(BaseModel):
 class KeywordPayload(KeywordQueryPayload):
     name: str = Field(min_length=1, max_length=100)
     category_id: int | None = Field(default=None, ge=1)
+    require_local_match: bool = False
     active: bool = True
 
     @field_validator("name")

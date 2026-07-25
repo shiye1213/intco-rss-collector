@@ -753,7 +753,7 @@ function renderKeywords() {
     <td><span class="tag">${escapeHtml(item.category_name || "未分类")}</span></td>
     <td class="url-cell" title="${escapeHtml(item.query)}">${escapeHtml(item.query)}</td>
     <td><div class="keyword-list">${item.match_terms.slice(0, 5).map((term) => `<span class="tag">${escapeHtml(term)}</span>`).join("")}${item.match_terms.length > 5 ? `<span class="tag">+${item.match_terms.length - 5}</span>` : ""}</div></td>
-    <td><span class="cell-subtitle">信号 ${item.context_terms.length} 个 · 排除 ${item.exclude_terms.length} 个</span><span class="cell-meta">回溯 ${item.lookback_days} 天</span></td>
+    <td><span class="cell-subtitle">信号 ${item.context_terms.length} 个 · 排除 ${item.exclude_terms.length} 个</span><span class="cell-meta">回溯 ${item.lookback_days} 天${item.require_local_match ? " · 本地主题校验" : ""}</span></td>
     <td><strong>${stats.hit_count}</strong><span class="cell-subtitle">待审核 ${stats.pending_review_count}</span></td>
     <td><strong>${stats.relevant_count}</strong><span class="cell-subtitle">已审核 ${stats.reviewed_count}</span></td>
     <td><strong>${formatPercent(stats.hit_rate)}</strong><span class="cell-subtitle">相关 / 已审核</span></td>
@@ -800,6 +800,7 @@ function openKeywordDialog(item = null) {
   $("keyword-exclude-terms").value = item?.exclude_terms.join("\n") || "";
   $("keyword-lookback-days").value = item?.lookback_days || 30;
   $("keyword-query").value = item?.query || "";
+  $("keyword-require-local-match").checked = Boolean(item?.require_local_match);
   $("keyword-active").checked = item?.active ?? true;
   updateKeywordQueryPreview();
   $("keyword-dialog").showModal();
@@ -861,6 +862,7 @@ async function saveKeyword(event) {
     name: $("keyword-name").value.trim(),
     category_id: $("keyword-category").value ? Number($("keyword-category").value) : null,
     ...keywordStrategyPayload(),
+    require_local_match: $("keyword-require-local-match").checked,
     active: $("keyword-active").checked,
   };
   try {
@@ -888,6 +890,7 @@ async function updateKeywordActive(id, active) {
     context_terms: item.context_terms,
     exclude_terms: item.exclude_terms,
     lookback_days: item.lookback_days,
+    require_local_match: Boolean(item.require_local_match),
     active,
   }) });
   await Promise.all([loadCatalogs(), loadStatus()]);

@@ -93,6 +93,7 @@
 ```json
 {
   "name": "一次性医疗手套",
+  "category_id": 2,
   "match_terms": [
     "丁腈手套",
     "nitrile gloves",
@@ -101,11 +102,14 @@
   "context_terms": ["关税", "需求", "tariff", "demand", "capacity"],
   "exclude_terms": ["boxing", "football", "baseball"],
   "lookback_days": 30,
+  "require_local_match": true,
   "active": true
 }
 ```
 
 后端统一生成查询表达式，不接受客户端自定义 `query`。表达式格式为 `(主题词 OR …) AND (业务信号 OR …) -"排除词" when:30d`。表达式超过 200 字符时返回 `422`，应拆分成多个聚焦策略。采集时再依据 RSS 源的 `language` 切片：`zh-*` 只使用含汉字的词，`en-*` 只使用英文词；混合词组会分别生成中文和英文请求，无对应语言主题词的组合不会执行。
+
+`require_local_match=true` 时，搜索型 RSS 返回项的标题或摘要还必须真实出现至少一个主题词，适合用在同义词更宽的拓展召回组以过滤搜索引擎误召回。修改主题词、业务信号词、排除词、回溯天数或该开关时，系统会清除该关键词的派生命中关系和采集游标，下一次采集按完整回溯窗口重新计算；历史文章和采集日志不会删除。
 
 ### `POST /api/keywords/preview`
 
