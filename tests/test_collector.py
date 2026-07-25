@@ -16,11 +16,13 @@ from app.collector import (
 from app.database import DEFAULT_KEYWORDS, DEFAULT_SOURCES, Database
 from app.prompts import (
     DEFAULT_BUSINESS_PROFILE,
+    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
     LEGACY_DEFAULT_BUSINESS_PROFILE_V4,
     LEGACY_DEFAULT_RELEVANCE_PROMPT_V4,
     LEGACY_DEFAULT_REPORT_PROMPT_V4,
+    REPORT_CATEGORY_SETTING_KEYS,
 )
 from app.query_builder import (
     MAX_GOOGLE_NEWS_QUERY_CHARS,
@@ -495,6 +497,10 @@ def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
     assert settings["ai_relevance_prompt"] == DEFAULT_RELEVANCE_PROMPT
     assert settings["ai_business_profile"] == DEFAULT_BUSINESS_PROFILE
     assert settings["ai_report_prompt"] == DEFAULT_REPORT_PROMPT
+    assert {
+        category_name: settings[REPORT_CATEGORY_SETTING_KEYS[category_name]]
+        for category_name in DEFAULT_REPORT_CATEGORY_PROMPTS
+    } == DEFAULT_REPORT_CATEGORY_PROMPTS
 
 
 def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(

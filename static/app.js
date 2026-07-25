@@ -937,6 +937,9 @@ async function loadAISettings() {
     $("ai-business-profile").value = data.business_profile;
     $("ai-relevance-prompt").value = data.relevance_prompt;
     $("ai-report-prompt").value = data.report_prompt;
+    $("ai-report-prompt-trade-policy").value = data.category_report_prompts["贸易政策"];
+    $("ai-report-prompt-tariff-adjustment").value = data.category_report_prompts["关税调整"];
+    $("ai-report-prompt-industry-regulation").value = data.category_report_prompts["行业法规"];
     $("ai-threshold").value = data.relevance_threshold;
     $("ai-batch-size").value = data.batch_size;
     $("ai-content-max-chars").value = data.content_max_chars;
@@ -952,6 +955,11 @@ async function saveAISettings(event) {
     business_profile: $("ai-business-profile").value.trim(),
     relevance_prompt: $("ai-relevance-prompt").value.trim(),
     report_prompt: $("ai-report-prompt").value.trim(),
+    category_report_prompts: {
+      "贸易政策": $("ai-report-prompt-trade-policy").value.trim(),
+      "关税调整": $("ai-report-prompt-tariff-adjustment").value.trim(),
+      "行业法规": $("ai-report-prompt-industry-regulation").value.trim(),
+    },
     relevance_threshold: Number($("ai-threshold").value),
     batch_size: Number($("ai-batch-size").value),
     content_max_chars: Number($("ai-content-max-chars").value),

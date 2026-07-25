@@ -21,10 +21,12 @@ from .llm import JSONLLMClient, LLMResult
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
     CATEGORY_LABELS,
+    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
     KEYWORD_CATEGORY_BUSINESS_CODES,
     RELEVANCE_PROMPT_VERSION,
+    REPORT_CATEGORY_SETTING_KEYS,
     REPORT_PROMPT_VERSION,
     build_business_analysis_prompts,
     build_relevance_prompts,
@@ -2174,6 +2176,17 @@ class DailyReportManager:
         try:
             settings = self.database.get_settings()
             report_articles = [self._report_article(article) for article in articles]
+            category_prompt_setting = REPORT_CATEGORY_SETTING_KEYS.get(
+                keyword_category_name
+            )
+            default_category_prompt = DEFAULT_REPORT_CATEGORY_PROMPTS.get(
+                keyword_category_name, ""
+            )
+            category_report_prompt = (
+                settings.get(category_prompt_setting, default_category_prompt)
+                if category_prompt_setting
+                else default_category_prompt
+            )
             system_prompt, user_prompt = build_report_prompts(
                 report_date=report_date.isoformat(),
                 keyword_category_name=keyword_category_name,
@@ -2182,6 +2195,7 @@ class DailyReportManager:
                 report_prompt=settings.get(
                     "ai_report_prompt", DEFAULT_REPORT_PROMPT
                 ),
+                category_report_prompt=category_report_prompt,
             )
             result = self.client.complete_json(
                 system_prompt, user_prompt, max_tokens=3000

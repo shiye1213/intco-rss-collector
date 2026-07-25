@@ -39,9 +39,11 @@ from .maintenance import (
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
     CATEGORY_LABELS,
+    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
     RELEVANCE_PROMPT_VERSION,
+    REPORT_CATEGORY_SETTING_KEYS,
     REPORT_PROMPT_VERSION,
 )
 from .query_builder import build_keyword_query
@@ -208,6 +210,9 @@ class AISettingsPayload(BaseModel):
     report_prompt: str = Field(
         default=DEFAULT_REPORT_PROMPT, min_length=20, max_length=20000
     )
+    category_report_prompts: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_REPORT_CATEGORY_PROMPTS)
+    )
     relevance_threshold: int = Field(default=70, ge=0, le=100)
     batch_size: int = Field(default=20, ge=1, le=100)
     content_max_chars: int = Field(default=30000, ge=2000, le=100000)
@@ -228,6 +233,22 @@ class AISettingsPayload(BaseModel):
         cleaned = value.strip()
         if len(cleaned) < 20:
             raise ValueError("提示词至少需要 20 个字符")
+        return cleaned
+
+    @field_validator("category_report_prompts")
+    @classmethod
+    def validate_category_report_prompts(
+        cls, values: dict[str, str]
+    ) -> dict[str, str]:
+        expected = set(DEFAULT_REPORT_CATEGORY_PROMPTS)
+        if set(values) != expected:
+            raise ValueError("分类日报提示词必须完整包含贸易政策、关税调整和行业法规")
+        cleaned = {
+            category_name: prompt.strip()
+            for category_name, prompt in values.items()
+        }
+        if any(not 20 <= len(prompt) <= 20000 for prompt in cleaned.values()):
+            raise ValueError("每段分类日报提示词必须为 20 到 20000 个字符")
         return cleaned
 
 
@@ -697,6 +718,15 @@ def create_app(
             "report_prompt": settings.get(
                 "ai_report_prompt", DEFAULT_REPORT_PROMPT
             ),
+            "category_report_prompts": {
+                category_name: settings.get(
+                    REPORT_CATEGORY_SETTING_KEYS[category_name],
+                    default_prompt,
+                )
+                for category_name, default_prompt in (
+                    DEFAULT_REPORT_CATEGORY_PROMPTS.items()
+                )
+            },
             "relevance_threshold": int(settings.get("ai_relevance_threshold", "70")),
             "batch_size": int(settings.get("ai_batch_size", "20")),
             "content_max_chars": int(
@@ -711,6 +741,10 @@ def create_app(
         database.set_setting("ai_business_profile", payload.business_profile)
         database.set_setting("ai_relevance_prompt", payload.relevance_prompt)
         database.set_setting("ai_report_prompt", payload.report_prompt)
+        for category_name, prompt in payload.category_report_prompts.items():
+            database.set_setting(
+                REPORT_CATEGORY_SETTING_KEYS[category_name], prompt
+            )
         database.set_setting(
             "ai_relevance_threshold", str(payload.relevance_threshold)
         )

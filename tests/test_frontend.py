@@ -47,9 +47,16 @@ def test_prompt_settings_and_cited_report_content_are_wired() -> None:
 
     assert 'id="ai-relevance-prompt"' in html
     assert 'id="ai-report-prompt"' in html
+    assert 'id="ai-report-prompt-trade-policy"' in html
+    assert 'id="ai-report-prompt-tariff-adjustment"' in html
+    assert 'id="ai-report-prompt-industry-regulation"' in html
     assert "相关性审核提示词" in html
     assert 'relevance_prompt: $("ai-relevance-prompt").value.trim()' in javascript
     assert 'report_prompt: $("ai-report-prompt").value.trim()' in javascript
+    assert "category_report_prompts:" in javascript
+    assert '"贸易政策": $("ai-report-prompt-trade-policy").value.trim()' in javascript
+    assert '"关税调整": $("ai-report-prompt-tariff-adjustment").value.trim()' in javascript
+    assert '"行业法规": $("ai-report-prompt-industry-regulation").value.trim()' in javascript
     assert "function reportSources(" in javascript
     assert "全部来源文章" in javascript
     assert "item.secondary_categories" in javascript

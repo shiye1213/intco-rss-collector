@@ -10,6 +10,7 @@ from typing import Any, Iterator
 from .normalization import infer_country, normalize_publisher
 from .prompts import (
     DEFAULT_BUSINESS_PROFILE,
+    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
     LEGACY_DEFAULT_BUSINESS_PROFILE,
@@ -23,6 +24,8 @@ from .prompts import (
     LEGACY_DEFAULT_REPORT_PROMPT_V4,
     LEGACY_DEFAULT_REPORT_PROMPT_V5,
     LEGACY_DEFAULT_REPORT_PROMPT_V6,
+    LEGACY_DEFAULT_REPORT_PROMPT_V7,
+    REPORT_CATEGORY_SETTING_KEYS,
 )
 from .query_builder import build_keyword_query
 
@@ -1659,6 +1662,12 @@ class Database:
                 "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
                 "ai_relevance_prompt": DEFAULT_RELEVANCE_PROMPT,
                 "ai_report_prompt": DEFAULT_REPORT_PROMPT,
+                **{
+                    REPORT_CATEGORY_SETTING_KEYS[category_name]: prompt
+                    for category_name, prompt in (
+                        DEFAULT_REPORT_CATEGORY_PROMPTS.items()
+                    )
+                },
                 "ai_relevance_threshold": "70",
                 "ai_batch_size": "20",
                 "ai_content_max_chars": "30000",
@@ -1698,6 +1707,7 @@ class Database:
                         LEGACY_DEFAULT_REPORT_PROMPT_V4,
                         LEGACY_DEFAULT_REPORT_PROMPT_V5,
                         LEGACY_DEFAULT_REPORT_PROMPT_V6,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V7,
                     ],
                     DEFAULT_REPORT_PROMPT,
                 ),

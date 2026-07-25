@@ -25,8 +25,10 @@ from app.intelligence import (
 from app.llm import LLMResult
 from app.prompts import (
     DEFAULT_BUSINESS_PROFILE,
+    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
+    REPORT_CATEGORY_SETTING_KEYS,
     build_business_analysis_prompts,
     build_relevance_prompts,
     build_report_prompts,
@@ -587,6 +589,10 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
         "ai_report_prompt",
         "测试自定义日报提示词：必须按分类组织，并为每项结论提供文章来源。",
     )
+    database.set_setting(
+        REPORT_CATEGORY_SETTING_KEYS["贸易政策"],
+        "测试贸易政策专属提示词：必须核对政策工具、实施阶段与采购准入影响。",
+    )
     article_id = create_article(
         database,
         slug="medical-gloves",
@@ -653,6 +659,7 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     assert [item["content"] for item in report["watchlist"]] == ["采购量变化"]
     assert report["articles"][0]["article_id"] == article_id
     assert "测试自定义日报提示词" in report_client.calls[0][0]
+    assert "测试贸易政策专属提示词" in report_client.calls[0][0]
     assert "本次日报的关键词分类：贸易政策" in report_client.calls[0][0]
     assert '"keyword_category":"贸易政策"' in report_client.calls[0][1]
     assert '"source_url"' in report_client.calls[0][1]
@@ -1240,6 +1247,7 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert "可能传导" in analysis_system
     assert '"relevance_review"' in analysis_user
     assert "自定义日报要求" in report_system
+    assert DEFAULT_REPORT_CATEGORY_PROMPTS["贸易政策"] in report_system
     assert '"article_ids": [1]' in report_system
     assert '"category": "分类代码"' in report_system
     assert "关键词分类：贸易政策" in report_system
@@ -1255,6 +1263,36 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert "不得断言英科医疗在某国设厂" in DEFAULT_BUSINESS_PROFILE
     assert len(DEFAULT_RELEVANCE_PROMPT) >= 20
     assert len(DEFAULT_REPORT_PROMPT) >= 20
+
+
+@pytest.mark.parametrize(
+    ("category_name", "expected_phrase", "excluded_phrase"),
+    [
+        ("贸易政策", "非关税贸易措施", "原税率与新税率"),
+        ("关税调整", "原税率与新税率", "510(k)"),
+        ("行业法规", "510(k)", "原税率与新税率"),
+    ],
+)
+def test_report_prompt_uses_only_current_category_requirements(
+    category_name: str,
+    expected_phrase: str,
+    excluded_phrase: str,
+) -> None:
+    system_prompt, _ = build_report_prompts(
+        report_date="2026-07-20",
+        keyword_category_name=category_name,
+        articles=[
+            {
+                "article_id": 1,
+                "title": "测试新闻",
+                "source_url": "https://example.com/news",
+            }
+        ],
+        business_profile=DEFAULT_BUSINESS_PROFILE,
+    )
+
+    assert expected_phrase in system_prompt
+    assert excluded_phrase not in system_prompt
 
 
 def test_irrelevant_review_is_normalized_to_other_without_secondaries() -> None:
