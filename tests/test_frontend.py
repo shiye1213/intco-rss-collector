@@ -36,7 +36,8 @@ def test_pending_cleanup_and_keyword_category_controls_are_wired() -> None:
     assert 'api("/api/ai/pending/clear"' in javascript
     assert 'api("/api/keyword-categories")' in javascript
     assert 'api("/api/keyword-hit-stats")' in javascript
-    assert "真正相关 ÷ 已审核" in javascript
+    assert "分类相关 ÷ 已审核" in javascript
+    assert "business_relevant_count" in javascript
     assert "category_id:" in javascript
 
 

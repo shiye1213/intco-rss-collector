@@ -706,6 +706,7 @@ function renderKeywords() {
     keyword_count: 0,
     hit_count: 0,
     reviewed_count: 0,
+    business_relevant_count: 0,
     relevant_count: 0,
     pending_review_count: 0,
     hit_rate: null,
@@ -732,10 +733,11 @@ function renderKeywords() {
   const selectedStats = menuItems.find((item) => item.id === state.keywordCategoryId)?.stats || emptyStats;
   const summaryMetrics = [
     ["关键词组", selectedStats.keyword_count, "当前范围内未归档的关键词组"],
-    ["候选命中", selectedStats.hit_count, "关键词初筛命中的去重文章"],
+    ["候选命中", selectedStats.hit_count, "当前启用关键词初筛命中的去重文章"],
     ["已审核", selectedStats.reviewed_count, "已完成 AI 相关性判断"],
-    ["真正相关", selectedStats.relevant_count, "AI 审核确认与业务真正相关"],
-    ["命中率", formatPercent(selectedStats.hit_rate), "真正相关 ÷ 已审核"],
+    ["业务相关", selectedStats.business_relevant_count, "通过企业业务边界审核"],
+    ["分类相关", selectedStats.relevant_count, "业务相关且主/次分类匹配当前关键词分类"],
+    ["命中率", formatPercent(selectedStats.hit_rate), "分类相关 ÷ 已审核"],
     ["待审核", selectedStats.pending_review_count, "尚不能计入命中率"],
   ];
   $("keyword-hit-summary").innerHTML = summaryMetrics.map(([label, value, hint]) => `<div class="keyword-hit-metric"><span>${label}</span><strong>${value}</strong><small>${hint}</small></div>`).join("");

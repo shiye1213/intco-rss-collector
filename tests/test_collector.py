@@ -16,9 +16,11 @@ from app.collector import (
 from app.database import DEFAULT_KEYWORDS, DEFAULT_SOURCES, Database
 from app.prompts import (
     DEFAULT_BUSINESS_PROFILE,
+    DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
-    LEGACY_DEFAULT_BUSINESS_PROFILE,
-    LEGACY_DEFAULT_REPORT_PROMPT,
+    LEGACY_DEFAULT_BUSINESS_PROFILE_V4,
+    LEGACY_DEFAULT_RELEVANCE_PROMPT_V4,
+    LEGACY_DEFAULT_REPORT_PROMPT_V4,
 )
 from app.query_builder import (
     MAX_GOOGLE_NEWS_QUERY_CHARS,
@@ -199,6 +201,38 @@ def test_default_tariff_keyword_strategies_are_valid_and_language_specific(
     database.initialize()
     seeded_names = {item["name"] for item in database.get_keywords()}
     assert chinese_names | english_names <= seeded_names
+
+
+def test_focused_keyword_strategies_cover_each_report_category() -> None:
+    focused = {
+        item["name"]: item
+        for item in DEFAULT_KEYWORDS
+        if item.get("category_name") is not None
+    }
+
+    assert set(focused) == {
+        "医疗手套政府采购与国产优先（中文）",
+        "医疗手套政府采购与国产优先（英文）",
+        "医疗手套关税调整精准版（中文）",
+        "医疗手套关税调整精准版（英文）",
+        "医疗手套召回与进口警示（中文）",
+        "医疗手套召回与进口警示（英文）",
+    }
+    assert {item["category_name"] for item in focused.values()} == {
+        "贸易政策",
+        "关税调整",
+        "行业法规",
+    }
+    assert all(item["active"] for item in focused.values())
+    assert all(item["lookback_days"] == 90 for item in focused.values())
+    for item in focused.values():
+        query = build_keyword_query(
+            item["match_terms"],
+            context_terms=item["context_terms"],
+            exclude_terms=item["exclude_terms"],
+            lookback_days=item["lookback_days"],
+        )
+        assert len(query) <= MAX_GOOGLE_NEWS_QUERY_CHARS
 
 
 def test_initialize_upgrades_the_original_generic_tariff_defaults(tmp_path) -> None:
@@ -402,8 +436,9 @@ def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
             VALUES (?, ?, '2026-07-20T00:00:00Z')
             """,
             [
-                ("ai_business_profile", LEGACY_DEFAULT_BUSINESS_PROFILE),
-                ("ai_report_prompt", LEGACY_DEFAULT_REPORT_PROMPT),
+                ("ai_business_profile", LEGACY_DEFAULT_BUSINESS_PROFILE_V4),
+                ("ai_relevance_prompt", LEGACY_DEFAULT_RELEVANCE_PROMPT_V4),
+                ("ai_report_prompt", LEGACY_DEFAULT_REPORT_PROMPT_V4),
             ],
         )
 
@@ -425,9 +460,13 @@ def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
         }
     settings = database.get_settings()
 
-    assert {"category", "secondary_categories"} <= review_columns
+    assert {
+        "category",
+        "secondary_categories",
+        "keyword_categories",
+    } <= review_columns
     assert {"keyword_category_id", "keyword_category_name"} <= report_columns
-    assert len(settings["ai_relevance_prompt"]) >= 20
+    assert settings["ai_relevance_prompt"] == DEFAULT_RELEVANCE_PROMPT
     assert settings["ai_business_profile"] == DEFAULT_BUSINESS_PROFILE
     assert settings["ai_report_prompt"] == DEFAULT_REPORT_PROMPT
 
@@ -467,6 +506,14 @@ def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(
             "active": True,
         }
     )
+    inactive_keyword_id = database.create_keyword(
+        {
+            "name": "停用的历史贸易政策",
+            "category_id": categories["贸易政策"],
+            "match_terms": ["legacy tariff"],
+            "active": False,
+        }
+    )
 
     now = "2026-07-25T00:00:00Z"
     with database.connect() as connection:
@@ -496,18 +543,21 @@ def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(
                 (article_ids[1], policy_keyword_id),
                 (article_ids[2], remedy_keyword_id),
                 (article_ids[3], regulation_keyword_id),
+                (article_ids[3], inactive_keyword_id),
             ],
         )
         connection.executemany(
             """
             INSERT INTO article_relevance_reviews
-                (article_id, status, is_relevant, reviewed_at)
-            VALUES (?, 'success', ?, ?)
+                (article_id, status, is_relevant, category,
+                 secondary_categories, reviewed_at)
+            VALUES (?, 'success', ?, ?, '[]', ?)
             """,
             [
-                (article_ids[0], 1, now),
-                (article_ids[1], 0, now),
-                (article_ids[3], 1, now),
+                (article_ids[0], 1, "policy_regulation", now),
+                (article_ids[1], 0, "other", now),
+                (article_ids[2], 1, "market_demand", now),
+                (article_ids[3], 1, "policy_regulation", now),
             ],
         )
 
@@ -527,26 +577,38 @@ def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(
         for item in stats["keywords"]
         if item["keyword_id"] == remedy_keyword_id
     )
+    inactive_keyword_stats = next(
+        item
+        for item in stats["keywords"]
+        if item["keyword_id"] == inactive_keyword_id
+    )
 
     assert policy_stats["keyword_count"] == 2
     assert policy_stats["hit_count"] == 3
-    assert policy_stats["reviewed_count"] == 2
+    assert policy_stats["reviewed_count"] == 3
+    assert policy_stats["business_relevant_count"] == 2
     assert policy_stats["relevant_count"] == 1
-    assert policy_stats["pending_review_count"] == 1
-    assert policy_stats["hit_rate"] == 0.5
+    assert policy_stats["pending_review_count"] == 0
+    assert policy_stats["hit_rate"] == pytest.approx(1 / 3)
     assert policy_keyword_stats["hit_count"] == 2
     assert policy_keyword_stats["relevant_count"] == 1
     assert policy_keyword_stats["hit_rate"] == 0.5
     assert remedy_keyword_stats["hit_count"] == 2
-    assert remedy_keyword_stats["reviewed_count"] == 1
-    assert remedy_keyword_stats["pending_review_count"] == 1
-    assert remedy_keyword_stats["hit_rate"] == 1.0
+    assert remedy_keyword_stats["reviewed_count"] == 2
+    assert remedy_keyword_stats["business_relevant_count"] == 2
+    assert remedy_keyword_stats["relevant_count"] == 1
+    assert remedy_keyword_stats["pending_review_count"] == 0
+    assert remedy_keyword_stats["hit_rate"] == 0.5
+    assert inactive_keyword_stats["active"] == 0
+    assert inactive_keyword_stats["hit_count"] == 1
+    assert inactive_keyword_stats["relevant_count"] == 1
     assert stats["overall"]["keyword_count"] == 3
     assert stats["overall"]["hit_count"] == 4
-    assert stats["overall"]["reviewed_count"] == 3
+    assert stats["overall"]["reviewed_count"] == 4
+    assert stats["overall"]["business_relevant_count"] == 3
     assert stats["overall"]["relevant_count"] == 2
-    assert stats["overall"]["pending_review_count"] == 1
-    assert stats["overall"]["hit_rate"] == pytest.approx(2 / 3)
+    assert stats["overall"]["pending_review_count"] == 0
+    assert stats["overall"]["hit_rate"] == 0.5
 
 
 def test_search_sources_receive_only_matching_language_terms(tmp_path) -> None:
