@@ -109,11 +109,15 @@ def test_build_search_url_and_canonicalize_tracking_parameters() -> None:
     source = {
         "mode": "search",
         "url_template": "https://example.com/rss?q={query}",
+        "site_domain": "reuters.com",
     }
-    keyword = {"query": '"PE gloves" OR "polyethylene gloves"'}
+    keyword = {"query": '("PE gloves"OR"polyethylene gloves")'}
     url = build_feed_url(source, keyword)
 
-    assert "%22PE+gloves%22" in url
+    assert parse_qs(urlsplit(url).query)["q"] == [
+        'site:reuters.com ("PE gloves"OR"polyethylene gloves")'
+    ]
+    assert "site%3Areuters.com+" in url
     assert canonicalize_url("https://EXAMPLE.com/news/1/?utm_source=rss&x=1#top") == (
         "https://example.com/news/1?x=1"
     )
@@ -894,7 +898,7 @@ def test_initialize_migrates_existing_article_metadata(tmp_path) -> None:
 
     with database.connect() as connection:
         source = connection.execute(
-            "SELECT country FROM rss_sources WHERE id = 1"
+            "SELECT country, site_domain FROM rss_sources WHERE id = 1"
         ).fetchone()
         article = connection.execute(
             "SELECT publisher_normalized FROM articles WHERE id = 1"
@@ -902,6 +906,6 @@ def test_initialize_migrates_existing_article_metadata(tmp_path) -> None:
         provenance = connection.execute(
             "SELECT language, country FROM article_sources WHERE article_id = 1"
         ).fetchone()
-    assert source["country"] == "US"
+    assert dict(source) == {"country": "US", "site_domain": ""}
     assert article["publisher_normalized"] == "Example News"
     assert dict(provenance) == {"language": "en-US", "country": "US"}

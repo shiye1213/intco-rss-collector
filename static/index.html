@@ -253,7 +253,7 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>类型</th><th>语言</th><th>国家/地区</th><th>地址</th><th>启用</th><th></th></tr></thead>
+              <thead><tr><th>名称</th><th>类型</th><th>语言</th><th>国家/地区</th><th>站点限制</th><th>地址</th><th>启用</th><th></th></tr></thead>
               <tbody id="source-rows"></tbody>
             </table>
           </div>
@@ -333,6 +333,7 @@
           <label><span>类型</span><select id="source-mode"><option value="search">搜索型</option><option value="direct">直连型</option></select></label>
           <label><span>语言</span><input id="source-language" maxlength="30" placeholder="zh-CN" /></label>
           <label><span>国家/地区</span><input id="source-country" maxlength="10" placeholder="CN" /></label>
+          <label><span>站点限制（搜索型可选）</span><input id="source-site-domain" maxlength="253" placeholder="例如 reuters.com" /></label>
           <label class="full"><span>Feed 地址</span><textarea id="source-url" rows="3" maxlength="2000" required placeholder="https://news.google.com/rss/search?q={query}&amp;hl=...；{query} 会由系统替换"></textarea></label>
           <label class="switch-label"><span>启用</span><input id="source-active" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
         </div>

@@ -265,7 +265,8 @@ tbody tr:hover { background: #f9fbfb; }
 #view-articles th:nth-child(3) { width: 14%; }
 #view-articles th:nth-child(4), #view-articles th:nth-child(5) { width: 16.5%; }
 #view-runs th:nth-child(4) { width: 27%; }
-#view-sources th:nth-child(5) { width: 35%; }
+#view-sources th:nth-child(5) { width: 15%; }
+#view-sources th:nth-child(6) { width: 28%; }
 #view-keywords th:nth-child(2) { width: 11%; }
 #view-keywords th:nth-child(3) { width: 23%; }
 #view-keywords th:nth-child(6),

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS rss_sources (
     mode TEXT NOT NULL CHECK (mode IN ('search', 'direct')),
     language TEXT NOT NULL DEFAULT '',
     country TEXT NOT NULL DEFAULT '',
+    site_domain TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -886,6 +887,13 @@ class Database:
                 connection.execute(
                     "ALTER TABLE rss_sources ADD COLUMN country TEXT NOT NULL DEFAULT ''"
                 )
+            if "site_domain" not in source_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE rss_sources
+                    ADD COLUMN site_domain TEXT NOT NULL DEFAULT ''
+                    """
+                )
             keyword_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(keywords)").fetchall()
@@ -1158,9 +1166,9 @@ class Database:
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO rss_sources
-                        (name, url_template, mode, language, country,
+                        (name, url_template, mode, language, country, site_domain,
                          active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         source["name"],
@@ -1168,6 +1176,7 @@ class Database:
                         source["mode"],
                         source["language"],
                         source["country"],
+                        source.get("site_domain", ""),
                         int(source["active"]),
                         now,
                         now,
@@ -1474,9 +1483,9 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT INTO rss_sources
-                    (name, url_template, mode, language, country,
+                    (name, url_template, mode, language, country, site_domain,
                      active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
@@ -1485,6 +1494,7 @@ class Database:
                     data.get("language", ""),
                     data.get("country")
                     or infer_country(data["url_template"], data.get("language", "")),
+                    data.get("site_domain", ""),
                     int(data.get("active", True)),
                     now,
                     now,
@@ -1499,7 +1509,7 @@ class Database:
                 """
                 UPDATE rss_sources
                 SET name = ?, url_template = ?, mode = ?, language = ?, country = ?,
-                    active = ?, updated_at = ?
+                    site_domain = ?, active = ?, updated_at = ?
                 WHERE id = ? AND archived = 0
                 """,
                 (
@@ -1509,6 +1519,7 @@ class Database:
                     data.get("language", ""),
                     data.get("country")
                     or infer_country(data["url_template"], data.get("language", "")),
+                    data.get("site_domain", ""),
                     int(data.get("active", True)),
                     now,
                     source_id,

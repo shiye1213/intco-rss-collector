@@ -49,3 +49,12 @@ def test_incremental_collection_setting_is_wired() -> None:
     assert 'id="search-local-keyword-filter"' in html
     assert "直连源仍会复核" in html
     assert 'search_local_keyword_filter: $("search-local-keyword-filter").checked' in javascript
+
+def test_source_site_domain_setting_is_wired() -> None:
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="source-site-domain"' in html
+    assert "站点限制（搜索型可选）" in html
+    assert 'site_domain: $("source-site-domain").value.trim()' in javascript
+    assert "syncSourceSiteField" in javascript

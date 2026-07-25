@@ -60,12 +60,47 @@ def validate_http_url(value: str) -> str:
     return value
 
 
+def normalize_site_domain(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        return ""
+    if candidate.casefold().startswith("site:"):
+        candidate = candidate[5:].strip()
+    parsed = urlsplit(
+        candidate if "://" in candidate else f"https://{candidate}"
+    )
+    try:
+        host = (parsed.hostname or "").encode("idna").decode("ascii").lower()
+        port = parsed.port
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("站点限制必须是有效域名，例如 reuters.com") from exc
+    labels = host.split(".")
+    valid_labels = all(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        for label in labels
+    )
+    if (
+        len(labels) < 2
+        or len(host) > 253
+        or not valid_labels
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("站点限制必须是有效域名，例如 reuters.com")
+    return host
+
+
 class SourcePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     url_template: str = Field(min_length=8, max_length=2000)
     mode: Literal["search", "direct"]
     language: str = Field(default="", max_length=30)
     country: str = Field(default="", max_length=10)
+    site_domain: str = Field(default="", max_length=253)
     active: bool = True
 
     @field_validator("name", "language")
@@ -83,9 +118,16 @@ class SourcePayload(BaseModel):
     def validate_url(cls, value: str) -> str:
         return validate_http_url(value)
 
+    @field_validator("site_domain")
+    @classmethod
+    def validate_site_domain(cls, value: str) -> str:
+        return normalize_site_domain(value)
+
     def validate_mode_template(self) -> None:
         if self.mode == "search" and "{query}" not in self.url_template:
             raise ValueError("搜索型 RSS 地址必须包含 {query} 占位符")
+        if self.mode == "direct" and self.site_domain:
+            raise ValueError("站点限制只适用于搜索型 RSS")
 
 
 class KeywordQueryPayload(BaseModel):

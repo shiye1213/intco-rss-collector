@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from app.main import SourcePayload
+
+
+def test_search_source_normalizes_site_domain() -> None:
+    source = SourcePayload(
+        name="Reuters",
+        url_template="https://news.google.com/rss/search?q={query}",
+        mode="search",
+        site_domain="https://Reuters.COM/",
+    )
+
+    source.validate_mode_template()
+    assert source.site_domain == "reuters.com"
+
+
+def test_site_domain_rejects_paths() -> None:
+    with pytest.raises(ValidationError, match="reuters.com"):
+        SourcePayload(
+            name="Reuters",
+            url_template="https://news.google.com/rss/search?q={query}",
+            mode="search",
+            site_domain="reuters.com/world",
+        )
+
+
+def test_direct_source_rejects_site_domain() -> None:
+    source = SourcePayload(
+        name="Direct feed",
+        url_template="https://example.com/feed.xml",
+        mode="direct",
+        site_domain="example.com",
+    )
+
+    with pytest.raises(ValueError, match="只适用于搜索型"):
+        source.validate_mode_template()
