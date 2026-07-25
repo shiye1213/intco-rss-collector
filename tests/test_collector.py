@@ -264,10 +264,11 @@ def test_keyword_query_is_generated_only_from_match_terms() -> None:
     )
 
     assert query == (
-        '("PE手套" OR "聚乙烯手套" OR "polyethylene gloves")'
+        '("PE手套"OR"聚乙烯手套"OR"polyethylene gloves")'
     )
     assert "medical" not in query
     assert "-football" not in query
+    assert " " not in query.replace("polyethylene gloves", "")
 
 
 def test_keyword_query_combines_subjects_signals_exclusions_and_recency() -> None:
@@ -279,9 +280,9 @@ def test_keyword_query_combines_subjects_signals_exclusions_and_recency() -> Non
     )
 
     assert query == (
-        '("nitrile gloves" OR "medical gloves") '
-        'AND ("tariff" OR "regulation") '
-        '-"boxing gloves" -"football" when:30d'
+        '("nitrile gloves"OR"medical gloves")'
+        'AND("tariff"OR"regulation")'
+        '-"boxing gloves"-"football"when:30d'
     )
 
 
@@ -589,6 +590,73 @@ def test_direct_source_matches_only_keywords_for_its_language(tmp_path) -> None:
     assert result["details"][0]["keyword_name"] == "Mixed gloves"
 
 
+def test_search_source_can_skip_local_filter_but_direct_source_still_checks(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "search-local-filter.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": "测试搜索源",
+            "url_template": "https://search.example/rss?q={query}",
+            "mode": "search",
+            "language": "zh-CN",
+            "country": "CN",
+            "active": True,
+        }
+    )
+    database.create_source(
+        {
+            "name": "测试直连源",
+            "url_template": "https://direct.example/feed.xml",
+            "mode": "direct",
+            "language": "zh-CN",
+            "country": "CN",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "手套贸易",
+            "match_terms": ["手套"],
+            "context_terms": ["贸易"],
+            "lookback_days": 30,
+            "active": True,
+        }
+    )
+    database.set_setting("search_local_keyword_filter", "false")
+    rss_without_subject = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>Search result</title><item>
+      <title>New international trade policy announced</title>
+      <link>https://example.com/trade-policy</link>
+      <source>Example News</source>
+      <guid>trade-policy-1</guid>
+      <pubDate>Mon, 20 Jul 2026 02:00:00 GMT</pubDate>
+      <description>Export rules were updated.</description>
+    </item></channel></rss>"""
+    collector = Collector(
+        database,
+        feed_fetcher=lambda _url, _timeout: rss_without_subject,
+    )
+    started = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-06-22T00:00:00Z"
+    )
+
+    collector.collect(run_id, started)
+
+    result = database.get_run(run_id)
+    assert result is not None
+    details = {item["source_name"]: item for item in result["details"]}
+    assert details["测试搜索源"]["items_matched"] == 1
+    assert details["测试直连源"]["items_matched"] == 0
+    assert result["items_inserted"] == 1
+    assert database.article_count() == 1
+
+
 def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) -> None:
     database = Database(tmp_path / "keyword-strategy.db")
     database.initialize()
@@ -609,8 +677,8 @@ def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) ->
     assert keyword["exclude_terms"] == ["boxing", "football"]
     assert keyword["lookback_days"] == 14
     assert keyword["query"] == (
-        '("nitrile gloves" OR "medical gloves") '
-        'AND ("tariff" OR "demand") -"boxing" -"football" when:14d'
+        '("nitrile gloves"OR"medical gloves")'
+        'AND("tariff"OR"demand")-"boxing"-"football"when:14d'
     )
     feed_url = build_feed_url(
         {"mode": "search", "url_template": "https://example.com/rss?q={query}"},

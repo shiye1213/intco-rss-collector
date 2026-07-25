@@ -130,6 +130,7 @@ class KeywordPayload(KeywordQueryPayload):
 class SettingsPayload(BaseModel):
     schedule_time: str
     incremental_collection: bool = True
+    search_local_keyword_filter: bool = True
 
     @field_validator("schedule_time")
     @classmethod
@@ -401,6 +402,9 @@ def create_app(
             "incremental_collection": (
                 settings.get("incremental_collection", "true") == "true"
             ),
+            "search_local_keyword_filter": (
+                settings.get("search_local_keyword_filter", "true") == "true"
+            ),
         }
 
     @app.put("/api/settings")
@@ -410,10 +414,15 @@ def create_app(
             "incremental_collection",
             str(payload.incremental_collection).lower(),
         )
+        database.set_setting(
+            "search_local_keyword_filter",
+            str(payload.search_local_keyword_filter).lower(),
+        )
         return {
             "schedule_time": payload.schedule_time,
             "timezone": database.get_settings().get("timezone", "Asia/Shanghai"),
             "incremental_collection": payload.incremental_collection,
+            "search_local_keyword_filter": payload.search_local_keyword_filter,
         }
 
     @app.get("/api/ai/status")

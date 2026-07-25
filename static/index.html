@@ -288,6 +288,10 @@
                 <span><strong>增量采集</strong><small>开启后从上次成功采集时间继续；关闭后按关键词回溯天数重新检查</small></span>
                 <input id="incremental-collection" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
               </label>
+              <label class="switch-row">
+                <span><strong>搜索结果本地复核</strong><small>开启后标题或摘要必须命中主题词；关闭后信任搜索型 RSS，直连源仍会复核</small></span>
+                <input id="search-local-keyword-filter" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
+              </label>
               <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存采集设置</span></button>
             </form>
           </div>
