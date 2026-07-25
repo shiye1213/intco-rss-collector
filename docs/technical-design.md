@@ -182,7 +182,7 @@ flowchart TD
     Backoff -->|"达到上限"| FetchError["最终失败"]
     Read -->|"无联网证据/正文不完整"| FetchError
     Read -->|"成功"| Content["模型读取正文 + SHA-256"]
-    Content --> Review["第一次 DeepSeek：仅相关性审核"]
+    Content --> Review["第一次 DeepSeek：相关性审核 + 业务分类"]
     Review -->|"调用或校验失败"| ReviewError["article_relevance_reviews.failed"]
     Review --> Gate{"is_relevant 且分数达到阈值?"}
     Gate -->|"否"| Rejected["保存审核理由与证据，不进入业务表"]
@@ -205,6 +205,7 @@ flowchart TD
 - 全文失败时不退回 RSS 摘要，防止证据标准不一致。
 - 大模型读取到的正文保存在数据库；发送相关性模型时按 `ai_content_max_chars` 截断，默认 30000 字符。
 - 相关性审核保存正文哈希；正文变化后旧审核不再视为当前结果。
+- 相关性审核同时保存主分类和次分类；系统设置中的可编辑审核提示词只控制业务判断要求，固定 JSON、安全和分类约束由系统追加。
 - 低于系统阈值时，即使模型返回 `is_relevant=true`，后端也按无关处理并在理由中记录阈值判断。
 - 只有业务分析成功且正文哈希仍一致的记录才会出现在最终业务新闻列表。
 
@@ -213,10 +214,10 @@ flowchart TD
 1. 用户选择北京时间日期和可选分类。
 2. 系统按新闻 `published_at` 筛选当日业务分析成功的新闻。
 3. 系统将已保存的摘要、分类、影响和风险输入日报 Prompt，不重新抓取外部事实。
-4. DeepSeek 返回管理层摘要、关键进展、风险、机会、建议动作和观察清单。
-5. 后端丢弃不属于本次输入的 `article_id`。
+4. DeepSeek 返回管理层摘要，以及带业务分类和来源文章 ID 的关键进展、风险、机会、建议动作和观察清单。
+5. 后端逐项丢弃不属于本次输入的 `article_id`；没有任何有效来源的结构化条目不写入日报。
 6. 日报最终风险分数不得低于所选文章中的最高风险分数。
-7. 日报内容与依据文章关系写入数据库，可在页面重新打开。
+7. 日报内容与依据文章关系写入数据库，页面在每条内容下展示发布方和原文链接。
 
 ## 7. 数据模型
 
@@ -255,7 +256,7 @@ erDiagram
 | 表 | 说明 |
 |---|---|
 | `article_contents` | 请求/最终地址、正文、哈希、HTTP 状态、错误分类、尝试次数、退避、终态和忽略时间 |
-| `article_relevance_reviews` | 相关性、分数、理由、证据、置信度、正文哈希、模型、Prompt 和 Token |
+| `article_relevance_reviews` | 相关性、主/次分类、分数、理由、证据、置信度、正文哈希、模型、Prompt 和 Token |
 | `business_articles` | 只保存真相关文章；包含摘要、分类、影响、风险、机会、动作和正文哈希 |
 | `ai_analysis_runs` | 一次 AI 处理批次的状态、数量、模型、Prompt 组合和 Token 汇总 |
 | `ai_analysis_run_items` | 每篇文章的全文、相关性、业务分析阶段状态和错误 |
@@ -267,7 +268,7 @@ erDiagram
 |---|---|
 | `daily_reports` | 日报日期、分类范围、风险、结构化内容、模型、Prompt、Token 和状态 |
 | `daily_report_articles` | 日报与依据文章的关联 |
-| `app_settings` | 调度时间、时区、业务边界、阈值、批量大小、正文上限和自动化开关 |
+| `app_settings` | 调度时间、时区、业务边界、可编辑相关性/日报提示词、阈值、批量大小、正文上限和自动化开关 |
 
 ### 7.4 数据分层原则
 
@@ -317,7 +318,7 @@ AI 任务启动时先查询并固定当前待办文章 ID，随后按 `ai_batch_
 - 三类 Prompt 要求只输出 JSON。
 - Pydantic 校验布尔值、枚举、字符串长度、数组数量和数值范围。
 - 后端根据分数重新计算风险等级。
-- 日报引用 ID 必须在本次输入集合中。
+- 日报每个分类条目的引用 ID 必须在本次输入集合中；无有效引用的条目被剔除。
 - 原始响应、模型、Prompt 版本和 Token 用量保留用于审计。
 
 ## 10. 安全设计
@@ -363,7 +364,7 @@ Prompt 明确把正文中的指令、代码和 Prompt 视为不可信新闻数�
 | `/api/ai/reviews` | 相关性审核记录 |
 | `/api/ai/articles` | 最终业务新闻 |
 | `/api/ai/runs` | AI 批次和逐文章阶段日志 |
-| `/api/ai/settings` | 业务边界、阈值、批量和自动化配置 |
+| `/api/ai/settings` | 业务边界、相关性/日报提示词、阈值、批量和自动化配置 |
 | `/api/reports` | 日报生成、列表和详情 |
 
 FastAPI 在 `/docs` 自动提供 OpenAPI 调试页面。详细参数和响应见 [API 说明](api.md)。
@@ -391,6 +392,8 @@ OPENAI_WEB_MAX_OUTPUT_TOKENS=32000
 | 设置 | 默认值 | 说明 |
 |---|---:|---|
 | `schedule_time` | `08:00` | 每日北京时间采集时刻 |
+| `ai_relevance_prompt` | 内置审核要求 | 相关性判断与分类的可编辑业务提示词 |
+| `ai_report_prompt` | 内置日报要求 | 分类日报与来源引用的可编辑业务提示词 |
 | `ai_relevance_threshold` | `70` | 真相关最低分数 |
 | `ai_batch_size` | `20` | 单次处理文章数 |
 | `ai_content_max_chars` | `30000` | 单篇发送模型的正文字符上限 |

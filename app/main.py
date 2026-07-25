@@ -39,6 +39,8 @@ from .maintenance import (
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
     CATEGORY_LABELS,
+    DEFAULT_RELEVANCE_PROMPT,
+    DEFAULT_REPORT_PROMPT,
     RELEVANCE_PROMPT_VERSION,
     REPORT_PROMPT_VERSION,
 )
@@ -199,6 +201,12 @@ class AIAnalysisPayload(BaseModel):
 
 class AISettingsPayload(BaseModel):
     business_profile: str = Field(min_length=50, max_length=10000)
+    relevance_prompt: str = Field(
+        default=DEFAULT_RELEVANCE_PROMPT, min_length=20, max_length=20000
+    )
+    report_prompt: str = Field(
+        default=DEFAULT_REPORT_PROMPT, min_length=20, max_length=20000
+    )
     relevance_threshold: int = Field(default=70, ge=0, le=100)
     batch_size: int = Field(default=20, ge=1, le=100)
     content_max_chars: int = Field(default=30000, ge=2000, le=100000)
@@ -211,6 +219,14 @@ class AISettingsPayload(BaseModel):
         cleaned = value.strip()
         if len(cleaned) < 50:
             raise ValueError("企业业务边界至少需要 50 个字符")
+        return cleaned
+
+    @field_validator("relevance_prompt", "report_prompt")
+    @classmethod
+    def strip_prompt(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 20:
+            raise ValueError("提示词至少需要 20 个字符")
         return cleaned
 
 
@@ -681,6 +697,12 @@ def create_app(
         settings = database.get_settings()
         return {
             "business_profile": settings.get("ai_business_profile", ""),
+            "relevance_prompt": settings.get(
+                "ai_relevance_prompt", DEFAULT_RELEVANCE_PROMPT
+            ),
+            "report_prompt": settings.get(
+                "ai_report_prompt", DEFAULT_REPORT_PROMPT
+            ),
             "relevance_threshold": int(settings.get("ai_relevance_threshold", "70")),
             "batch_size": int(settings.get("ai_batch_size", "20")),
             "content_max_chars": int(
@@ -693,6 +715,8 @@ def create_app(
     @app.put("/api/ai/settings")
     def update_ai_settings(payload: AISettingsPayload):
         database.set_setting("ai_business_profile", payload.business_profile)
+        database.set_setting("ai_relevance_prompt", payload.relevance_prompt)
+        database.set_setting("ai_report_prompt", payload.report_prompt)
         database.set_setting(
             "ai_relevance_threshold", str(payload.relevance_threshold)
         )

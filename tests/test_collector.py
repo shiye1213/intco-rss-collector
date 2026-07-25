@@ -351,6 +351,50 @@ def test_initialize_migrates_keyword_categories_and_supports_assignment(tmp_path
     assert assigned["category_name"] == "关税调整"
 
 
+def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "legacy-relevance.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE article_relevance_reviews (
+                article_id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                is_relevant INTEGER NOT NULL DEFAULT 0,
+                relevance_score INTEGER NOT NULL DEFAULT 0,
+                relevance_reason TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL DEFAULT '[]',
+                confidence INTEGER NOT NULL DEFAULT 0,
+                content_hash TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                prompt_version TEXT NOT NULL DEFAULT '',
+                raw_response TEXT NOT NULL DEFAULT '',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                reviewed_at TEXT,
+                error_message TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+
+    database = Database(database_path)
+    database.initialize()
+
+    with database.connect() as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(article_relevance_reviews)"
+            ).fetchall()
+        }
+    settings = database.get_settings()
+
+    assert {"category", "secondary_categories"} <= columns
+    assert len(settings["ai_relevance_prompt"]) >= 20
+    assert len(settings["ai_report_prompt"]) >= 20
+
+
 def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(
     tmp_path,
 ) -> None:

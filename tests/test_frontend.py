@@ -39,6 +39,21 @@ def test_pending_cleanup_and_keyword_category_controls_are_wired() -> None:
     assert "真正相关 ÷ 已审核" in javascript
     assert "category_id:" in javascript
 
+
+def test_prompt_settings_and_cited_report_content_are_wired() -> None:
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="ai-relevance-prompt"' in html
+    assert 'id="ai-report-prompt"' in html
+    assert "相关性审核提示词" in html
+    assert 'relevance_prompt: $("ai-relevance-prompt").value.trim()' in javascript
+    assert 'report_prompt: $("ai-report-prompt").value.trim()' in javascript
+    assert "function reportSources(" in javascript
+    assert "全部来源文章" in javascript
+    assert "item.secondary_categories" in javascript
+
+
 def test_incremental_collection_setting_is_wired() -> None:
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")

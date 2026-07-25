@@ -203,7 +203,7 @@
           </div>
           <div class="table-wrap">
             <table class="review-table">
-              <thead><tr><th>标题与全文</th><th>审核结果</th><th>判定原因</th><th>正文证据</th><th>审核时间</th></tr></thead>
+              <thead><tr><th>标题与全文</th><th>审核结果</th><th>分类</th><th>判定原因</th><th>正文证据</th><th>审核时间</th></tr></thead>
               <tbody id="ai-review-rows"></tbody>
             </table>
             <div id="ai-review-empty" class="empty-state hidden">当前筛选条件下没有相关性审核记录</div>
@@ -301,6 +301,8 @@
             </div>
             <form id="ai-settings-form" class="ai-settings-form">
               <label class="full"><span>企业业务边界</span><textarea id="ai-business-profile" rows="9" minlength="50" maxlength="10000" required></textarea></label>
+              <label class="full prompt-setting"><span>相关性审核提示词</span><small>用于控制业务相关性判断与分类；JSON 格式、安全规则和分类代码由系统固定追加。</small><textarea id="ai-relevance-prompt" rows="11" minlength="20" maxlength="20000" required></textarea></label>
+              <label class="full prompt-setting"><span>日报生成提示词</span><small>用于控制分类汇总、风险与建议写法；来源文章 ID 校验和输出结构由系统固定追加。</small><textarea id="ai-report-prompt" rows="11" minlength="20" maxlength="20000" required></textarea></label>
               <label><span>相关性阈值</span><input id="ai-threshold" type="number" min="0" max="100" required /></label>
               <label><span>每批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /></label>
               <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /></label>

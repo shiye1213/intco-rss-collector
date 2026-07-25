@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .normalization import infer_country, normalize_publisher
-from .prompts import DEFAULT_BUSINESS_PROFILE
+from .prompts import (
+    DEFAULT_BUSINESS_PROFILE,
+    DEFAULT_RELEVANCE_PROMPT,
+    DEFAULT_REPORT_PROMPT,
+)
 from .query_builder import build_keyword_query
 
 
@@ -231,6 +235,8 @@ CREATE TABLE IF NOT EXISTS article_relevance_reviews (
     is_relevant INTEGER NOT NULL DEFAULT 0,
     relevance_score INTEGER NOT NULL DEFAULT 0,
     relevance_reason TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'other',
+    secondary_categories TEXT NOT NULL DEFAULT '[]',
     evidence TEXT NOT NULL DEFAULT '[]',
     confidence INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT NOT NULL DEFAULT '',
@@ -947,6 +953,24 @@ class Database:
                     connection.execute(
                         f"ALTER TABLE article_contents ADD COLUMN {column} {definition}"
                     )
+            review_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(article_relevance_reviews)"
+                ).fetchall()
+            }
+            review_migrations = {
+                "category": "TEXT NOT NULL DEFAULT 'other'",
+                "secondary_categories": "TEXT NOT NULL DEFAULT '[]'",
+            }
+            for column, definition in review_migrations.items():
+                if column not in review_columns:
+                    connection.execute(
+                        f"""
+                        ALTER TABLE article_relevance_reviews
+                        ADD COLUMN {column} {definition}
+                        """  # noqa: S608
+                    )
             detail_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -1292,6 +1316,8 @@ class Database:
                 "incremental_collection": "true",
                 "search_local_keyword_filter": "true",
                 "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
+                "ai_relevance_prompt": DEFAULT_RELEVANCE_PROMPT,
+                "ai_report_prompt": DEFAULT_REPORT_PROMPT,
                 "ai_relevance_threshold": "70",
                 "ai_batch_size": "20",
                 "ai_content_max_chars": "30000",

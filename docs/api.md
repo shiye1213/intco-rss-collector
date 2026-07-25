@@ -174,7 +174,7 @@
 
 ### `GET /api/ai/reviews`
 
-返回成功完成的正文相关性审核记录。支持 `relevant`、`date_from`、`date_to`、`limit` 和 `offset`，用于审计真相关与审核无关的理由、证据、分数、模型及正文元数据。
+返回成功完成的正文相关性审核记录。支持 `relevant`、`date_from`、`date_to`、`limit` 和 `offset`，用于审计真相关与审核无关的理由、主分类 `category`、次分类 `secondary_categories`、证据、分数、模型及正文元数据。
 
 ### `GET /api/ai/runs?limit=50`
 
@@ -201,6 +201,8 @@
 ```json
 {
   "business_profile": "英科医疗业务边界……",
+  "relevance_prompt": "相关性审核的可编辑业务要求……",
+  "report_prompt": "日报生成的可编辑业务要求……",
   "relevance_threshold": 70,
   "batch_size": 20,
   "content_max_chars": 30000,
@@ -209,7 +211,7 @@
 }
 ```
 
-自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 且当天存在已审核相关新闻时才会执行。
+两段提示词可在系统设置中查看和修改。系统会在运行时固定追加业务分类代码、JSON 输出结构、来源 ID 校验和防 Prompt 注入规则，因此可编辑内容应聚焦业务判断、分析顺序和写作要求。自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 且当天存在已审核相关新闻时才会执行。
 
 ## 数据维护
 
@@ -250,7 +252,7 @@
 
 ### `GET /api/reports/{report_id}`
 
-返回日报结构化内容和全部依据文章，包括摘要、风险等级、关键进展、风险、机会、建议动作和监控清单。
+返回日报结构化内容和全部依据文章。关键进展包含 `category` 和 `article_id`；风险、机会、建议动作和监控清单中的每一项包含 `category`、`content` 与 `article_ids`。后端会剔除不属于本次日报输入的来源 ID，页面利用有效 ID 展示发布方和原文链接。
 
 ## 错误约定
 

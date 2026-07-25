@@ -20,6 +20,8 @@ from .llm import JSONLLMClient, LLMResult
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
     CATEGORY_LABELS,
+    DEFAULT_RELEVANCE_PROMPT,
+    DEFAULT_REPORT_PROMPT,
     RELEVANCE_PROMPT_VERSION,
     REPORT_PROMPT_VERSION,
     build_business_analysis_prompts,
@@ -91,8 +93,19 @@ class RelevanceAssessment(BaseModel):
     is_relevant: bool
     relevance_score: int = Field(ge=0, le=100)
     relevance_reason: str = Field(min_length=1, max_length=1000)
+    category: CategoryCode
+    secondary_categories: list[CategoryCode] = Field(
+        default_factory=list, max_length=5
+    )
     evidence: list[str] = Field(default_factory=list, max_length=8)
     confidence: int = Field(ge=0, le=100)
+
+    @field_validator("secondary_categories")
+    @classmethod
+    def normalize_categories(
+        cls, values: list[CategoryCode]
+    ) -> list[CategoryCode]:
+        return list(dict.fromkeys(values))
 
     @field_validator("evidence")
     @classmethod
@@ -124,9 +137,26 @@ class BusinessAnalysis(BaseModel):
 
 class KeyDevelopment(BaseModel):
     article_id: int
+    category: CategoryCode
     title: str = Field(max_length=500)
     finding: str = Field(max_length=1000)
     business_impact: str = Field(max_length=1000)
+
+
+class CitedReportItem(BaseModel):
+    category: CategoryCode
+    content: str = Field(min_length=1, max_length=1000)
+    article_ids: list[int] = Field(default_factory=list, max_length=8)
+
+    @field_validator("content")
+    @classmethod
+    def normalize_content(cls, value: str) -> str:
+        return " ".join(value.split())[:1000]
+
+    @field_validator("article_ids")
+    @classmethod
+    def normalize_article_ids(cls, values: list[int]) -> list[int]:
+        return list(dict.fromkeys(value for value in values if value > 0))
 
 
 class DailyReportAssessment(BaseModel):
@@ -136,15 +166,34 @@ class DailyReportAssessment(BaseModel):
     risk_score: int = Field(ge=0, le=100)
     risk_basis: str = Field(max_length=2000)
     key_developments: list[KeyDevelopment] = Field(default_factory=list, max_length=20)
-    key_risks: list[str] = Field(default_factory=list, max_length=12)
-    opportunities: list[str] = Field(default_factory=list, max_length=12)
-    recommended_actions: list[str] = Field(default_factory=list, max_length=12)
-    watchlist: list[str] = Field(default_factory=list, max_length=12)
+    key_risks: list[CitedReportItem] = Field(default_factory=list, max_length=12)
+    opportunities: list[CitedReportItem] = Field(default_factory=list, max_length=12)
+    recommended_actions: list[CitedReportItem] = Field(
+        default_factory=list, max_length=12
+    )
+    watchlist: list[CitedReportItem] = Field(default_factory=list, max_length=12)
 
-    @field_validator("key_risks", "opportunities", "recommended_actions", "watchlist")
+    @field_validator(
+        "key_risks",
+        "opportunities",
+        "recommended_actions",
+        "watchlist",
+        mode="before",
+    )
     @classmethod
-    def normalize_lists(cls, values: list[str]) -> list[str]:
-        return _clean_string_list(values, limit=12)
+    def normalize_cited_items(cls, values: Any) -> Any:
+        if not isinstance(values, list):
+            return values
+        return [
+            {
+                "category": "other",
+                "content": value,
+                "article_ids": [],
+            }
+            if isinstance(value, str)
+            else value
+            for value in values[:12]
+        ]
 
 
 class IntelligenceAlreadyRunningError(RuntimeError):
@@ -156,7 +205,7 @@ class _ProviderRateLimited(RuntimeError):
 
 
 class IntelligenceRepository:
-    REVIEW_JSON_FIELDS = ("evidence",)
+    REVIEW_JSON_FIELDS = ("secondary_categories", "evidence")
     BUSINESS_JSON_FIELDS = (
         "relevance_evidence",
         "secondary_categories",
@@ -407,7 +456,8 @@ class IntelligenceRepository:
         if row is None:
             return None
         review = dict(row)
-        review["evidence"] = self._decode_json(review["evidence"], [])
+        for field in self.REVIEW_JSON_FIELDS:
+            review[field] = self._decode_json(review[field], [])
         return review
 
     def create_analysis_run(
@@ -703,19 +753,25 @@ class IntelligenceRepository:
     ) -> None:
         now = utc_now_iso()
         evidence = json.dumps(assessment.evidence, ensure_ascii=False)
+        secondary_categories = json.dumps(
+            assessment.secondary_categories, ensure_ascii=False
+        )
         with self.database.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO article_relevance_reviews
                     (article_id, status, is_relevant, relevance_score,
-                     relevance_reason, evidence, confidence, content_hash,
-                     model, prompt_version, raw_response, prompt_tokens,
-                     completion_tokens, reviewed_at, error_message)
-                VALUES (?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+                     relevance_reason, category, secondary_categories,
+                     evidence, confidence, content_hash, model, prompt_version,
+                     raw_response, prompt_tokens, completion_tokens,
+                     reviewed_at, error_message)
+                VALUES (?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
                 ON CONFLICT(article_id) DO UPDATE SET
                     status = 'success', is_relevant = excluded.is_relevant,
                     relevance_score = excluded.relevance_score,
                     relevance_reason = excluded.relevance_reason,
+                    category = excluded.category,
+                    secondary_categories = excluded.secondary_categories,
                     evidence = excluded.evidence,
                     confidence = excluded.confidence,
                     content_hash = excluded.content_hash,
@@ -731,6 +787,8 @@ class IntelligenceRepository:
                     int(assessment.is_relevant),
                     assessment.relevance_score,
                     assessment.relevance_reason,
+                    assessment.category,
+                    secondary_categories,
                     evidence,
                     assessment.confidence,
                     content_hash,
@@ -1113,7 +1171,8 @@ class IntelligenceRepository:
             ).fetchall()
         items = [dict(row) for row in rows]
         for item in items:
-            item["evidence"] = self._decode_json(item["evidence"], [])
+            for field in self.REVIEW_JSON_FIELDS:
+                item[field] = self._decode_json(item[field], [])
         return {"total": total, "items": items}
 
     def list_business_articles(
@@ -1193,7 +1252,8 @@ class IntelligenceRepository:
         with self.database.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT ba.*, a.title, a.url, a.publisher, a.published_at
+                SELECT ba.*, a.title, a.url, a.publisher, a.published_at,
+                       ic.final_url
                 FROM business_articles ba
                 JOIN articles a ON a.id = ba.article_id
                 JOIN article_contents ic ON ic.article_id = ba.article_id
@@ -1530,6 +1590,9 @@ class ArticleAnalysisManager:
         try:
             settings = self.database.get_settings()
             business_profile = settings.get("ai_business_profile", "")
+            relevance_prompt = settings.get(
+                "ai_relevance_prompt", DEFAULT_RELEVANCE_PROMPT
+            )
             threshold = self._integer_setting(
                 settings.get("ai_relevance_threshold", "70"), 70, 0, 100
             )
@@ -1582,7 +1645,9 @@ class ArticleAnalysisManager:
                             article, content, max_content_chars
                         )
                         system_prompt, user_prompt = build_relevance_prompts(
-                            prompt_article, business_profile
+                            prompt_article,
+                            business_profile,
+                            relevance_prompt,
                         )
                         result = self.client.complete_json(
                             system_prompt, user_prompt, max_tokens=900
@@ -1623,6 +1688,10 @@ class ArticleAnalysisManager:
                             "is_relevant": bool(review_row["is_relevant"]),
                             "relevance_score": review_row["relevance_score"],
                             "relevance_reason": review_row["relevance_reason"],
+                            "category": review_row["category"],
+                            "secondary_categories": review_row[
+                                "secondary_categories"
+                            ],
                             "evidence": review_row["evidence"],
                             "confidence": review_row["confidence"],
                         }
@@ -1859,6 +1928,9 @@ class DailyReportManager:
                 category_labels=[CATEGORY_LABELS[category] for category in categories],
                 articles=report_articles,
                 business_profile=settings.get("ai_business_profile", ""),
+                report_prompt=settings.get(
+                    "ai_report_prompt", DEFAULT_REPORT_PROMPT
+                ),
             )
             result = self.client.complete_json(
                 system_prompt, user_prompt, max_tokens=3000
@@ -1870,11 +1942,23 @@ class DailyReportManager:
                 for development in assessment.key_developments
                 if development.article_id in valid_article_ids
             ]
+            cited_updates = {
+                field: self._valid_cited_items(
+                    getattr(assessment, field), valid_article_ids
+                )
+                for field in (
+                    "key_risks",
+                    "opportunities",
+                    "recommended_actions",
+                    "watchlist",
+                )
+            }
             article_floor = max(int(article["risk_score"]) for article in articles)
             risk_score = max(assessment.risk_score, article_floor)
             assessment = assessment.model_copy(
                 update={
                     "key_developments": developments,
+                    **cited_updates,
                     "risk_score": risk_score,
                     "risk_level": risk_level_for_score(risk_score),
                 }
@@ -1894,6 +1978,7 @@ class DailyReportManager:
             "title": article["title"],
             "publisher": article["publisher"],
             "published_at": article["published_at"],
+            "source_url": article.get("final_url") or article["url"],
             "category": article["category"],
             "summary": article["summary"],
             "impact_direction": article["impact_direction"],
@@ -1906,6 +1991,22 @@ class DailyReportManager:
             "recommended_actions": article["recommended_actions"],
             "evidence": article["analysis_evidence"],
         }
+
+    @staticmethod
+    def _valid_cited_items(
+        items: list[CitedReportItem], valid_article_ids: set[int]
+    ) -> list[CitedReportItem]:
+        result: list[CitedReportItem] = []
+        for item in items:
+            article_ids = [
+                article_id
+                for article_id in item.article_ids
+                if article_id in valid_article_ids
+            ]
+            if not article_ids:
+                continue
+            result.append(item.model_copy(update={"article_ids": article_ids}))
+        return result
 
 
 class AutomaticIntelligenceWorkflow:

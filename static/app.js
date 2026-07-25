@@ -449,6 +449,7 @@ async function loadAIReviews() {
     $("ai-review-rows").innerHTML = data.items.map((item) => `<tr>
       <td><a class="article-title" href="${escapeHtml(item.final_url || item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.publisher || "-")} · ${formatFullTime(item.published_at)}</span><span class="cell-meta">全文 ${formatChars(item.content_chars)}</span></td>
       <td>${relevanceMarkup(Boolean(item.is_relevant), item.relevance_score)}<span class="cell-meta">置信度 ${item.confidence}</span></td>
+      <td><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span>${item.secondary_categories?.length ? `<span class="cell-meta">${item.secondary_categories.map(categoryLabel).map(escapeHtml).join("、")}</span>` : ""}</td>
       <td><span class="analysis-detail expanded">${escapeHtml(item.relevance_reason || "-")}</span></td>
       <td><span class="analysis-detail expanded">${escapeHtml((item.evidence || []).join("；") || "-")}</span></td>
       <td>${formatFullTime(item.reviewed_at)}<span class="cell-subtitle">${escapeHtml(item.model)}</span></td>
@@ -580,9 +581,22 @@ async function generateReport(event) {
   } catch (error) { showToast(error.message, true); }
 }
 
-function reportList(title, items) {
+function reportSources(articleIds, articleById) {
+  const sources = [...new Set((articleIds || []).map(Number))]
+    .map((articleId) => articleById.get(articleId))
+    .filter(Boolean);
+  if (!sources.length) return "";
+  return `<div class="report-sources"><span>出处</span>${sources.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.publisher || "原文")} · ${escapeHtml(article.title)}</a>`).join("")}</div>`;
+}
+
+function reportList(title, items, articleById) {
   if (!items?.length) return "";
-  return `<section class="report-block"><h4>${escapeHtml(title)}</h4><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
+  return `<section class="report-block"><h4>${escapeHtml(title)}</h4><ul class="cited-report-list">${items.map((item) => {
+    const normalized = typeof item === "string"
+      ? { category: "other", content: item, article_ids: [] }
+      : item;
+    return `<li><div class="report-item-content"><span class="tag">${escapeHtml(categoryLabel(normalized.category || "other"))}</span><span>${escapeHtml(normalized.content || "")}</span></div>${reportSources(normalized.article_ids, articleById)}</li>`;
+  }).join("")}</ul></section>`;
 }
 
 async function openReportDetail(id) {
@@ -591,15 +605,17 @@ async function openReportDetail(id) {
     $("report-dialog-title").textContent = report.title || `情报日报 #${report.id}`;
     const categoryScope = report.categories?.length
       ? report.categories.map(categoryLabel).join("、") : "全部分类";
+    const articleById = new Map((report.articles || []).map((article) => [Number(article.article_id), article]));
+    const allSourceIds = (report.articles || []).map((article) => article.article_id);
     $("report-detail").innerHTML = `
       <div class="report-meta"><span>${escapeHtml(report.report_date)}</span><span>${escapeHtml(categoryScope)}</span><span>${report.article_count} 篇新闻</span>${riskMarkup(report.risk_level, report.risk_score)}</div>
-      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p></section>
-      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p></article>`).join("")}</div></section>` : ""}
-      ${reportList("关键风险", report.key_risks)}
-      ${reportList("业务机会", report.opportunities)}
-      ${reportList("建议动作", report.recommended_actions)}
-      ${reportList("后续监控", report.watchlist)}
-      ${report.articles?.length ? `<section class="report-block"><h4>关联新闻</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(article.title)}</span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
+      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p>${reportSources(allSourceIds, articleById)}</section>
+      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><div class="development-title"><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span><strong>${escapeHtml(item.title)}</strong></div><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p>${reportSources([item.article_id], articleById)}</article>`).join("")}</div></section>` : ""}
+      ${reportList("关键风险", report.key_risks, articleById)}
+      ${reportList("业务机会", report.opportunities, articleById)}
+      ${reportList("建议动作", report.recommended_actions, articleById)}
+      ${reportList("后续监控", report.watchlist, articleById)}
+      ${report.articles?.length ? `<section class="report-block"><h4>全部来源文章</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer"><span><strong>${escapeHtml(article.title)}</strong><small>${escapeHtml(article.publisher || "-")} · ${formatFullTime(article.published_at)}</small></span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
     $("report-dialog").showModal();
   } catch (error) { showToast(error.message, true); }
 }
@@ -894,6 +910,8 @@ async function loadAISettings() {
   try {
     const data = await api("/api/ai/settings");
     $("ai-business-profile").value = data.business_profile;
+    $("ai-relevance-prompt").value = data.relevance_prompt;
+    $("ai-report-prompt").value = data.report_prompt;
     $("ai-threshold").value = data.relevance_threshold;
     $("ai-batch-size").value = data.batch_size;
     $("ai-content-max-chars").value = data.content_max_chars;
@@ -907,6 +925,8 @@ async function saveAISettings(event) {
   event.preventDefault();
   const payload = {
     business_profile: $("ai-business-profile").value.trim(),
+    relevance_prompt: $("ai-relevance-prompt").value.trim(),
+    report_prompt: $("ai-report-prompt").value.trim(),
     relevance_threshold: Number($("ai-threshold").value),
     batch_size: Number($("ai-batch-size").value),
     content_max_chars: Number($("ai-content-max-chars").value),
