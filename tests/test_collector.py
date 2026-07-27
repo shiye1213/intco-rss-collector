@@ -15,7 +15,6 @@ from app.collector import (
 )
 from app.database import DEFAULT_KEYWORDS, DEFAULT_SOURCES, Database
 from app.query_builder import (
-    MAX_GOOGLE_NEWS_QUERY_CHARS,
     build_keyword_query,
     localize_keyword_for_source,
 )
@@ -181,7 +180,6 @@ def test_default_tariff_keyword_strategies_are_valid_and_language_specific(
         )
         localized_keyword = {**strategy, "query": query}
 
-        assert len(query) <= MAX_GOOGLE_NEWS_QUERY_CHARS
         if name in chinese_names:
             assert localize_keyword_for_source(localized_keyword, "zh-CN")
             assert localize_keyword_for_source(localized_keyword, "en-US") is None
@@ -693,13 +691,15 @@ def test_keyword_search_strategy_is_persisted_and_regenerates_query(tmp_path) ->
     assert "-%22boxing%22" in feed_url
 
 
-def test_keyword_query_rejects_oversized_google_expression() -> None:
-    with pytest.raises(ValueError, match="查询过长"):
-        build_keyword_query(
-            [f"very specific medical product phrase {index}" for index in range(20)],
-            context_terms=[f"business signal phrase {index}" for index in range(20)],
-            lookback_days=30,
-        )
+def test_keyword_query_allows_long_google_expression() -> None:
+    query = build_keyword_query(
+        [f"very specific medical product phrase {index}" for index in range(20)],
+        context_terms=[f"business signal phrase {index}" for index in range(20)],
+        lookback_days=30,
+    )
+
+    assert len(query) > 200
+    assert query.endswith("when:30d")
 
 
 def test_second_run_uses_cursor_after_initial_collection(tmp_path) -> None:

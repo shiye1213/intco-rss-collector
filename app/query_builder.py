@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 
 
-MAX_GOOGLE_NEWS_QUERY_CHARS = 200
 _HAN_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _LATIN_CHARACTER = re.compile(r"[A-Za-z]")
 
@@ -50,13 +49,7 @@ def build_keyword_query(
         if isinstance(lookback_days, bool) or not 1 <= lookback_days <= 365:
             raise ValueError("Google News 回溯天数必须在 1 到 365 之间")
         parts.append(f"when:{lookback_days}d")
-    query = "".join(parts)
-    if len(query) > MAX_GOOGLE_NEWS_QUERY_CHARS:
-        raise ValueError(
-            "Google News 查询过长，请拆分为更聚焦的关键词组"
-            f"（当前 {len(query)} 字符，上限 {MAX_GOOGLE_NEWS_QUERY_CHARS}）"
-        )
-    return query
+    return "".join(parts)
 
 
 def localize_keyword_for_source(
