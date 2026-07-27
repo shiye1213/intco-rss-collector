@@ -376,7 +376,10 @@ class Collector:
                                 totals,
                                 seen_count=len(feed_items),
                                 use_cursor=incremental_collection,
-                                apply_local_keyword_filter=search_local_keyword_filter,
+                                apply_local_keyword_filter=(
+                                    search_local_keyword_filter
+                                    or bool(keyword.get("require_local_match", False))
+                                ),
                             )
                         except Exception as exc:
                             self._insert_detail(

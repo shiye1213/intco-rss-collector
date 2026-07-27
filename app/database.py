@@ -8,7 +8,25 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .normalization import infer_country, normalize_publisher
-from .prompts import DEFAULT_BUSINESS_PROFILE
+from .prompts import (
+    DEFAULT_BUSINESS_PROFILE,
+    DEFAULT_REPORT_CATEGORY_PROMPTS,
+    DEFAULT_RELEVANCE_PROMPT,
+    DEFAULT_REPORT_PROMPT,
+    LEGACY_DEFAULT_BUSINESS_PROFILE,
+    LEGACY_DEFAULT_BUSINESS_PROFILE_V4,
+    LEGACY_DEFAULT_BUSINESS_PROFILE_V5,
+    LEGACY_DEFAULT_RELEVANCE_PROMPT_V4,
+    LEGACY_DEFAULT_RELEVANCE_PROMPT_V5,
+    LEGACY_DEFAULT_RELEVANCE_PROMPT_V6,
+    LEGACY_DEFAULT_RELEVANCE_PROMPT_V7,
+    LEGACY_DEFAULT_REPORT_PROMPT,
+    LEGACY_DEFAULT_REPORT_PROMPT_V4,
+    LEGACY_DEFAULT_REPORT_PROMPT_V5,
+    LEGACY_DEFAULT_REPORT_PROMPT_V6,
+    LEGACY_DEFAULT_REPORT_PROMPT_V7,
+    REPORT_CATEGORY_SETTING_KEYS,
+)
 from .query_builder import build_keyword_query
 
 
@@ -48,6 +66,7 @@ CREATE TABLE IF NOT EXISTS keywords (
     context_terms TEXT NOT NULL DEFAULT '[]',
     exclude_terms TEXT NOT NULL DEFAULT '[]',
     lookback_days INTEGER NOT NULL DEFAULT 30,
+    require_local_match INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -231,6 +250,9 @@ CREATE TABLE IF NOT EXISTS article_relevance_reviews (
     is_relevant INTEGER NOT NULL DEFAULT 0,
     relevance_score INTEGER NOT NULL DEFAULT 0,
     relevance_reason TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'other',
+    secondary_categories TEXT NOT NULL DEFAULT '[]',
+    keyword_categories TEXT NOT NULL DEFAULT '[]',
     evidence TEXT NOT NULL DEFAULT '[]',
     confidence INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT NOT NULL DEFAULT '',
@@ -295,6 +317,8 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     report_date TEXT NOT NULL,
     categories TEXT NOT NULL DEFAULT '[]',
+    keyword_category_id INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL,
+    keyword_category_name TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed', 'interrupted')),
     risk_level TEXT NOT NULL DEFAULT 'low',
     risk_score INTEGER NOT NULL DEFAULT 0,
@@ -465,6 +489,196 @@ DEFAULT_SOURCES = (
 
 DEFAULT_KEYWORDS = (
     {
+        "name": "医疗手套政府采购与国产优先（中文）",
+        "category_name": "贸易政策",
+        "match_terms": ["丁腈手套", "医用手套", "一次性手套", "防护手套"],
+        "context_terms": [
+            "政府采购",
+            "国产优先",
+            "本国产品",
+        ],
+        "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "医疗手套政府采购与国产优先（英文）",
+        "category_name": "贸易政策",
+        "match_terms": ["nitrile gloves", "medical gloves"],
+        "context_terms": [
+            "procurement rules",
+            "federal procurement",
+            "domestic procurement",
+            "Buy American",
+        ],
+        "exclude_terms": ["tariff", "duty", "boxing", "football", "baseball"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "医疗手套关税调整精准版（中文）",
+        "category_name": "关税调整",
+        "match_terms": ["丁腈手套", "医用手套", "一次性手套", "PVC手套"],
+        "context_terms": [
+            "手套关税",
+            "加征关税",
+            "关税税率",
+            "反倾销税",
+            "反补贴税",
+        ],
+        "exclude_terms": ["拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "医疗手套关税调整精准版（英文）",
+        "category_name": "关税调整",
+        "match_terms": ["nitrile gloves", "medical gloves", "vinyl gloves"],
+        "context_terms": [
+            "tariff on gloves",
+            "glove tariff",
+            "120% tariff",
+            "Section 301",
+            "import duty on gloves",
+        ],
+        "exclude_terms": ["boxing", "football", "baseball"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "医疗手套召回与进口警示（中文）",
+        "category_name": "行业法规",
+        "match_terms": ["丁腈手套", "医用手套", "一次性手套", "防护手套"],
+        "context_terms": [
+            "医用手套召回",
+            "进口警示",
+            "质量通报",
+        ],
+        "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "医疗手套召回与进口警示（英文）",
+        "category_name": "行业法规",
+        "match_terms": ["nitrile gloves", "medical gloves", "disposable gloves"],
+        "context_terms": [
+            "medical glove recall",
+            "FDA import alert",
+        ],
+        "exclude_terms": ["tariff", "duty", "boxing", "football", "baseball"],
+        "lookback_days": 90,
+        "active": True,
+    },
+    {
+        "name": "医疗手套贸易政策拓展召回（中文）",
+        "category_name": "贸易政策",
+        "match_terms": ["橡胶手套", "手套行业", "手套企业", "手套厂商"],
+        "context_terms": [
+            "进口禁令",
+            "出口禁令",
+            "贸易限制",
+            "原产地规则",
+            "本地化要求",
+        ],
+        "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套贸易政策拓展召回（英文）",
+        "category_name": "贸易政策",
+        "match_terms": [
+            "rubber gloves",
+            "disposable gloves",
+            "glove industry",
+            "glove makers",
+        ],
+        "context_terms": [
+            "import ban",
+            "export ban",
+            "trade restriction",
+            "rules of origin",
+        ],
+        "exclude_terms": ["tariff", "duty", "boxing"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套关税调整拓展召回（中文）",
+        "category_name": "关税调整",
+        "match_terms": ["橡胶手套", "手套行业", "手套企业", "手套厂商"],
+        "context_terms": [
+            "关税上调",
+            "关税豁免",
+            "反倾销税",
+            "反补贴税",
+            "贸易救济",
+        ],
+        "exclude_terms": ["拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套关税调整拓展召回（英文）",
+        "category_name": "关税调整",
+        "match_terms": [
+            "rubber gloves",
+            "disposable gloves",
+            "glove sector",
+            "glove makers",
+        ],
+        "context_terms": [
+            "tariff increase",
+            "tariff exemption",
+            "anti-dumping duty",
+            "countervailing duty",
+        ],
+        "exclude_terms": ["boxing", "football", "baseball"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套行业法规拓展召回（中文）",
+        "category_name": "行业法规",
+        "match_terms": ["橡胶手套", "手套行业", "手套企业", "手套厂商"],
+        "context_terms": [
+            "手套召回",
+            "进口警示",
+            "产品认证",
+            "注册要求",
+            "医疗器械法规",
+        ],
+        "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
+        "name": "医疗手套行业法规拓展召回（英文）",
+        "category_name": "行业法规",
+        "match_terms": [
+            "rubber gloves",
+            "disposable gloves",
+            "glove industry",
+            "glove makers",
+        ],
+        "context_terms": [
+            "FDA",
+            "glove recall",
+            "import alert",
+            "medical device rule",
+        ],
+        "exclude_terms": ["tariff", "duty", "boxing"],
+        "lookback_days": 90,
+        "require_local_match": True,
+        "active": True,
+    },
+    {
         "name": "医疗手套供需与价格（英文）",
         "match_terms": [
             "nitrile gloves",
@@ -509,7 +723,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": ["boxing", "football", "baseball"],
         "lookback_days": 14,
-        "active": True,
+        "active": False,
     },
     {
         "name": "PE 与 PVC 手套（英文）",
@@ -647,7 +861,7 @@ DEFAULT_KEYWORDS = (
         "context_terms": ["关税"],
         "exclude_terms": ["拳击", "足球"],
         "lookback_days": 365,
-        "active": True,
+        "active": False,
     },
     {
         "name": "医疗手套关税（英文）",
@@ -659,7 +873,7 @@ DEFAULT_KEYWORDS = (
         "context_terms": ["tariff", "import duty"],
         "exclude_terms": ["boxing", "football", "baseball"],
         "lookback_days": 365,
-        "active": True,
+        "active": False,
     },
     {
         "name": "美国关税法律工具（中文）",
@@ -673,7 +887,7 @@ DEFAULT_KEYWORDS = (
         "context_terms": ["加征", "调整", "豁免", "暂停", "生效"],
         "exclude_terms": [],
         "lookback_days": 30,
-        "active": True,
+        "active": False,
     },
     {
         "name": "美国关税法律工具（英文）",
@@ -692,7 +906,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": [],
         "lookback_days": 30,
-        "active": True,
+        "active": False,
     },
     {
         "name": "贸易救济案件（中文）",
@@ -711,7 +925,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": [],
         "lookback_days": 30,
-        "active": True,
+        "active": False,
     },
     {
         "name": "贸易救济案件（英文）",
@@ -729,7 +943,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": [],
         "lookback_days": 30,
-        "active": True,
+        "active": False,
     },
     {
         "name": "手套原材料关税（中文）",
@@ -737,7 +951,7 @@ DEFAULT_KEYWORDS = (
         "context_terms": ["关税", "反倾销", "反补贴", "进口税"],
         "exclude_terms": ["轮胎", "汽车"],
         "lookback_days": 90,
-        "active": True,
+        "active": False,
     },
     {
         "name": "手套原材料关税（英文）",
@@ -750,7 +964,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": ["tire", "tyre", "automotive"],
         "lookback_days": 90,
-        "active": True,
+        "active": False,
     },
     {
         "name": "通用关税政策（中文）",
@@ -766,7 +980,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": [],
         "lookback_days": 30,
-        "active": True,
+        "active": False,
     },
     {
         "name": "通用关税政策（英文）",
@@ -781,7 +995,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": [],
         "lookback_days": 30,
-        "active": True,
+        "active": False,
     },
 )
 
@@ -850,6 +1064,68 @@ LEGACY_TARIFF_KEYWORD_DEFAULTS = {
     },
 }
 
+KEYWORD_CATEGORY_RELEVANCE_SQL = """
+    rr.status = 'success'
+    AND rr.is_relevant = 1
+    AND (
+        kc.name IS NULL
+        OR kc.name NOT IN ('贸易政策', '关税调整', '行业法规')
+        OR (
+            rr.prompt_version IN ('intco-relevance-v7', 'intco-relevance-v8')
+            AND EXISTS (
+                SELECT 1
+                FROM json_each(
+                    CASE
+                        WHEN json_valid(rr.keyword_categories)
+                        THEN rr.keyword_categories
+                        ELSE '[]'
+                    END
+                )
+                WHERE value = kc.name
+            )
+        )
+        OR (
+            rr.prompt_version NOT IN ('intco-relevance-v7', 'intco-relevance-v8')
+            AND (
+                (
+                    kc.name IN ('贸易政策', '行业法规')
+                    AND (
+                        rr.category = 'policy_regulation'
+                        OR EXISTS (
+                            SELECT 1
+                            FROM json_each(
+                                CASE
+                                    WHEN json_valid(rr.secondary_categories)
+                                    THEN rr.secondary_categories
+                                    ELSE '[]'
+                                END
+                            )
+                            WHERE value = 'policy_regulation'
+                        )
+                    )
+                )
+                OR (
+                    kc.name = '关税调整'
+                    AND (
+                        rr.category = 'trade_tariff'
+                        OR EXISTS (
+                            SELECT 1
+                            FROM json_each(
+                                CASE
+                                    WHEN json_valid(rr.secondary_categories)
+                                    THEN rr.secondary_categories
+                                    ELSE '[]'
+                                END
+                            )
+                            WHERE value = 'trade_tariff'
+                        )
+                    )
+                )
+            )
+        )
+    )
+"""
+
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -910,6 +1186,14 @@ class Database:
                 connection.execute(
                     "ALTER TABLE keywords ADD COLUMN lookback_days INTEGER NOT NULL DEFAULT 30"
                 )
+            added_require_local_match = "require_local_match" not in keyword_columns
+            if added_require_local_match:
+                connection.execute(
+                    """
+                    ALTER TABLE keywords
+                    ADD COLUMN require_local_match INTEGER NOT NULL DEFAULT 0
+                    """
+                )
             if "category_id" not in keyword_columns:
                 connection.execute(
                     """
@@ -947,6 +1231,25 @@ class Database:
                     connection.execute(
                         f"ALTER TABLE article_contents ADD COLUMN {column} {definition}"
                     )
+            review_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(article_relevance_reviews)"
+                ).fetchall()
+            }
+            review_migrations = {
+                "category": "TEXT NOT NULL DEFAULT 'other'",
+                "secondary_categories": "TEXT NOT NULL DEFAULT '[]'",
+                "keyword_categories": "TEXT NOT NULL DEFAULT '[]'",
+            }
+            for column, definition in review_migrations.items():
+                if column not in review_columns:
+                    connection.execute(
+                        f"""
+                        ALTER TABLE article_relevance_reviews
+                        ADD COLUMN {column} {definition}
+                        """  # noqa: S608
+                    )
             detail_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -978,6 +1281,34 @@ class Database:
                         ADD COLUMN {column} TEXT NOT NULL DEFAULT 'pending'
                         """  # noqa: S608
                     )
+            report_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(daily_reports)"
+                ).fetchall()
+            }
+            report_migrations = {
+                "keyword_category_id": (
+                    "INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL"
+                ),
+                "keyword_category_name": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in report_migrations.items():
+                if column not in report_columns:
+                    connection.execute(
+                        f"""
+                        ALTER TABLE daily_reports
+                        ADD COLUMN {column} {definition}
+                        """  # noqa: S608
+                    )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_daily_reports_keyword_category
+                ON daily_reports(
+                    report_date DESC, keyword_category_id, status, id DESC
+                )
+                """
+            )
             source_rows = connection.execute(
                 "SELECT id, url_template, language, country FROM rss_sources"
             ).fetchall()
@@ -1186,12 +1517,16 @@ class Database:
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO keywords
-                        (name, query, match_terms, context_terms,
-                         exclude_terms, lookback_days, active,
+                        (category_id, name, query, match_terms, context_terms,
+                         exclude_terms, lookback_days, require_local_match, active,
                          created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (
+                        (SELECT id FROM keyword_categories WHERE name = ?),
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     (
+                        keyword.get("category_name"),
                         keyword["name"],
                         build_keyword_query(
                             keyword["match_terms"],
@@ -1203,11 +1538,44 @@ class Database:
                         json.dumps(keyword["context_terms"], ensure_ascii=False),
                         json.dumps(keyword["exclude_terms"], ensure_ascii=False),
                         keyword["lookback_days"],
+                        int(keyword.get("require_local_match", False)),
                         int(keyword["active"]),
                         now,
                         now,
                     ),
                 )
+            if added_require_local_match:
+                for keyword in DEFAULT_KEYWORDS:
+                    if not keyword.get("require_local_match", False):
+                        continue
+                    connection.execute(
+                        """
+                        UPDATE keywords
+                        SET require_local_match = 1, updated_at = ?
+                        WHERE name = ? AND archived = 0
+                        """,
+                        (now, keyword["name"]),
+                    )
+                    connection.execute(
+                        """
+                        DELETE FROM article_keywords
+                        WHERE keyword_id IN (
+                            SELECT id FROM keywords
+                            WHERE name = ? AND archived = 0
+                        )
+                        """,
+                        (keyword["name"],),
+                    )
+                    connection.execute(
+                        """
+                        DELETE FROM collection_cursors
+                        WHERE keyword_id IN (
+                            SELECT id FROM keywords
+                            WHERE name = ? AND archived = 0
+                        )
+                        """,
+                        (keyword["name"],),
+                    )
             default_keywords_by_name = {
                 keyword["name"]: keyword for keyword in DEFAULT_KEYWORDS
             }
@@ -1292,6 +1660,14 @@ class Database:
                 "incremental_collection": "true",
                 "search_local_keyword_filter": "true",
                 "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
+                "ai_relevance_prompt": DEFAULT_RELEVANCE_PROMPT,
+                "ai_report_prompt": DEFAULT_REPORT_PROMPT,
+                **{
+                    REPORT_CATEGORY_SETTING_KEYS[category_name]: prompt
+                    for category_name, prompt in (
+                        DEFAULT_REPORT_CATEGORY_PROMPTS.items()
+                    )
+                },
                 "ai_relevance_threshold": "70",
                 "ai_batch_size": "20",
                 "ai_content_max_chars": "30000",
@@ -1307,6 +1683,47 @@ class Database:
                     """,
                     (key, value, now),
                 )
+            prompt_default_migrations = {
+                "ai_business_profile": (
+                    [
+                        LEGACY_DEFAULT_BUSINESS_PROFILE,
+                        LEGACY_DEFAULT_BUSINESS_PROFILE_V4,
+                        LEGACY_DEFAULT_BUSINESS_PROFILE_V5,
+                    ],
+                    DEFAULT_BUSINESS_PROFILE,
+                ),
+                "ai_relevance_prompt": (
+                    [
+                        LEGACY_DEFAULT_RELEVANCE_PROMPT_V4,
+                        LEGACY_DEFAULT_RELEVANCE_PROMPT_V5,
+                        LEGACY_DEFAULT_RELEVANCE_PROMPT_V6,
+                        LEGACY_DEFAULT_RELEVANCE_PROMPT_V7,
+                    ],
+                    DEFAULT_RELEVANCE_PROMPT,
+                ),
+                "ai_report_prompt": (
+                    [
+                        LEGACY_DEFAULT_REPORT_PROMPT,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V4,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V5,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V6,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V7,
+                    ],
+                    DEFAULT_REPORT_PROMPT,
+                ),
+            }
+            for key, (legacy_values, current_value) in (
+                prompt_default_migrations.items()
+            ):
+                for legacy_value in legacy_values:
+                    connection.execute(
+                        """
+                        UPDATE app_settings
+                        SET value = ?, updated_at = ?
+                        WHERE key = ? AND value = ?
+                        """,
+                        (current_value, now, key, legacy_value),
+                    )
 
     @staticmethod
     def rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
@@ -1325,7 +1742,7 @@ class Database:
     def get_keyword_categories(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT id, name, sort_order
                 FROM keyword_categories
                 WHERE active = 1
@@ -1334,13 +1751,26 @@ class Database:
             ).fetchall()
         return self.rows(rows)
 
+    def get_keyword_category(self, category_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, sort_order
+                FROM keyword_categories
+                WHERE id = ? AND active = 1
+                """,
+                (category_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def keyword_hit_stats(self) -> dict[str, Any]:
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT
                     k.id AS keyword_id,
                     k.name AS keyword_name,
+                    k.active,
                     k.category_id,
                     kc.name AS category_name,
                     COUNT(DISTINCT ak.article_id) AS hit_count,
@@ -1351,6 +1781,10 @@ class Database:
                         WHEN rr.status = 'success'
                          AND rr.is_relevant = 1
                         THEN ak.article_id
+                    END) AS business_relevant_count,
+                    COUNT(DISTINCT CASE
+                        WHEN {KEYWORD_CATEGORY_RELEVANCE_SQL}
+                        THEN ak.article_id
                     END) AS relevant_count
                 FROM keywords k
                 LEFT JOIN keyword_categories kc ON kc.id = k.category_id
@@ -1358,12 +1792,12 @@ class Database:
                 LEFT JOIN article_relevance_reviews rr
                   ON rr.article_id = ak.article_id
                 WHERE k.archived = 0
-                GROUP BY k.id, k.name, k.category_id, kc.name
+                GROUP BY k.id, k.name, k.active, k.category_id, kc.name
                 ORDER BY COALESCE(kc.sort_order, 999999), k.id
-                """
+                """  # noqa: S608
             ).fetchall()
             category_rows = connection.execute(
-                """
+                f"""
                 SELECT
                     kc.id AS category_id,
                     kc.name AS category_name,
@@ -1377,10 +1811,16 @@ class Database:
                         WHEN rr.status = 'success'
                          AND rr.is_relevant = 1
                         THEN ak.article_id
+                    END) AS business_relevant_count,
+                    COUNT(DISTINCT CASE
+                        WHEN {KEYWORD_CATEGORY_RELEVANCE_SQL}
+                        THEN ak.article_id
                     END) AS relevant_count
                 FROM keyword_categories kc
                 LEFT JOIN keywords k
-                  ON k.category_id = kc.id AND k.archived = 0
+                  ON k.category_id = kc.id
+                 AND k.archived = 0
+                 AND k.active = 1
                 LEFT JOIN article_keywords ak ON ak.keyword_id = k.id
                 LEFT JOIN article_relevance_reviews rr
                   ON rr.article_id = ak.article_id
@@ -1400,17 +1840,24 @@ class Database:
                         WHEN rr.status = 'success'
                          AND rr.is_relevant = 1
                         THEN ak.article_id
+                    END) AS business_relevant_count,
+                    COUNT(DISTINCT CASE
+                        WHEN {KEYWORD_CATEGORY_RELEVANCE_SQL}
+                        THEN ak.article_id
                     END) AS relevant_count
                 FROM keywords k
+                LEFT JOIN keyword_categories kc ON kc.id = k.category_id
                 LEFT JOIN article_keywords ak ON ak.keyword_id = k.id
                 LEFT JOIN article_relevance_reviews rr
                   ON rr.article_id = ak.article_id
-                WHERE k.archived = 0 AND k.category_id IS NULL
+                WHERE k.archived = 0
+                  AND k.active = 1
+                  AND k.category_id IS NULL
                 ORDER BY sort_order, category_id
-                """
+                """  # noqa: S608
             ).fetchall()
             overall_row = connection.execute(
-                """
+                f"""
                 SELECT
                     COUNT(DISTINCT k.id) AS keyword_count,
                     COUNT(DISTINCT ak.article_id) AS hit_count,
@@ -1421,18 +1868,26 @@ class Database:
                         WHEN rr.status = 'success'
                          AND rr.is_relevant = 1
                         THEN ak.article_id
+                    END) AS business_relevant_count,
+                    COUNT(DISTINCT CASE
+                        WHEN {KEYWORD_CATEGORY_RELEVANCE_SQL}
+                        THEN ak.article_id
                     END) AS relevant_count
                 FROM keywords k
+                LEFT JOIN keyword_categories kc ON kc.id = k.category_id
                 LEFT JOIN article_keywords ak ON ak.keyword_id = k.id
                 LEFT JOIN article_relevance_reviews rr
                   ON rr.article_id = ak.article_id
-                WHERE k.archived = 0
-                """
+                WHERE k.archived = 0 AND k.active = 1
+                """  # noqa: S608
             ).fetchone()
 
         def add_rates(item: dict[str, Any]) -> dict[str, Any]:
             reviewed = int(item["reviewed_count"] or 0)
             relevant = int(item["relevant_count"] or 0)
+            item["business_relevant_count"] = int(
+                item["business_relevant_count"] or 0
+            )
             hit_count = int(item["hit_count"] or 0)
             item["pending_review_count"] = max(0, hit_count - reviewed)
             item["hit_rate"] = relevant / reviewed if reviewed else None
@@ -1557,8 +2012,9 @@ class Database:
                 """
                 INSERT INTO keywords
                     (category_id, name, query, match_terms, context_terms,
-                     exclude_terms, lookback_days, active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     exclude_terms, lookback_days, require_local_match, active,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     category_id,
@@ -1568,6 +2024,7 @@ class Database:
                     json.dumps(context_terms, ensure_ascii=False),
                     json.dumps(exclude_terms, ensure_ascii=False),
                     lookback_days,
+                    int(data.get("require_local_match", False)),
                     int(data.get("active", True)),
                     now,
                     now,
@@ -1593,12 +2050,36 @@ class Database:
                 (category_id,),
             ).fetchone() is None:
                 raise ValueError("关键词分类不存在")
+            current = connection.execute(
+                """
+                SELECT match_terms, context_terms, exclude_terms, lookback_days,
+                       require_local_match
+                FROM keywords
+                WHERE id = ? AND archived = 0
+                """,
+                (keyword_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            strategy_changed = any(
+                (
+                    current["match_terms"]
+                    != json.dumps(data["match_terms"], ensure_ascii=False),
+                    current["context_terms"]
+                    != json.dumps(context_terms, ensure_ascii=False),
+                    current["exclude_terms"]
+                    != json.dumps(exclude_terms, ensure_ascii=False),
+                    int(current["lookback_days"]) != lookback_days,
+                    bool(current["require_local_match"])
+                    != bool(data.get("require_local_match", False)),
+                )
+            )
             cursor = connection.execute(
                 """
                 UPDATE keywords
                 SET category_id = ?, name = ?, query = ?, match_terms = ?,
                     context_terms = ?, exclude_terms = ?, lookback_days = ?,
-                    active = ?, updated_at = ?
+                    require_local_match = ?, active = ?, updated_at = ?
                 WHERE id = ? AND archived = 0
                 """,
                 (
@@ -1609,11 +2090,21 @@ class Database:
                     json.dumps(context_terms, ensure_ascii=False),
                     json.dumps(exclude_terms, ensure_ascii=False),
                     lookback_days,
+                    int(data.get("require_local_match", False)),
                     int(data.get("active", True)),
                     now,
                     keyword_id,
                 ),
             )
+            if strategy_changed:
+                connection.execute(
+                    "DELETE FROM article_keywords WHERE keyword_id = ?",
+                    (keyword_id,),
+                )
+                connection.execute(
+                    "DELETE FROM collection_cursors WHERE keyword_id = ?",
+                    (keyword_id,),
+                )
             return cursor.rowcount > 0
 
     def archive_keyword(self, keyword_id: int) -> bool:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .content import (
     ArticleContentReader,
@@ -20,7 +21,12 @@ from .llm import JSONLLMClient, LLMResult
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
     CATEGORY_LABELS,
+    DEFAULT_REPORT_CATEGORY_PROMPTS,
+    DEFAULT_RELEVANCE_PROMPT,
+    DEFAULT_REPORT_PROMPT,
+    KEYWORD_CATEGORY_BUSINESS_CODES,
     RELEVANCE_PROMPT_VERSION,
+    REPORT_CATEGORY_SETTING_KEYS,
     REPORT_PROMPT_VERSION,
     build_business_analysis_prompts,
     build_relevance_prompts,
@@ -40,6 +46,18 @@ CategoryCode = Literal[
     "esg",
     "other",
 ]
+KeywordCategoryName = Literal["贸易政策", "关税调整", "行业法规"]
+
+_COMPANY_NAME_PATTERN = re.compile(r"英科医疗|\bIntco\b", re.IGNORECASE)
+
+
+def _remove_unattributed_company_sentences(value: str) -> str:
+    sentences = re.split(r"(?<=[。！？!?])|\n+", value)
+    return "".join(
+        sentence
+        for sentence in sentences
+        if sentence.strip() and not _COMPANY_NAME_PATTERN.search(sentence)
+    ).strip()
 RiskLevel = Literal["low", "medium", "high", "critical"]
 ImpactDirection = Literal["positive", "negative", "mixed", "neutral"]
 
@@ -91,18 +109,51 @@ class RelevanceAssessment(BaseModel):
     is_relevant: bool
     relevance_score: int = Field(ge=0, le=100)
     relevance_reason: str = Field(min_length=1, max_length=1000)
+    category: CategoryCode
+    secondary_categories: list[CategoryCode] = Field(
+        default_factory=list, max_length=2
+    )
+    keyword_categories: list[KeywordCategoryName] = Field(
+        default_factory=list, max_length=3
+    )
     evidence: list[str] = Field(default_factory=list, max_length=8)
     confidence: int = Field(ge=0, le=100)
+
+    @field_validator("secondary_categories")
+    @classmethod
+    def normalize_categories(
+        cls, values: list[CategoryCode]
+    ) -> list[CategoryCode]:
+        return list(dict.fromkeys(values))
+
+    @field_validator("keyword_categories")
+    @classmethod
+    def normalize_keyword_categories(
+        cls, values: list[KeywordCategoryName]
+    ) -> list[KeywordCategoryName]:
+        return list(dict.fromkeys(values))
 
     @field_validator("evidence")
     @classmethod
     def normalize_evidence(cls, values: list[str]) -> list[str]:
         return _clean_string_list(values)
 
+    @model_validator(mode="after")
+    def normalize_category_relationships(self) -> RelevanceAssessment:
+        if not self.is_relevant:
+            self.category = "other"
+            self.secondary_categories = []
+            self.keyword_categories = []
+            return self
+        self.secondary_categories = [
+            value for value in self.secondary_categories if value != self.category
+        ]
+        return self
+
 
 class BusinessAnalysis(BaseModel):
     category: CategoryCode
-    secondary_categories: list[CategoryCode] = Field(default_factory=list, max_length=5)
+    secondary_categories: list[CategoryCode] = Field(default_factory=list, max_length=2)
     summary: str = Field(min_length=1, max_length=1500)
     impact_direction: ImpactDirection = "neutral"
     impact_score: int = Field(default=1, ge=1, le=5)
@@ -121,12 +172,114 @@ class BusinessAnalysis(BaseModel):
     def normalize_lists(cls, values: list[str]) -> list[str]:
         return _clean_string_list(values)
 
+    @model_validator(mode="after")
+    def remove_primary_from_secondary(self) -> BusinessAnalysis:
+        self.secondary_categories = [
+            value for value in self.secondary_categories if value != self.category
+        ]
+        return self
+
+
+def enforce_company_fact_boundary(
+    *,
+    full_text: str,
+    review: RelevanceAssessment | None = None,
+    analysis: BusinessAnalysis | None = None,
+) -> RelevanceAssessment | BusinessAnalysis:
+    """Remove company-specific claims when the model input never names the company."""
+    if _COMPANY_NAME_PATTERN.search(full_text):
+        if review is not None:
+            return review
+        if analysis is not None:
+            return analysis
+        raise ValueError("review 或 analysis 至少提供一个")
+
+    if review is not None:
+        reason = _remove_unattributed_company_sentences(review.relevance_reason)
+        boundary_note = (
+            "正文未明确提及英科医疗；相关性仅基于正文所述行业事件与企业"
+            "业务边界的潜在传导，企业实际暴露需进一步核实。"
+        )
+        reason = f"{reason}{boundary_note}" if reason else boundary_note
+        return review.model_copy(
+            update={
+                "relevance_reason": reason[:1000],
+                "evidence": [
+                    item
+                    for item in review.evidence
+                    if not _COMPANY_NAME_PATTERN.search(item)
+                ],
+            }
+        )
+
+    if analysis is not None:
+        summary = _remove_unattributed_company_sentences(analysis.summary)
+        impact = _remove_unattributed_company_sentences(analysis.impact_analysis)
+        category_path = {
+            "market_demand": "需求、采购或价格变化可能传导至同类产品的订单与售价。",
+            "competitor": "竞争者的产能、定价或经营变化可能改变行业竞争强度。",
+            "raw_material_supply": "原材料或供应变化可能传导至同类制造企业的成本与交付。",
+            "policy_regulation": "政策或准入规则可能改变同类产品的合规要求与订单机会。",
+            "trade_tariff": "税费变化可能改变同类产品的到岸成本与市场准入。",
+        }.get(
+            str(analysis.category),
+            "该行业事件可能通过企业业务边界所列路径产生传导。",
+        )
+        boundary_note = (
+            "正文未明确提及英科医疗，以上仅为同类制造企业的行业传导；"
+            "企业实际市场、产地、客户及供应链暴露需进一步核实。"
+        )
+
+        def clean_list(values: list[str]) -> list[str]:
+            return [
+                cleaned
+                for value in values
+                if (cleaned := _remove_unattributed_company_sentences(value))
+            ]
+
+        return analysis.model_copy(
+            update={
+                "summary": summary
+                or "正文描述了与企业业务边界相关的行业事件。",
+                "impact_analysis": f"{impact}{boundary_note}"
+                if impact
+                else f"{category_path}{boundary_note}",
+                "risk_factors": clean_list(analysis.risk_factors),
+                "opportunities": clean_list(analysis.opportunities),
+                "recommended_actions": clean_list(analysis.recommended_actions),
+                "evidence": [
+                    item
+                    for item in analysis.evidence
+                    if not _COMPANY_NAME_PATTERN.search(item)
+                ],
+            }
+        )
+
+    raise ValueError("review 或 analysis 至少提供一个")
+
 
 class KeyDevelopment(BaseModel):
     article_id: int
+    category: CategoryCode
     title: str = Field(max_length=500)
     finding: str = Field(max_length=1000)
     business_impact: str = Field(max_length=1000)
+
+
+class CitedReportItem(BaseModel):
+    category: CategoryCode
+    content: str = Field(min_length=1, max_length=1000)
+    article_ids: list[int] = Field(default_factory=list, max_length=8)
+
+    @field_validator("content")
+    @classmethod
+    def normalize_content(cls, value: str) -> str:
+        return " ".join(value.split())[:1000]
+
+    @field_validator("article_ids")
+    @classmethod
+    def normalize_article_ids(cls, values: list[int]) -> list[int]:
+        return list(dict.fromkeys(value for value in values if value > 0))
 
 
 class DailyReportAssessment(BaseModel):
@@ -136,15 +289,34 @@ class DailyReportAssessment(BaseModel):
     risk_score: int = Field(ge=0, le=100)
     risk_basis: str = Field(max_length=2000)
     key_developments: list[KeyDevelopment] = Field(default_factory=list, max_length=20)
-    key_risks: list[str] = Field(default_factory=list, max_length=12)
-    opportunities: list[str] = Field(default_factory=list, max_length=12)
-    recommended_actions: list[str] = Field(default_factory=list, max_length=12)
-    watchlist: list[str] = Field(default_factory=list, max_length=12)
+    key_risks: list[CitedReportItem] = Field(default_factory=list, max_length=12)
+    opportunities: list[CitedReportItem] = Field(default_factory=list, max_length=12)
+    recommended_actions: list[CitedReportItem] = Field(
+        default_factory=list, max_length=12
+    )
+    watchlist: list[CitedReportItem] = Field(default_factory=list, max_length=12)
 
-    @field_validator("key_risks", "opportunities", "recommended_actions", "watchlist")
+    @field_validator(
+        "key_risks",
+        "opportunities",
+        "recommended_actions",
+        "watchlist",
+        mode="before",
+    )
     @classmethod
-    def normalize_lists(cls, values: list[str]) -> list[str]:
-        return _clean_string_list(values, limit=12)
+    def normalize_cited_items(cls, values: Any) -> Any:
+        if not isinstance(values, list):
+            return values
+        return [
+            {
+                "category": "other",
+                "content": value,
+                "article_ids": [],
+            }
+            if isinstance(value, str)
+            else value
+            for value in values[:12]
+        ]
 
 
 class IntelligenceAlreadyRunningError(RuntimeError):
@@ -156,7 +328,11 @@ class _ProviderRateLimited(RuntimeError):
 
 
 class IntelligenceRepository:
-    REVIEW_JSON_FIELDS = ("evidence",)
+    REVIEW_JSON_FIELDS = (
+        "secondary_categories",
+        "keyword_categories",
+        "evidence",
+    )
     BUSINESS_JSON_FIELDS = (
         "relevance_evidence",
         "secondary_categories",
@@ -367,9 +543,10 @@ class IntelligenceRepository:
             ).fetchall()
             keyword_rows = connection.execute(
                 """
-                SELECT k.name, ak.matched_terms
+                SELECT k.name, kc.name AS category_name, ak.matched_terms
                 FROM article_keywords ak
                 JOIN keywords k ON k.id = ak.keyword_id
+                LEFT JOIN keyword_categories kc ON kc.id = k.category_id
                 WHERE ak.article_id = ?
                 ORDER BY k.name
                 """,
@@ -407,7 +584,8 @@ class IntelligenceRepository:
         if row is None:
             return None
         review = dict(row)
-        review["evidence"] = self._decode_json(review["evidence"], [])
+        for field in self.REVIEW_JSON_FIELDS:
+            review[field] = self._decode_json(review[field], [])
         return review
 
     def create_analysis_run(
@@ -703,19 +881,31 @@ class IntelligenceRepository:
     ) -> None:
         now = utc_now_iso()
         evidence = json.dumps(assessment.evidence, ensure_ascii=False)
+        secondary_categories = json.dumps(
+            assessment.secondary_categories, ensure_ascii=False
+        )
+        keyword_categories = json.dumps(
+            assessment.keyword_categories, ensure_ascii=False
+        )
         with self.database.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO article_relevance_reviews
                     (article_id, status, is_relevant, relevance_score,
-                     relevance_reason, evidence, confidence, content_hash,
+                     relevance_reason, category, secondary_categories,
+                     keyword_categories, evidence, confidence, content_hash,
                      model, prompt_version, raw_response, prompt_tokens,
                      completion_tokens, reviewed_at, error_message)
-                VALUES (?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+                VALUES (
+                    ?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ''
+                )
                 ON CONFLICT(article_id) DO UPDATE SET
                     status = 'success', is_relevant = excluded.is_relevant,
                     relevance_score = excluded.relevance_score,
                     relevance_reason = excluded.relevance_reason,
+                    category = excluded.category,
+                    secondary_categories = excluded.secondary_categories,
+                    keyword_categories = excluded.keyword_categories,
                     evidence = excluded.evidence,
                     confidence = excluded.confidence,
                     content_hash = excluded.content_hash,
@@ -731,6 +921,9 @@ class IntelligenceRepository:
                     int(assessment.is_relevant),
                     assessment.relevance_score,
                     assessment.relevance_reason,
+                    assessment.category,
+                    secondary_categories,
+                    keyword_categories,
                     evidence,
                     assessment.confidence,
                     content_hash,
@@ -1113,7 +1306,8 @@ class IntelligenceRepository:
             ).fetchall()
         items = [dict(row) for row in rows]
         for item in items:
-            item["evidence"] = self._decode_json(item["evidence"], [])
+            for field in self.REVIEW_JSON_FIELDS:
+                item[field] = self._decode_json(item[field], [])
         return {"total": total, "items": items}
 
     def list_business_articles(
@@ -1175,7 +1369,7 @@ class IntelligenceRepository:
         return {"total": total, "items": items}
 
     def relevant_articles_for_report(
-        self, report_date: date, categories: list[str]
+        self, report_date: date, keyword_category_id: int
     ) -> list[dict[str, Any]]:
         window_start, window_end = local_date_window(report_date)
         filters = [
@@ -1185,18 +1379,33 @@ class IntelligenceRepository:
             "a.published_at >= ?",
             "a.published_at < ?",
         ]
-        parameters: list[Any] = [window_start, window_end]
-        if categories:
-            placeholders = ",".join("?" for _ in categories)
-            filters.append(f"ba.category IN ({placeholders})")  # noqa: S608
-            parameters.extend(categories)
+        parameters: list[Any] = [
+            keyword_category_id,
+            window_start,
+            window_end,
+        ]
         with self.database.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT ba.*, a.title, a.url, a.publisher, a.published_at
+                WITH category_matches AS (
+                    SELECT
+                        ak.article_id,
+                        GROUP_CONCAT(DISTINCT k.name) AS matched_keyword_names
+                    FROM article_keywords ak
+                    JOIN keywords k ON k.id = ak.keyword_id
+                    WHERE k.category_id = ?
+                    GROUP BY ak.article_id
+                )
+                SELECT ba.*, a.title, a.url, a.publisher, a.published_at,
+                       ic.final_url, cm.matched_keyword_names,
+                       rr.keyword_categories AS reviewed_keyword_categories,
+                       rr.prompt_version AS relevance_prompt_version
                 FROM business_articles ba
                 JOIN articles a ON a.id = ba.article_id
                 JOIN article_contents ic ON ic.article_id = ba.article_id
+                JOIN article_relevance_reviews rr
+                  ON rr.article_id = ba.article_id
+                JOIN category_matches cm ON cm.article_id = ba.article_id
                 WHERE {' AND '.join(filters)}
                 ORDER BY ba.risk_score DESC, a.published_at DESC
                 """,  # noqa: S608
@@ -1206,13 +1415,37 @@ class IntelligenceRepository:
         for item in items:
             for field in self.BUSINESS_JSON_FIELDS:
                 item[field] = self._decode_json(item[field], [])
-        return items
+            item["reviewed_keyword_categories"] = self._decode_json(
+                item["reviewed_keyword_categories"], []
+            )
+        category = self.database.get_keyword_category(keyword_category_id)
+        category_name = str(category["name"]) if category else ""
+        required_codes = KEYWORD_CATEGORY_BUSINESS_CODES.get(category_name)
+        if not required_codes:
+            return items
+        return [
+            item
+            for item in items
+            if (
+                category_name in item["reviewed_keyword_categories"]
+                if item["relevance_prompt_version"]
+                in {"intco-relevance-v7", RELEVANCE_PROMPT_VERSION}
+                else bool(
+                    required_codes
+                    & {
+                        str(item["category"]),
+                        *(str(value) for value in item["secondary_categories"]),
+                    }
+                )
+            )
+        ]
 
     def create_report(
         self,
         *,
         report_date: date,
-        categories: list[str],
+        keyword_category_id: int,
+        keyword_category_name: str,
         article_ids: list[int],
         model: str,
     ) -> int:
@@ -1221,13 +1454,15 @@ class IntelligenceRepository:
             cursor = connection.execute(
                 """
                 INSERT INTO daily_reports
-                    (report_date, categories, status, article_count, model,
+                    (report_date, categories, keyword_category_id,
+                     keyword_category_name, status, article_count, model,
                      prompt_version, created_at, updated_at)
-                VALUES (?, ?, 'running', ?, ?, ?, ?, ?)
+                VALUES (?, '[]', ?, ?, 'running', ?, ?, ?, ?, ?)
                 """,
                 (
                     report_date.isoformat(),
-                    json.dumps(categories, ensure_ascii=False),
+                    keyword_category_id,
+                    keyword_category_name,
                     len(article_ids),
                     model,
                     REPORT_PROMPT_VERSION,
@@ -1335,18 +1570,57 @@ class IntelligenceRepository:
         report = dict(row)
         for field in self.REPORT_JSON_FIELDS:
             report[field] = self._decode_json(report[field], [])
-        report["articles"] = [dict(article) for article in article_rows]
+        articles = [dict(article) for article in article_rows]
+        sources_by_id: dict[int, dict[str, Any]] = {}
+        for article in articles:
+            article["source_url"] = article.get("final_url") or article["url"]
+            source = {
+                "article_id": int(article["article_id"]),
+                "title": article["title"],
+                "publisher": article["publisher"],
+                "source_url": article["source_url"],
+            }
+            sources_by_id[int(article["article_id"])] = source
+        report["articles"] = articles
+        report["sources"] = list(sources_by_id.values())
+        for development in report["key_developments"]:
+            if not isinstance(development, dict):
+                continue
+            source = sources_by_id.get(int(development.get("article_id") or 0))
+            development["sources"] = [source] if source else []
+        for field in (
+            "key_risks",
+            "opportunities",
+            "recommended_actions",
+            "watchlist",
+        ):
+            for item in report[field]:
+                if not isinstance(item, dict):
+                    continue
+                item["sources"] = [
+                    sources_by_id[article_id]
+                    for article_id in dict.fromkeys(
+                        int(value)
+                        for value in item.get("article_ids", [])
+                        if str(value).isdigit()
+                    )
+                    if article_id in sources_by_id
+                ]
         return report
 
-    def has_successful_report(self, report_date: date) -> bool:
+    def has_successful_report(
+        self, report_date: date, keyword_category_id: int
+    ) -> bool:
         with self.database.connect() as connection:
             row = connection.execute(
                 """
                 SELECT 1 FROM daily_reports
-                WHERE report_date = ? AND categories = '[]' AND status = 'success'
+                WHERE report_date = ?
+                  AND keyword_category_id = ?
+                  AND status = 'success'
                 LIMIT 1
                 """,
-                (report_date.isoformat(),),
+                (report_date.isoformat(), keyword_category_id),
             ).fetchone()
         return row is not None
 
@@ -1530,6 +1804,9 @@ class ArticleAnalysisManager:
         try:
             settings = self.database.get_settings()
             business_profile = settings.get("ai_business_profile", "")
+            relevance_prompt = settings.get(
+                "ai_relevance_prompt", DEFAULT_RELEVANCE_PROMPT
+            )
             threshold = self._integer_setting(
                 settings.get("ai_relevance_threshold", "70"), 70, 0, 100
             )
@@ -1582,12 +1859,33 @@ class ArticleAnalysisManager:
                             article, content, max_content_chars
                         )
                         system_prompt, user_prompt = build_relevance_prompts(
-                            prompt_article, business_profile
+                            prompt_article,
+                            business_profile,
+                            relevance_prompt,
                         )
                         result = self.client.complete_json(
                             system_prompt, user_prompt, max_tokens=900
                         )
                         review = RelevanceAssessment.model_validate(result.data)
+                        candidate_keyword_categories = {
+                            str(value)
+                            for value in prompt_article[
+                                "matched_keyword_categories"
+                            ]
+                        }
+                        review = review.model_copy(
+                            update={
+                                "keyword_categories": [
+                                    value
+                                    for value in review.keyword_categories
+                                    if value in candidate_keyword_categories
+                                ]
+                            }
+                        )
+                        review = enforce_company_fact_boundary(
+                            full_text=prompt_article["full_text"],
+                            review=review,
+                        )
                         if review.is_relevant and review.relevance_score < threshold:
                             threshold_reason = (
                                 f"{review.relevance_reason.rstrip('。')}；"
@@ -1598,6 +1896,9 @@ class ArticleAnalysisManager:
                                 update={
                                     "is_relevant": False,
                                     "relevance_reason": threshold_reason[:1000],
+                                    "category": "other",
+                                    "secondary_categories": [],
+                                    "keyword_categories": [],
                                 }
                             )
                         self.repository.save_relevance(
@@ -1623,6 +1924,13 @@ class ArticleAnalysisManager:
                             "is_relevant": bool(review_row["is_relevant"]),
                             "relevance_score": review_row["relevance_score"],
                             "relevance_reason": review_row["relevance_reason"],
+                            "category": review_row["category"],
+                            "secondary_categories": review_row[
+                                "secondary_categories"
+                            ],
+                            "keyword_categories": review_row[
+                                "keyword_categories"
+                            ],
                             "evidence": review_row["evidence"],
                             "confidence": review_row["confidence"],
                         }
@@ -1655,6 +1963,10 @@ class ArticleAnalysisManager:
                         system_prompt, user_prompt, max_tokens=1800
                     )
                     analysis = BusinessAnalysis.model_validate(result.data)
+                    analysis = enforce_company_fact_boundary(
+                        full_text=prompt_article["full_text"],
+                        analysis=analysis,
+                    )
                     analysis = analysis.model_copy(
                         update={
                             "risk_level": risk_level_for_score(
@@ -1784,6 +2096,13 @@ class ArticleAnalysisManager:
             "content_hash": content["content_hash"],
             "content_chars": content["content_chars"],
             "content_truncated_for_model": len(full_text) > max_chars,
+            "matched_keyword_categories": sorted(
+                {
+                    str(keyword["category_name"])
+                    for keyword in article.get("keywords", [])
+                    if keyword.get("category_name")
+                }
+            ),
             "full_text": full_text[:max_chars],
         }
 
@@ -1814,51 +2133,69 @@ class DailyReportManager:
             return self._running_report_id
 
     def prepare(
-        self, report_date: date, categories: list[str]
-    ) -> tuple[int, list[dict[str, Any]]]:
+        self, report_date: date, keyword_category_id: int
+    ) -> tuple[int, str, list[dict[str, Any]]]:
         if not self.client.configured:
             raise ValueError("尚未配置 DEEPSEEK_API_KEY")
-        invalid_categories = [
-            category for category in categories if category not in CATEGORY_LABELS
-        ]
-        if invalid_categories:
-            raise ValueError(f"未知分类: {', '.join(invalid_categories)}")
+        keyword_category = self.database.get_keyword_category(
+            keyword_category_id
+        )
+        if keyword_category is None:
+            raise ValueError("未知或已停用的关键词分类")
+        keyword_category_name = str(keyword_category["name"])
         with self._state_lock:
             if self._running_report_id is not None:
                 raise IntelligenceAlreadyRunningError(
                     f"日报 #{self._running_report_id} 正在生成"
                 )
             articles = self.repository.relevant_articles_for_report(
-                report_date, categories
+                report_date, keyword_category_id
             )
             if not articles:
                 raise ValueError(
-                    "所选日期和分类下没有完成全文审核与业务分析的相关新闻"
+                    f"“{keyword_category_name}”分类在所选日期下"
+                    "没有完成全文审核与业务分析的相关新闻"
                 )
             report_id = self.repository.create_report(
                 report_date=report_date,
-                categories=categories,
+                keyword_category_id=keyword_category_id,
+                keyword_category_name=keyword_category_name,
                 article_ids=[int(article["article_id"]) for article in articles],
                 model=self.client.model,
             )
             self._running_report_id = report_id
-        return report_id, articles
+        return report_id, keyword_category_name, articles
 
     def execute(
         self,
         report_id: int,
         report_date: date,
-        categories: list[str],
+        keyword_category_name: str,
         articles: list[dict[str, Any]],
     ) -> None:
         try:
             settings = self.database.get_settings()
             report_articles = [self._report_article(article) for article in articles]
+            category_prompt_setting = REPORT_CATEGORY_SETTING_KEYS.get(
+                keyword_category_name
+            )
+            default_category_prompt = DEFAULT_REPORT_CATEGORY_PROMPTS.get(
+                keyword_category_name, ""
+            )
+            category_report_prompt = (
+                settings.get(category_prompt_setting, default_category_prompt)
+                if category_prompt_setting
+                else default_category_prompt
+            )
             system_prompt, user_prompt = build_report_prompts(
                 report_date=report_date.isoformat(),
-                category_labels=[CATEGORY_LABELS[category] for category in categories],
+                keyword_category_name=keyword_category_name,
                 articles=report_articles,
                 business_profile=settings.get("ai_business_profile", ""),
+                report_prompt=settings.get(
+                    "ai_report_prompt", DEFAULT_REPORT_PROMPT
+                ),
+                category_report_prompt=category_report_prompt,
             )
             result = self.client.complete_json(
                 system_prompt, user_prompt, max_tokens=3000
@@ -1870,11 +2207,23 @@ class DailyReportManager:
                 for development in assessment.key_developments
                 if development.article_id in valid_article_ids
             ]
+            cited_updates = {
+                field: self._valid_cited_items(
+                    getattr(assessment, field), valid_article_ids
+                )
+                for field in (
+                    "key_risks",
+                    "opportunities",
+                    "recommended_actions",
+                    "watchlist",
+                )
+            }
             article_floor = max(int(article["risk_score"]) for article in articles)
             risk_score = max(assessment.risk_score, article_floor)
             assessment = assessment.model_copy(
                 update={
                     "key_developments": developments,
+                    **cited_updates,
                     "risk_score": risk_score,
                     "risk_level": risk_level_for_score(risk_score),
                 }
@@ -1894,6 +2243,14 @@ class DailyReportManager:
             "title": article["title"],
             "publisher": article["publisher"],
             "published_at": article["published_at"],
+            "source_url": article.get("final_url") or article["url"],
+            "matched_keywords": [
+                name.strip()
+                for name in str(
+                    article.get("matched_keyword_names") or ""
+                ).split(",")
+                if name.strip()
+            ],
             "category": article["category"],
             "summary": article["summary"],
             "impact_direction": article["impact_direction"],
@@ -1906,6 +2263,22 @@ class DailyReportManager:
             "recommended_actions": article["recommended_actions"],
             "evidence": article["analysis_evidence"],
         }
+
+    @staticmethod
+    def _valid_cited_items(
+        items: list[CitedReportItem], valid_article_ids: set[int]
+    ) -> list[CitedReportItem]:
+        result: list[CitedReportItem] = []
+        for item in items:
+            article_ids = [
+                article_id
+                for article_id in item.article_ids
+                if article_id in valid_article_ids
+            ]
+            if not article_ids:
+                continue
+            result.append(item.model_copy(update={"article_ids": article_ids}))
+        return result
 
 
 class AutomaticIntelligenceWorkflow:
@@ -1950,10 +2323,18 @@ class AutomaticIntelligenceWorkflow:
             return
         timezone = ZoneInfo(settings.get("timezone", "Asia/Shanghai"))
         report_date = datetime.now(timezone).date()
-        if self.repository.has_successful_report(report_date):
-            return
-        try:
-            report_id, articles = self.report_manager.prepare(report_date, [])
-            self.report_manager.execute(report_id, report_date, [], articles)
-        except (IntelligenceAlreadyRunningError, ValueError):
-            return
+        for keyword_category in self.database.get_keyword_categories():
+            category_id = int(keyword_category["id"])
+            if self.repository.has_successful_report(report_date, category_id):
+                continue
+            try:
+                report_id, category_name, articles = self.report_manager.prepare(
+                    report_date, category_id
+                )
+                self.report_manager.execute(
+                    report_id, report_date, category_name, articles
+                )
+            except IntelligenceAlreadyRunningError:
+                return
+            except ValueError:
+                continue

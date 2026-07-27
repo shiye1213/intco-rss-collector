@@ -194,6 +194,7 @@ async function loadCatalogs() {
   state.keywordCategories = categoryData.items;
   state.keywordHitStats = hitStatsData;
   fillFilters();
+  fillReportKeywordCategoryOptions();
   renderSources();
   renderKeywords();
 }
@@ -265,14 +266,23 @@ async function loadRuns() {
 }
 
 function fillCategoryOptions() {
-  ["ai-category-filter", "report-category"].forEach((id) => {
-    const select = $(id);
-    const current = select.value;
-    select.innerHTML = `<option value="">全部分类</option>${Object.entries(state.categories)
-      .map(([code, label]) => `<option value="${escapeHtml(code)}">${escapeHtml(label)}</option>`)
-      .join("")}`;
+  const select = $("ai-category-filter");
+  const current = select.value;
+  select.innerHTML = `<option value="">全部分类</option>${Object.entries(state.categories)
+    .map(([code, label]) => `<option value="${escapeHtml(code)}">${escapeHtml(label)}</option>`)
+    .join("")}`;
+  select.value = current;
+}
+
+function fillReportKeywordCategoryOptions() {
+  const select = $("report-category");
+  const current = select.value;
+  select.innerHTML = `<option value="">请选择关键词分类</option>${state.keywordCategories
+    .map((category) => `<option value="${Number(category.id)}">${escapeHtml(category.name)}</option>`)
+    .join("")}`;
+  if (state.keywordCategories.some((category) => String(category.id) === current)) {
     select.value = current;
-  });
+  }
 }
 
 async function loadAIStatus() {
@@ -449,6 +459,7 @@ async function loadAIReviews() {
     $("ai-review-rows").innerHTML = data.items.map((item) => `<tr>
       <td><a class="article-title" href="${escapeHtml(item.final_url || item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><span class="cell-subtitle">${escapeHtml(item.publisher || "-")} · ${formatFullTime(item.published_at)}</span><span class="cell-meta">全文 ${formatChars(item.content_chars)}</span></td>
       <td>${relevanceMarkup(Boolean(item.is_relevant), item.relevance_score)}<span class="cell-meta">置信度 ${item.confidence}</span></td>
+      <td><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span>${item.secondary_categories?.length ? `<span class="cell-meta">${item.secondary_categories.map(categoryLabel).map(escapeHtml).join("、")}</span>` : ""}</td>
       <td><span class="analysis-detail expanded">${escapeHtml(item.relevance_reason || "-")}</span></td>
       <td><span class="analysis-detail expanded">${escapeHtml((item.evidence || []).join("；") || "-")}</span></td>
       <td>${formatFullTime(item.reviewed_at)}<span class="cell-subtitle">${escapeHtml(item.model)}</span></td>
@@ -548,11 +559,13 @@ async function loadReports() {
   try {
     const data = await api("/api/reports?limit=100");
     $("report-rows").innerHTML = data.items.map((report) => {
-      const categories = (report.categories || []).length
-        ? report.categories.map(categoryLabel).join("、") : "全部分类";
+      const keywordCategory = report.keyword_category_name
+        || ((report.categories || []).length
+          ? report.categories.map(categoryLabel).join("、")
+          : "历史综合日报");
       return `<tr>
         <td><strong>${escapeHtml(report.title || `日报 #${report.id}`)}</strong><span class="cell-subtitle">#${report.id} · ${escapeHtml(report.model)}</span></td>
-        <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(categories)}</td><td>${report.article_count}</td>
+        <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(keywordCategory)}</td><td>${report.article_count}</td>
         <td>${riskMarkup(report.risk_level, report.risk_score)}</td><td>${statusLabel(report.status)}</td>
         <td>${formatFullTime(report.updated_at)}</td>
         <td><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button></td>
@@ -565,41 +578,64 @@ async function loadReports() {
 
 async function generateReport(event) {
   event.preventDefault();
-  const category = $("report-category").value;
+  const keywordCategoryId = Number($("report-category").value);
+  if (!keywordCategoryId) {
+    showToast("请选择一个关键词分类", true);
+    return;
+  }
   try {
     const data = await api("/api/reports", {
       method: "POST",
       body: JSON.stringify({
         report_date: $("report-date").value,
-        categories: category ? [category] : [],
+        keyword_category_id: keywordCategoryId,
       }),
     });
     state.wasReportRunning = true;
-    showToast(`日报 #${data.report_id} 已开始生成，共 ${data.article_count} 篇新闻`);
+    showToast(`${data.keyword_category_name}日报 #${data.report_id} 已开始生成，共 ${data.article_count} 篇新闻`);
     await Promise.all([loadAIStatus(), loadReports()]);
   } catch (error) { showToast(error.message, true); }
 }
 
-function reportList(title, items) {
+function reportSources(articleIds, articleById, attachedSources = []) {
+  const sources = attachedSources.length
+    ? attachedSources
+    : [...new Set((articleIds || []).map(Number))]
+      .map((articleId) => articleById.get(articleId))
+      .filter(Boolean);
+  if (!sources.length) return "";
+  return `<div class="report-sources"><span>出处</span>${sources.map((article) => `<a href="${escapeHtml(article.source_url || article.final_url || article.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.publisher || "原文")} · ${escapeHtml(article.title)}</a>`).join("")}</div>`;
+}
+
+function reportList(title, items, articleById) {
   if (!items?.length) return "";
-  return `<section class="report-block"><h4>${escapeHtml(title)}</h4><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`;
+  return `<section class="report-block"><h4>${escapeHtml(title)}</h4><ul class="cited-report-list">${items.map((item) => {
+    const normalized = typeof item === "string"
+      ? { category: "other", content: item, article_ids: [] }
+      : item;
+    return `<li><div class="report-item-content"><span class="tag">${escapeHtml(categoryLabel(normalized.category || "other"))}</span><span>${escapeHtml(normalized.content || "")}</span></div>${reportSources(normalized.article_ids, articleById, normalized.sources)}</li>`;
+  }).join("")}</ul></section>`;
 }
 
 async function openReportDetail(id) {
   try {
     const report = await api(`/api/reports/${id}`);
     $("report-dialog-title").textContent = report.title || `情报日报 #${report.id}`;
-    const categoryScope = report.categories?.length
-      ? report.categories.map(categoryLabel).join("、") : "全部分类";
+    const categoryScope = report.keyword_category_name
+      || (report.categories?.length
+        ? report.categories.map(categoryLabel).join("、")
+        : "历史综合日报");
+    const articleById = new Map((report.articles || []).map((article) => [Number(article.article_id), article]));
+    const allSourceIds = (report.articles || []).map((article) => article.article_id);
     $("report-detail").innerHTML = `
       <div class="report-meta"><span>${escapeHtml(report.report_date)}</span><span>${escapeHtml(categoryScope)}</span><span>${report.article_count} 篇新闻</span>${riskMarkup(report.risk_level, report.risk_score)}</div>
-      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p></section>
-      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p></article>`).join("")}</div></section>` : ""}
-      ${reportList("关键风险", report.key_risks)}
-      ${reportList("业务机会", report.opportunities)}
-      ${reportList("建议动作", report.recommended_actions)}
-      ${reportList("后续监控", report.watchlist)}
-      ${report.articles?.length ? `<section class="report-block"><h4>关联新闻</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHtml(article.title)}</span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
+      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p>${reportSources(allSourceIds, articleById, report.sources)}</section>
+      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><div class="development-title"><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span><strong>${escapeHtml(item.title)}</strong></div><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p>${reportSources([item.article_id], articleById, item.sources)}</article>`).join("")}</div></section>` : ""}
+      ${reportList("关键风险", report.key_risks, articleById)}
+      ${reportList("业务机会", report.opportunities, articleById)}
+      ${reportList("建议动作", report.recommended_actions, articleById)}
+      ${reportList("后续监控", report.watchlist, articleById)}
+      ${report.articles?.length ? `<section class="report-block"><h4>全部来源文章</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer"><span><strong>${escapeHtml(article.title)}</strong><small>${escapeHtml(article.publisher || "-")} · ${formatFullTime(article.published_at)}</small></span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
     $("report-dialog").showModal();
   } catch (error) { showToast(error.message, true); }
 }
@@ -670,6 +706,7 @@ function renderKeywords() {
     keyword_count: 0,
     hit_count: 0,
     reviewed_count: 0,
+    business_relevant_count: 0,
     relevant_count: 0,
     pending_review_count: 0,
     hit_rate: null,
@@ -696,10 +733,11 @@ function renderKeywords() {
   const selectedStats = menuItems.find((item) => item.id === state.keywordCategoryId)?.stats || emptyStats;
   const summaryMetrics = [
     ["关键词组", selectedStats.keyword_count, "当前范围内未归档的关键词组"],
-    ["候选命中", selectedStats.hit_count, "关键词初筛命中的去重文章"],
+    ["候选命中", selectedStats.hit_count, "当前启用关键词初筛命中的去重文章"],
     ["已审核", selectedStats.reviewed_count, "已完成 AI 相关性判断"],
-    ["真正相关", selectedStats.relevant_count, "AI 审核确认与业务真正相关"],
-    ["命中率", formatPercent(selectedStats.hit_rate), "真正相关 ÷ 已审核"],
+    ["业务相关", selectedStats.business_relevant_count, "通过企业业务边界审核"],
+    ["分类相关", selectedStats.relevant_count, "业务相关且主/次分类匹配当前关键词分类"],
+    ["命中率", formatPercent(selectedStats.hit_rate), "分类相关 ÷ 已审核"],
     ["待审核", selectedStats.pending_review_count, "尚不能计入命中率"],
   ];
   $("keyword-hit-summary").innerHTML = summaryMetrics.map(([label, value, hint]) => `<div class="keyword-hit-metric"><span>${label}</span><strong>${value}</strong><small>${hint}</small></div>`).join("");
@@ -715,7 +753,7 @@ function renderKeywords() {
     <td><span class="tag">${escapeHtml(item.category_name || "未分类")}</span></td>
     <td class="url-cell" title="${escapeHtml(item.query)}">${escapeHtml(item.query)}</td>
     <td><div class="keyword-list">${item.match_terms.slice(0, 5).map((term) => `<span class="tag">${escapeHtml(term)}</span>`).join("")}${item.match_terms.length > 5 ? `<span class="tag">+${item.match_terms.length - 5}</span>` : ""}</div></td>
-    <td><span class="cell-subtitle">信号 ${item.context_terms.length} 个 · 排除 ${item.exclude_terms.length} 个</span><span class="cell-meta">回溯 ${item.lookback_days} 天</span></td>
+    <td><span class="cell-subtitle">信号 ${item.context_terms.length} 个 · 排除 ${item.exclude_terms.length} 个</span><span class="cell-meta">回溯 ${item.lookback_days} 天${item.require_local_match ? " · 本地主题校验" : ""}</span></td>
     <td><strong>${stats.hit_count}</strong><span class="cell-subtitle">待审核 ${stats.pending_review_count}</span></td>
     <td><strong>${stats.relevant_count}</strong><span class="cell-subtitle">已审核 ${stats.reviewed_count}</span></td>
     <td><strong>${formatPercent(stats.hit_rate)}</strong><span class="cell-subtitle">相关 / 已审核</span></td>
@@ -762,6 +800,7 @@ function openKeywordDialog(item = null) {
   $("keyword-exclude-terms").value = item?.exclude_terms.join("\n") || "";
   $("keyword-lookback-days").value = item?.lookback_days || 30;
   $("keyword-query").value = item?.query || "";
+  $("keyword-require-local-match").checked = Boolean(item?.require_local_match);
   $("keyword-active").checked = item?.active ?? true;
   updateKeywordQueryPreview();
   $("keyword-dialog").showModal();
@@ -823,6 +862,7 @@ async function saveKeyword(event) {
     name: $("keyword-name").value.trim(),
     category_id: $("keyword-category").value ? Number($("keyword-category").value) : null,
     ...keywordStrategyPayload(),
+    require_local_match: $("keyword-require-local-match").checked,
     active: $("keyword-active").checked,
   };
   try {
@@ -850,6 +890,7 @@ async function updateKeywordActive(id, active) {
     context_terms: item.context_terms,
     exclude_terms: item.exclude_terms,
     lookback_days: item.lookback_days,
+    require_local_match: Boolean(item.require_local_match),
     active,
   }) });
   await Promise.all([loadCatalogs(), loadStatus()]);
@@ -894,6 +935,11 @@ async function loadAISettings() {
   try {
     const data = await api("/api/ai/settings");
     $("ai-business-profile").value = data.business_profile;
+    $("ai-relevance-prompt").value = data.relevance_prompt;
+    $("ai-report-prompt").value = data.report_prompt;
+    $("ai-report-prompt-trade-policy").value = data.category_report_prompts["贸易政策"];
+    $("ai-report-prompt-tariff-adjustment").value = data.category_report_prompts["关税调整"];
+    $("ai-report-prompt-industry-regulation").value = data.category_report_prompts["行业法规"];
     $("ai-threshold").value = data.relevance_threshold;
     $("ai-batch-size").value = data.batch_size;
     $("ai-content-max-chars").value = data.content_max_chars;
@@ -907,6 +953,13 @@ async function saveAISettings(event) {
   event.preventDefault();
   const payload = {
     business_profile: $("ai-business-profile").value.trim(),
+    relevance_prompt: $("ai-relevance-prompt").value.trim(),
+    report_prompt: $("ai-report-prompt").value.trim(),
+    category_report_prompts: {
+      "贸易政策": $("ai-report-prompt-trade-policy").value.trim(),
+      "关税调整": $("ai-report-prompt-tariff-adjustment").value.trim(),
+      "行业法规": $("ai-report-prompt-industry-regulation").value.trim(),
+    },
     relevance_threshold: Number($("ai-threshold").value),
     batch_size: Number($("ai-batch-size").value),
     content_max_chars: Number($("ai-content-max-chars").value),
