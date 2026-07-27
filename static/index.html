@@ -251,9 +251,23 @@
             <div><h2>数据源</h2><p>RSS 优先，无 RSS 时使用网页爬虫</p></div>
             <button id="add-source" class="button primary" type="button"><i data-lucide="plus"></i><span>新增数据源</span></button>
           </div>
+          <section class="source-fallback-overview" aria-label="网页爬虫兜底策略">
+            <div class="source-fallback-copy">
+              <span class="source-fallback-status"><i data-lucide="shield-check"></i>网页爬虫兜底已启用</span>
+              <strong>RSS 不可用时，采集任务自动切换到同站网页爬虫</strong>
+              <small>只抓取同站文章，单次最多 30 篇；识别到发布日期后，继续执行关键词匹配、去重和分类。</small>
+            </div>
+            <ol class="source-fallback-flow" aria-label="兜底执行流程">
+              <li><span>1</span><strong>优先读取 RSS</strong><small>搜索型或直连型 Feed</small></li>
+              <li class="source-fallback-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></li>
+              <li><span>2</span><strong>检测 HTML</strong><small>无 Feed 或返回网页</small></li>
+              <li class="source-fallback-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></li>
+              <li class="source-fallback-active"><span>3</span><strong>自动网页爬虫</strong><small>抓取同站新闻详情</small></li>
+            </ol>
+          </section>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>类型</th><th>语言</th><th>国家/地区</th><th>站点限制</th><th>地址</th><th>启用</th><th></th></tr></thead>
+              <thead><tr><th>名称</th><th>类型</th><th>采集 / 兜底策略</th><th>语言</th><th>国家/地区</th><th>站点限制</th><th>地址</th><th>启用</th><th></th></tr></thead>
               <tbody id="source-rows"></tbody>
             </table>
           </div>

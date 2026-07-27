@@ -694,10 +694,18 @@ function sourceModeLabel(mode) {
   }[mode] || mode;
 }
 
+function sourceFallbackMarkup(mode) {
+  if (mode === "crawler") {
+    return `<span class="source-strategy source-strategy-direct"><strong>直接网页爬虫</strong><small>此源不依赖 RSS</small></span>`;
+  }
+  return `<span class="source-strategy"><strong>RSS 优先 · 自动兜底</strong><small>返回 HTML 时切换爬虫</small></span>`;
+}
+
 function renderSources() {
   $("source-rows").innerHTML = state.sources.map((item) => `<tr>
     <td><strong>${escapeHtml(item.name)}</strong></td>
     <td><span class="tag">${escapeHtml(sourceModeLabel(item.mode))}</span></td>
+    <td>${sourceFallbackMarkup(item.mode)}</td>
     <td>${escapeHtml(item.language || "-")}</td><td>${escapeHtml(item.country || "-")}</td><td>${escapeHtml(item.site_domain || "-")}</td><td class="url-cell" title="${escapeHtml(item.url_template)}">${escapeHtml(item.url_template)}</td>
     <td>${toggleMarkup("source", item)}</td>
     <td><div class="row-actions"><button class="icon-button source-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button source-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
