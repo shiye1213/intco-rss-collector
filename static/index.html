@@ -203,7 +203,7 @@
           </div>
           <div class="table-wrap">
             <table class="review-table">
-              <thead><tr><th>标题与全文</th><th>审核结果</th><th>判定原因</th><th>正文证据</th><th>审核时间</th></tr></thead>
+              <thead><tr><th>标题与全文</th><th>审核结果</th><th>分类</th><th>判定原因</th><th>正文证据</th><th>审核时间</th></tr></thead>
               <tbody id="ai-review-rows"></tbody>
             </table>
             <div id="ai-review-empty" class="empty-state hidden">当前筛选条件下没有相关性审核记录</div>
@@ -227,11 +227,11 @@
 
         <section id="view-reports" class="view">
           <div class="view-heading">
-            <div><h2>情报日报</h2><p>按新闻发布日期与业务分类汇总</p></div>
+            <div><h2>情报日报</h2><p>按新闻发布日期与关键词分类分别生成；条目标签表示业务影响分类</p></div>
           </div>
           <form id="report-form" class="report-toolbar">
             <label><span>日报日期</span><input id="report-date" type="date" required /></label>
-            <label><span>业务分类</span><select id="report-category"><option value="">全部分类</option></select></label>
+            <label><span>关键词分类</span><select id="report-category" required><option value="">请选择关键词分类</option></select></label>
             <button id="generate-report" class="button primary" type="submit"><i data-lucide="file-plus-2"></i><span>生成日报</span></button>
             <button id="refresh-reports" class="icon-button" type="button" title="刷新日报">
               <i data-lucide="rotate-cw"></i>
@@ -239,7 +239,7 @@
           </form>
           <div class="table-wrap">
             <table class="report-table">
-              <thead><tr><th>日报</th><th>日期</th><th>分类范围</th><th>新闻数</th><th>风险</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
+              <thead><tr><th>日报</th><th>日期</th><th>关键词分类</th><th>新闻数</th><th>风险</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
               <tbody id="report-rows"></tbody>
             </table>
             <div id="report-empty" class="empty-state hidden">暂无已生成的情报日报</div>
@@ -261,14 +261,14 @@
 
         <section id="view-keywords" class="view">
           <div class="view-heading">
-            <div><h2>关键词</h2><p>主题词 × 业务信号 − 歧义噪声；系统按 RSS 源语言自动拆分中英文词</p></div>
+            <div><h2>关键词</h2><p>核心组保障命中率，拓展召回组减少漏报；候选文章仍须通过业务相关性与专项分类审核</p></div>
             <button id="add-keyword" class="button primary" type="button"><i data-lucide="plus"></i><span>新增关键词组</span></button>
           </div>
           <nav id="keyword-category-menu" class="keyword-category-menu" aria-label="关键词二级分类"></nav>
           <div id="keyword-hit-summary" class="keyword-hit-summary" aria-label="关键词命中效果汇总"></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>分类</th><th>查询表达式</th><th>主题词</th><th>业务信号 / 排除</th><th>候选命中</th><th>真正相关</th><th>命中率</th><th>启用</th><th></th></tr></thead>
+              <thead><tr><th>名称</th><th>分类</th><th>查询表达式</th><th>主题词</th><th>业务信号 / 排除</th><th>候选命中</th><th>分类相关</th><th>命中率</th><th>启用</th><th></th></tr></thead>
               <tbody id="keyword-rows"></tbody>
             </table>
             <div id="keyword-empty" class="empty-state hidden">当前分类下没有关键词组</div>
@@ -301,6 +301,11 @@
             </div>
             <form id="ai-settings-form" class="ai-settings-form">
               <label class="full"><span>企业业务边界</span><textarea id="ai-business-profile" rows="9" minlength="50" maxlength="10000" required></textarea></label>
+              <label class="full prompt-setting"><span>相关性审核提示词</span><small>用于控制业务相关性判断与分类；JSON 格式、安全规则和分类代码由系统固定追加。</small><textarea id="ai-relevance-prompt" rows="11" minlength="20" maxlength="20000" required></textarea></label>
+              <label class="full prompt-setting"><span>通用日报生成提示词</span><small>适用于全部分类；来源文章 ID、原文链接校验和输出结构由系统固定追加。</small><textarea id="ai-report-prompt" rows="10" minlength="20" maxlength="20000" required></textarea></label>
+              <label class="full prompt-setting"><span>贸易政策日报专属提示词</span><small>聚焦非关税贸易措施、采购准入、原产地、本地化要求和实施阶段。</small><textarea id="ai-report-prompt-trade-policy" rows="9" minlength="20" maxlength="20000" required></textarea></label>
+              <label class="full prompt-setting"><span>关税调整日报专属提示词</span><small>聚焦税种、税率、品类或 HS 编码、原产地、实施日期、豁免与成本传导。</small><textarea id="ai-report-prompt-tariff-adjustment" rows="9" minlength="20" maxlength="20000" required></textarea></label>
+              <label class="full prompt-setting"><span>行业法规日报专属提示词</span><small>聚焦监管机构、注册认证、标准、召回或进口警示、过渡期与合规动作。</small><textarea id="ai-report-prompt-industry-regulation" rows="9" minlength="20" maxlength="20000" required></textarea></label>
               <label><span>相关性阈值</span><input id="ai-threshold" type="number" min="0" max="100" required /></label>
               <label><span>每批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /></label>
               <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /></label>
@@ -349,10 +354,11 @@
           <label><span>名称</span><input id="keyword-name" maxlength="100" required /></label>
           <label><span>所属分类</span><select id="keyword-category"><option value="">未分类</option></select></label>
           <label><span>查询表达式（自动生成）</span><textarea id="keyword-query" rows="4" maxlength="2000" readonly></textarea></label>
-          <label><span>主题词（文章标题或摘要必须命中）</span><textarea id="keyword-terms" rows="5" required placeholder="每行一个产品、企业或主题，例如 nitrile gloves"></textarea></label>
+          <label><span>主题词（构建查询，可选标题/摘要复核）</span><textarea id="keyword-terms" rows="5" required placeholder="每行一个产品、企业或主题，例如 nitrile gloves"></textarea></label>
           <label><span>业务信号词（Google News 至少命中一个）</span><textarea id="keyword-context-terms" rows="5" placeholder="每行一个，例如 tariff、regulation、price、demand、capacity"></textarea></label>
           <label><span>排除词</span><textarea id="keyword-exclude-terms" rows="4" placeholder="每行一个，例如 boxing、football、baseball"></textarea></label>
           <label><span>Google News 回溯天数</span><input id="keyword-lookback-days" type="number" min="1" max="365" value="30" required /></label>
+          <label class="switch-label"><span>标题/摘要必须命中主题词</span><input id="keyword-require-local-match" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
           <label class="switch-label"><span>启用</span><input id="keyword-active" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
         </div>
         <div class="modal-actions"><button class="button secondary close-dialog" type="button">取消</button><button class="button primary" type="submit">保存</button></div>

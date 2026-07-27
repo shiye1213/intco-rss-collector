@@ -36,8 +36,37 @@ def test_pending_cleanup_and_keyword_category_controls_are_wired() -> None:
     assert 'api("/api/ai/pending/clear"' in javascript
     assert 'api("/api/keyword-categories")' in javascript
     assert 'api("/api/keyword-hit-stats")' in javascript
-    assert "真正相关 ÷ 已审核" in javascript
+    assert "分类相关 ÷ 已审核" in javascript
+    assert "business_relevant_count" in javascript
     assert "category_id:" in javascript
+
+
+def test_prompt_settings_and_cited_report_content_are_wired() -> None:
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="ai-relevance-prompt"' in html
+    assert 'id="ai-report-prompt"' in html
+    assert 'id="ai-report-prompt-trade-policy"' in html
+    assert 'id="ai-report-prompt-tariff-adjustment"' in html
+    assert 'id="ai-report-prompt-industry-regulation"' in html
+    assert "相关性审核提示词" in html
+    assert 'relevance_prompt: $("ai-relevance-prompt").value.trim()' in javascript
+    assert 'report_prompt: $("ai-report-prompt").value.trim()' in javascript
+    assert "category_report_prompts:" in javascript
+    assert '"贸易政策": $("ai-report-prompt-trade-policy").value.trim()' in javascript
+    assert '"关税调整": $("ai-report-prompt-tariff-adjustment").value.trim()' in javascript
+    assert '"行业法规": $("ai-report-prompt-industry-regulation").value.trim()' in javascript
+    assert "function reportSources(" in javascript
+    assert "全部来源文章" in javascript
+    assert "item.secondary_categories" in javascript
+    assert "按新闻发布日期与关键词分类分别生成" in html
+    assert "请选择关键词分类" in html
+    assert "fillReportKeywordCategoryOptions()" in javascript
+    assert "keyword_category_id: keywordCategoryId" in javascript
+    assert "report.keyword_category_name" in javascript
+    assert "article.source_url" in javascript
+
 
 def test_incremental_collection_setting_is_wired() -> None:
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")

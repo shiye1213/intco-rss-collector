@@ -93,6 +93,7 @@
 ```json
 {
   "name": "一次性医疗手套",
+  "category_id": 2,
   "match_terms": [
     "丁腈手套",
     "nitrile gloves",
@@ -101,11 +102,14 @@
   "context_terms": ["关税", "需求", "tariff", "demand", "capacity"],
   "exclude_terms": ["boxing", "football", "baseball"],
   "lookback_days": 30,
+  "require_local_match": true,
   "active": true
 }
 ```
 
 后端统一生成查询表达式，不接受客户端自定义 `query`。表达式格式为 `(主题词 OR …) AND (业务信号 OR …) -"排除词" when:30d`。表达式超过 200 字符时返回 `422`，应拆分成多个聚焦策略。采集时再依据 RSS 源的 `language` 切片：`zh-*` 只使用含汉字的词，`en-*` 只使用英文词；混合词组会分别生成中文和英文请求，无对应语言主题词的组合不会执行。
+
+`require_local_match=true` 时，搜索型 RSS 返回项的标题或摘要还必须真实出现至少一个主题词，适合用在同义词更宽的拓展召回组以过滤搜索引擎误召回。修改主题词、业务信号词、排除词、回溯天数或该开关时，系统会清除该关键词的派生命中关系和采集游标，下一次采集按完整回溯窗口重新计算；历史文章和采集日志不会删除。
 
 ### `POST /api/keywords/preview`
 
@@ -174,7 +178,7 @@
 
 ### `GET /api/ai/reviews`
 
-返回成功完成的正文相关性审核记录。支持 `relevant`、`date_from`、`date_to`、`limit` 和 `offset`，用于审计真相关与审核无关的理由、证据、分数、模型及正文元数据。
+返回成功完成的正文相关性审核记录。支持 `relevant`、`date_from`、`date_to`、`limit` 和 `offset`，用于审计真相关与审核无关的理由、主分类 `category`、次分类 `secondary_categories`、证据、分数、模型及正文元数据。
 
 ### `GET /api/ai/runs?limit=50`
 
@@ -201,6 +205,13 @@
 ```json
 {
   "business_profile": "英科医疗业务边界……",
+  "relevance_prompt": "相关性审核的可编辑业务要求……",
+  "report_prompt": "全部分类共用的日报生成要求……",
+  "category_report_prompts": {
+    "贸易政策": "贸易政策日报专属要求……",
+    "关税调整": "关税调整日报专属要求……",
+    "行业法规": "行业法规日报专属要求……"
+  },
   "relevance_threshold": 70,
   "batch_size": 20,
   "content_max_chars": 30000,
@@ -209,7 +220,7 @@
 }
 ```
 
-自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 且当天存在已审核相关新闻时才会执行。
+企业业务边界、相关性提示词、通用日报提示词和三类专属日报提示词均可在系统设置中查看和修改。生成日报时只把通用要求和当前关键词分类对应的专属要求发送给模型，不注入其他分类的分析框架。系统仍会固定追加业务分类代码、单一关键词分类边界、JSON 输出结构、来源 ID/链接校验和防 Prompt 注入规则。自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 时才会执行，并为当天每个有合格文章的活跃关键词分类分别生成日报。
 
 ## 数据维护
 
@@ -233,16 +244,16 @@
 
 ### `POST /api/reports`
 
-按新闻发布日期和分类生成后台日报任务：
+按新闻发布日期和一个关键词分类生成后台日报任务：
 
 ```json
 {
   "report_date": "2026-07-20",
-  "categories": ["market_demand"]
+  "keyword_category_id": 1
 }
 ```
 
-`categories=[]` 表示全部分类。所选范围没有已通过相关性审核的新闻时返回 `422`。
+`keyword_category_id` 来自 `GET /api/keyword-categories`。一份日报只汇总命中该关键词分类、通过相关性审核且业务分析成功的文章；例如“贸易政策”和“关税调整”会生成两份独立日报。所选范围没有合格新闻时返回 `422`。
 
 ### `GET /api/reports?limit=50`
 
@@ -250,7 +261,7 @@
 
 ### `GET /api/reports/{report_id}`
 
-返回日报结构化内容和全部依据文章，包括摘要、风险等级、关键进展、风险、机会、建议动作和监控清单。
+返回日报结构化内容和全部依据文章。顶层包含 `keyword_category_id`、`keyword_category_name` 和经校验的 `sources`。关键进展包含 `category`、`article_id` 与 `sources`；风险、机会、建议动作和监控清单中的每一项包含 `category`、`content`、`article_ids` 与 `sources`。这里的 `category` 是 AI 业务影响标签，不决定日报收录范围。后端会剔除不属于本次日报输入的来源 ID，再附加文章标题、发布方和 `source_url`。
 
 ## 错误约定
 
