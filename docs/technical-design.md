@@ -129,28 +129,34 @@ flowchart LR
 5. 表达式格式为 `("主题1" OR "主题2") AND ("信号1" OR "信号2") -"噪声" when:30d`。组内是 `OR`，主题组与业务信号组之间使用显式 `AND`。
 6. 采集器根据来源的 `language` 切片主题词、业务信号词和排除词：`zh-*` 使用中文词，`en-*` 使用英文词；缺少对应语言主题词时跳过该组合，混合词组分别生成两种查询。
 7. Google News 对超长复合查询处理不稳定，查询模块将表达式限制为 200 字符；超过时要求拆成多个更聚焦的关键词组。
-8. 搜索型 RSS 源把来源专用表达式 URL 编码后替换到 `{query}`；直连型 RSS 源使用固定地址，但仅用同语言关键词匹配内容。开启本地主题校验的搜索策略也必须在标题或摘要中命中主题词。
+8. 搜索型 RSS 源把来源专用表达式 URL 编码后替换到 `{query}`；直连型 RSS 源使用固定 Feed 地址；网页爬虫源使用固定新闻列表页。直连与爬虫源仅用同语言关键词匹配内容，开启本地主题校验的搜索策略也必须在标题或摘要中命中主题词。
 9. 修改检索词、回溯窗口或本地主题校验开关时，清除该关键词的派生命中关系与组合游标，下一次按完整窗口重新计算。
 
 这样可以保证“页面显示、数据库保存、实际请求”使用同一套规则，避免客户端篡改或版本不一致。
 
-### 6.2 RSS 增量采集流
+### 6.2 RSS 与网页爬虫增量采集流
 
 ```mermaid
 sequenceDiagram
     participant Trigger as 用户或每日调度器
     participant Manager as CollectionManager
     participant Collector as Collector
-    participant Feed as RSS/Atom 源
+    participant Source as RSS/Atom 或网页数据源
     participant DB as SQLite
 
     Trigger->>Manager: prepare(trigger_type)
     Manager->>DB: 创建 collection_runs
     Manager->>Collector: 后台执行
     Collector->>DB: 读取启用源、关键词和组合游标
-    Collector->>Feed: 请求 Feed
-    Feed-->>Collector: XML
-    Collector->>Collector: 解析与标准化
+    Collector->>Source: 请求 Feed 或新闻列表页
+    alt XML Feed
+        Source-->>Collector: RSS/Atom XML
+        Collector->>Collector: Feed 解析与标准化
+    else 网页爬虫或 RSS 返回 HTML
+        Source-->>Collector: 列表页 HTML
+        Collector->>Source: 有界读取同站文章详情
+        Collector->>Collector: JSON-LD/元数据/时间元素抽取
+    end
     Collector->>Collector: 发布时间窗过滤
     Collector->>Collector: 标题/摘要关键词匹配
     Collector->>Collector: URL 与文章指纹去重
@@ -171,6 +177,7 @@ sequenceDiagram
 - 若上次成功游标早于静态回溯窗口，运行时 Google News 查询会自动扩大 `when:Nd`，避免失败恢复时搜索范围小于数据库时间窗。
 - 只有组合成功时才推进对应游标。
 - 任务启动时间在开始时固定，执行过程中出现的新文章留给下一次采集，避免时间边界漂移。
+- 网页爬虫单次最多提取 30 篇同站文章，不跨站、不递归扫描全站，也不执行 JavaScript；无法识别发布日期的页面不会进入文章库。
 
 ### 6.3 正文与 AI 处理流
 

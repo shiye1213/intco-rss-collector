@@ -38,3 +38,26 @@ def test_direct_source_rejects_site_domain() -> None:
 
     with pytest.raises(ValueError, match="只适用于搜索型"):
         source.validate_mode_template()
+
+
+def test_crawler_source_accepts_fixed_news_page() -> None:
+    source = SourcePayload(
+        name="Example news crawler",
+        url_template="https://example.com/news/",
+        mode="crawler",
+        language="en-US",
+    )
+
+    source.validate_mode_template()
+    assert source.mode == "crawler"
+
+
+def test_crawler_source_rejects_query_placeholder() -> None:
+    source = SourcePayload(
+        name="Invalid crawler",
+        url_template="https://example.com/news/?q={query}",
+        mode="crawler",
+    )
+
+    with pytest.raises(ValueError, match="固定的新闻列表页"):
+        source.validate_mode_template()

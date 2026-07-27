@@ -45,13 +45,13 @@
 | `limit` | integer | 返回数量，默认 50，最大 200 |
 | `offset` | integer | 分页偏移量 |
 
-每篇文章包含结构化的 `sources`、`keywords`、`languages`、`countries` 和 `categories` 字段。`sources` 中保存来源名称、Feed 地址、RSS 提供的文章链接、GUID、语言、国家、分类及首次/最后发现时间。
+每篇文章包含结构化的 `sources`、`keywords`、`languages`、`countries` 和 `categories` 字段。`sources` 中保存来源名称、Feed 或列表页地址、实际文章链接、GUID、语言、国家、分类及首次/最后发现时间。
 
-## RSS 源
+## 数据源
 
 ### `GET /api/sources`
 
-返回全部未归档 RSS 源。
+返回全部未归档数据源。`mode` 可以是 `search`、`direct` 或 `crawler`。
 
 ### `POST /api/sources`
 
@@ -66,15 +66,30 @@
 }
 ```
 
-`mode=search` 时 `url_template` 必须包含 `{query}`；`mode=direct` 时填写固定 Feed 地址。
+`mode=search` 时 `url_template` 必须包含 `{query}`；`mode=direct` 时填写固定 Feed 地址；`mode=crawler` 时填写固定新闻列表页地址，不能包含 `{query}`。直连或搜索源返回 HTML 而不是 XML 时，采集器也会自动使用网页爬虫兜底。
+
+无 RSS 站点示例：
+
+```json
+{
+  "name": "Example Policy News",
+  "url_template": "https://example.com/news/",
+  "mode": "crawler",
+  "language": "en-US",
+  "country": "US",
+  "active": true
+}
+```
+
+网页爬虫仅跟踪同站 HTTP/HTTPS 链接，按链接特征优先读取文章页，单个数据源每次最多提取 30 篇带发布日期的文章。发布日期依次从 JSON-LD、页面元数据、`time` 元素和日期型 URL 中识别。
 
 ### `PUT /api/sources/{source_id}`
 
-使用与新增相同的完整请求体更新 RSS 源。
+使用与新增相同的完整请求体更新数据源。
 
 ### `DELETE /api/sources/{source_id}`
 
-归档 RSS 源，不物理删除历史文章和日志。
+归档数据源，不物理删除历史文章和日志。
 
 ## 关键词组
 
