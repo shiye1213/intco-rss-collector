@@ -157,7 +157,17 @@ def build_feed_url(source: dict[str, object], keyword: dict[str, object]) -> str
         query = str(keyword["query"])
         site_domain = str(source.get("site_domain", "")).strip()
         if site_domain:
-            query = f"site:{site_domain} {query}"
+            site_queries = [
+                f"site:{domain.strip()}"
+                for domain in site_domain.split(" OR ")
+                if domain.strip()
+            ]
+            site_query = (
+                site_queries[0]
+                if len(site_queries) == 1
+                else f"({' OR '.join(site_queries)})"
+            )
+            query = f"{site_query} {query}"
         return template.replace("{query}", quote_plus(query))
     return template
 

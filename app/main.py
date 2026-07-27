@@ -61,37 +61,50 @@ def validate_http_url(value: str) -> str:
 
 
 def normalize_site_domain(value: str) -> str:
-    candidate = value.strip()
-    if not candidate:
+    raw_value = value.strip()
+    if not raw_value:
         return ""
-    if candidate.casefold().startswith("site:"):
-        candidate = candidate[5:].strip()
-    parsed = urlsplit(
-        candidate if "://" in candidate else f"https://{candidate}"
+
+    normalized: list[str] = []
+    candidates = re.split(
+        r"(?:\s+OR\s+|\s+或\s+|[\r\n,，;；]+)",
+        raw_value,
+        flags=re.IGNORECASE,
     )
-    try:
-        host = (parsed.hostname or "").encode("idna").decode("ascii").lower()
-        port = parsed.port
-    except (UnicodeError, ValueError) as exc:
-        raise ValueError("站点限制必须是有效域名，例如 reuters.com") from exc
-    labels = host.split(".")
-    valid_labels = all(
-        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
-        for label in labels
-    )
-    if (
-        len(labels) < 2
-        or len(host) > 253
-        or not valid_labels
-        or parsed.username is not None
-        or parsed.password is not None
-        or port is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("站点限制必须是有效域名，例如 reuters.com")
-    return host
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        if candidate.casefold().startswith("site:"):
+            candidate = candidate[5:].strip()
+        parsed = urlsplit(
+            candidate if "://" in candidate else f"https://{candidate}"
+        )
+        try:
+            host = (parsed.hostname or "").encode("idna").decode("ascii").lower()
+            port = parsed.port
+        except (UnicodeError, ValueError) as exc:
+            raise ValueError("站点限制必须是有效域名，例如 reuters.com") from exc
+        labels = host.split(".")
+        valid_labels = all(
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in labels
+        )
+        if (
+            len(labels) < 2
+            or len(host) > 253
+            or not valid_labels
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("站点限制必须是有效域名，例如 reuters.com")
+        if host not in normalized:
+            normalized.append(host)
+    return " OR ".join(normalized)
 
 
 class SourcePayload(BaseModel):
@@ -100,7 +113,7 @@ class SourcePayload(BaseModel):
     mode: Literal["search", "direct"]
     language: str = Field(default="", max_length=30)
     country: str = Field(default="", max_length=10)
-    site_domain: str = Field(default="", max_length=253)
+    site_domain: str = Field(default="", max_length=2000)
     active: bool = True
 
     @field_validator("name", "language")

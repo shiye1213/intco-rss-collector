@@ -55,6 +55,7 @@ def test_source_site_domain_setting_is_wired() -> None:
     javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
     assert 'id="source-site-domain"' in html
-    assert "站点限制（搜索型可选）" in html
+    assert "站点限制（搜索型可选，可填写多个）" in html
+    assert "reuters.com OR cls.cn" in html
     assert 'site_domain: $("source-site-domain").value.trim()' in javascript
     assert "syncSourceSiteField" in javascript
