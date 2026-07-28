@@ -231,11 +231,15 @@
   "batch_size": 20,
   "content_max_chars": 30000,
   "auto_analyze": false,
-  "auto_report": false
+  "auto_report": false,
+  "feishu_auto_push": false,
+  "feishu_configured": true
 }
 ```
 
 企业业务边界、相关性提示词、通用日报提示词和三类专属日报提示词均可在系统设置中查看和修改。生成日报时只把通用要求和当前关键词分类对应的专属要求发送给模型，不注入其他分类的分析框架。系统仍会固定追加业务分类代码、单一关键词分类边界、JSON 输出结构、来源 ID/链接校验和防 Prompt 注入规则。自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 时才会执行，并为当天每个有合格文章的活跃关键词分类分别生成日报。
+
+`feishu_auto_push=true` 时，每份分类日报生成成功后立即推送到飞书群；只有环境变量中的 Webhook 地址有效时才执行。API 仅返回 `feishu_configured`，不会返回 Webhook 地址或签名密钥。
 
 ## 数据维护
 
@@ -278,6 +282,22 @@
 
 返回日报结构化内容和全部依据文章。顶层包含 `keyword_category_id`、`keyword_category_name` 和经校验的 `sources`。关键进展包含 `category`、`article_id` 与 `sources`；风险、机会、建议动作和监控清单中的每一项包含 `category`、`content`、`article_ids` 与 `sources`。这里的 `category` 是 AI 业务影响标签，不决定日报收录范围。后端会剔除不属于本次日报输入的来源 ID，再附加文章标题、发布方和 `source_url`。
 
+日报列表和详情还包含 `feishu_status`、`feishu_pushed_at`、`feishu_error_message`。推送状态为 `not_pushed`、`sending`、`success` 或 `failed`。
+
+### `POST /api/reports/{report_id}/push-feishu`
+
+将一份生成成功的分类日报立即推送到飞书群。卡片包含分类、风险、管理层摘要、关键进展、风险、机会、动作、监控项和文章来源链接。成功返回：
+
+```json
+{
+  "report_id": 18,
+  "feishu_status": "success",
+  "feishu_pushed_at": "2026-07-28T08:30:00+00:00"
+}
+```
+
+日报不存在返回 `404`，日报尚未生成成功返回 `422`，未配置或错误配置 Webhook 返回 `503`，飞书拒绝消息或网络失败返回 `502`。推送失败只更新飞书状态，不会把已经成功的日报改成失败。
+
 ## 错误约定
 
 接口错误统一返回 FastAPI 的 `detail` 字段，例如：
@@ -288,4 +308,4 @@
 }
 ```
 
-常见状态码：`404` 资源不存在、`409` 配置冲突或任务正在运行、`422` 参数或业务范围校验失败、`503` DeepSeek Key 未配置、`500` 数据库错误。
+常见状态码：`404` 资源不存在、`409` 配置冲突或任务正在运行、`422` 参数或业务范围校验失败、`502` 外部 Webhook 发送失败、`503` AI Key 或飞书 Webhook 未配置、`500` 数据库错误。

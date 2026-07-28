@@ -4,7 +4,7 @@ import json
 import re
 import threading
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -321,6 +321,13 @@ class DailyReportAssessment(BaseModel):
 
 class IntelligenceAlreadyRunningError(RuntimeError):
     pass
+
+
+class ReportPublisher(Protocol):
+    @property
+    def configured(self) -> bool: ...
+
+    def push(self, report_id: int) -> dict[str, Any]: ...
 
 
 class _ProviderRateLimited(RuntimeError):
@@ -1530,6 +1537,29 @@ class IntelligenceRepository:
                 (utc_now_iso(), message[:2000], report_id),
             )
 
+    def update_report_feishu_status(
+        self, report_id: int, delivery_status: str, error_message: str = ""
+    ) -> None:
+        if delivery_status not in {"not_pushed", "sending", "success", "failed"}:
+            raise ValueError("未知飞书推送状态")
+        pushed_at = utc_now_iso() if delivery_status == "success" else None
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE daily_reports
+                SET feishu_status = ?, feishu_pushed_at = ?,
+                    feishu_error_message = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    delivery_status,
+                    pushed_at,
+                    error_message[:2000],
+                    utc_now_iso(),
+                    report_id,
+                ),
+            )
+
     def list_reports(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -2120,10 +2150,12 @@ class DailyReportManager:
         database: Database,
         repository: IntelligenceRepository,
         client: JSONLLMClient,
+        publisher: ReportPublisher | None = None,
     ) -> None:
         self.database = database
         self.repository = repository
         self.client = client
+        self.publisher = publisher
         self._state_lock = threading.Lock()
         self._running_report_id: int | None = None
 
@@ -2229,6 +2261,16 @@ class DailyReportManager:
                 }
             )
             self.repository.save_report(report_id, assessment, result)
+            if (
+                self.publisher is not None
+                and self.publisher.configured
+                and settings.get("feishu_auto_push", "false").lower() == "true"
+            ):
+                try:
+                    self.publisher.push(report_id)
+                except Exception:
+                    # 日报已经生成成功；群推送失败由 publisher 单独记录。
+                    pass
         except Exception as exc:
             self.repository.fail_report(report_id, f"{type(exc).__name__}: {exc}")
         finally:

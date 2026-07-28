@@ -20,6 +20,7 @@
 - 只有通过阈值的真相关文章才写入业务新闻表并进行第二次分析。
 - 第二次 DeepSeek 调用生成摘要、固定分类、影响方向、风险因素和建议动作。
 - 按新闻发布日期与关键词分类分别生成风险日报，例如“贸易政策日报”和“关税调整日报”；关键进展、风险、机会、建议和监控项均附发布方与原文链接。
+- 支持将每份分类日报以飞书卡片推送到群自定义机器人，卡片保留原文出处链接；可在生成成功后自动推送，也可在日报列表手动重推。
 - 保存 AI 批次日志、模型、Prompt 版本、Token 用量和原始响应，支持审计。
 - 手动分析一次点击即可处理当时全部待办，并按配置的批次大小连续执行；也可配置为采集后自动分析，并为当天各活跃关键词分类分别生成日报。
 - 全文读取失败按 OpenAI 网络、限流、未联网、网页不可用、正文不完整和响应格式分类；瞬时错误最多自动尝试 3 次并指数退避。
@@ -43,7 +44,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
-# 编辑 .env，填写 OPENAI_API_KEY 和 DEEPSEEK_API_KEY
+# 编辑 .env，填写 OPENAI_API_KEY 和 DEEPSEEK_API_KEY；
+# 如需群推送，再填写 FEISHU_WEBHOOK_URL 和可选的 FEISHU_WEBHOOK_SECRET
 .\start.ps1
 ```
 
@@ -62,6 +64,7 @@ python -m pytest -q
 - [系统架构](docs/architecture.md)
 - [API 说明](docs/api.md)
 - [AI Prompt 与风险规则](docs/ai-prompts.md)
+- [飞书群机器人 Webhook 接入](docs/feishu-webhook.md)
 - [开发与运行](docs/development.md)
 - [团队贡献规范](CONTRIBUTING.md)
 
@@ -69,7 +72,7 @@ FastAPI 启动后还可访问 `http://127.0.0.1:8000/docs` 查看自动生成的
 
 ## 数据与安全
 
-运行数据保存在 `data/rss_collector.db`，页面清理前的自动备份保存在 `data/backups/`。OpenAI 与 DeepSeek Key 只从 `.env` 或进程环境变量读取。数据库、备份、日志、虚拟环境和本地环境变量已经加入 `.gitignore`，不会提交到仓库。项目目前没有账号认证，部署到共享环境前必须增加身份认证和访问控制。
+运行数据保存在 `data/rss_collector.db`，页面清理前的自动备份保存在 `data/backups/`。OpenAI、DeepSeek Key、飞书 Webhook 地址和签名密钥只从 `.env` 或进程环境变量读取。页面与 API 只返回飞书是否已配置，不返回凭据。数据库、备份、日志、虚拟环境和本地环境变量已经加入 `.gitignore`，不会提交到仓库。项目目前没有账号认证，部署到共享环境前必须增加身份认证和访问控制。
 
 ## 当前限制
 
@@ -77,6 +80,6 @@ FastAPI 启动后还可访问 `http://127.0.0.1:8000/docs` 查看自动生成的
 - 通用网页爬虫面向服务端渲染的新闻页面，不执行 JavaScript；强登录、验证码或纯前端渲染站点需要后续增加站点专用适配器。
 - SQLite 适合当前 MVP 和小团队试用，数据量或并发增加后应迁移到 PostgreSQL。
 - OpenAI 内置网页搜索无法访问、只返回摘要或不能确认完整正文时，任务记录全文读取失败，不会用 RSS 摘要替代。
-- 当前没有历史日期范围补采和消息通知能力。
+- 当前没有历史日期范围补采能力；飞书群机器人只支持向其所在的固定群单向推送。
 - AI 调用产生外部 API 成本，自动分析和自动日报默认关闭。
 - OpenAI 内置网页搜索除模型 Token 外还按工具调用计费，可访问范围由 OpenAI 网页搜索服务决定。

@@ -22,6 +22,12 @@ from .collector import (
 )
 from .content import ArticleContentReader
 from .database import Database
+from .feishu import (
+    FeishuConfigurationError,
+    FeishuReportPublisher,
+    FeishuWebhookClient,
+    FeishuWebhookError,
+)
 from .intelligence import (
     ArticleAnalysisManager,
     AutomaticIntelligenceWorkflow,
@@ -233,6 +239,7 @@ class AISettingsPayload(BaseModel):
     content_max_chars: int = Field(default=30000, ge=2000, le=100000)
     auto_analyze: bool = False
     auto_report: bool = False
+    feishu_auto_push: bool = False
 
     @field_validator("business_profile")
     @classmethod
@@ -286,6 +293,7 @@ def create_app(
     database_path: Path | None = None,
     llm_client: JSONLLMClient | None = None,
     content_reader: ArticleContentReader | None = None,
+    feishu_client: FeishuWebhookClient | None = None,
 ) -> FastAPI:
     database = Database(database_path or DEFAULT_DATABASE_PATH)
     collector = Collector(database)
@@ -299,8 +307,15 @@ def create_app(
         intelligence_client,
         intelligence_content_reader,
     )
+    report_publisher = FeishuReportPublisher(
+        intelligence_repository,
+        feishu_client or FeishuWebhookClient.from_env(),
+    )
     report_manager = DailyReportManager(
-        database, intelligence_repository, intelligence_client
+        database,
+        intelligence_repository,
+        intelligence_client,
+        publisher=report_publisher,
     )
     cleanup_service = CleanupService(
         database,
@@ -336,6 +351,7 @@ def create_app(
     app.state.intelligence_repository = intelligence_repository
     app.state.analysis_manager = analysis_manager
     app.state.report_manager = report_manager
+    app.state.report_publisher = report_publisher
     app.state.cleanup_service = cleanup_service
 
     @app.middleware("http")
@@ -548,6 +564,10 @@ def create_app(
                 ),
                 "auto_analyze": settings.get("ai_auto_analyze", "false") == "true",
                 "auto_report": settings.get("ai_auto_report", "false") == "true",
+                "feishu_configured": report_publisher.configured,
+                "feishu_auto_push": (
+                    settings.get("feishu_auto_push", "false") == "true"
+                ),
             }
         )
         return result
@@ -749,6 +769,10 @@ def create_app(
             ),
             "auto_analyze": settings.get("ai_auto_analyze", "false") == "true",
             "auto_report": settings.get("ai_auto_report", "false") == "true",
+            "feishu_configured": report_publisher.configured,
+            "feishu_auto_push": (
+                settings.get("feishu_auto_push", "false") == "true"
+            ),
         }
 
     @app.put("/api/ai/settings")
@@ -769,7 +793,13 @@ def create_app(
         )
         database.set_setting("ai_auto_analyze", str(payload.auto_analyze).lower())
         database.set_setting("ai_auto_report", str(payload.auto_report).lower())
-        return payload.model_dump()
+        database.set_setting(
+            "feishu_auto_push", str(payload.feishu_auto_push).lower()
+        )
+        return {
+            **payload.model_dump(),
+            "feishu_configured": report_publisher.configured,
+        }
 
     @app.get("/api/maintenance/cleanup-preview")
     def preview_cleanup(
@@ -829,6 +859,35 @@ def create_app(
     @app.get("/api/reports")
     def list_daily_reports(limit: int = Query(default=50, ge=1, le=200)):
         return {"items": intelligence_repository.list_reports(limit)}
+
+    @app.post("/api/reports/{report_id}/push-feishu")
+    def push_daily_report_to_feishu(report_id: int):
+        report = intelligence_repository.get_report(report_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="日报不存在")
+        if report["status"] != "success":
+            raise HTTPException(
+                status_code=422, detail="只有生成成功的日报才能推送"
+            )
+        if not report_publisher.configured:
+            raise HTTPException(
+                status_code=503,
+                detail="尚未配置 FEISHU_WEBHOOK_URL",
+            )
+        try:
+            report_publisher.push(report_id)
+        except FeishuConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FeishuWebhookError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        pushed_report = intelligence_repository.get_report(report_id)
+        return {
+            "report_id": report_id,
+            "feishu_status": pushed_report["feishu_status"],
+            "feishu_pushed_at": pushed_report["feishu_pushed_at"],
+        }
 
     @app.get("/api/reports/{report_id}")
     def get_daily_report(report_id: int):

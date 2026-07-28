@@ -162,7 +162,8 @@ tbody tr:hover { background: #f9fbfb; }
 .status-partial { color: var(--warning); background: #fff3e5; }
 .status-failed, .status-interrupted { color: var(--danger); background: #fff0ee; }
 .status-running, .status-processing { color: #175cd3; background: #eaf2ff; }
-.status-pending, .status-skipped { color: #5c6872; background: #edf1f3; }
+.status-pending, .status-skipped, .status-not_pushed { color: #5c6872; background: #edf1f3; }
+.status-sending { color: #175cd3; background: #eaf2ff; }
 .status-waiting, .status-retry_ready { color: var(--warning); background: #fff3e5; }
 .status-final_failed { color: var(--danger); background: #fff0ee; }
 .status-ignored { color: #5c6872; background: #edf1f3; }
@@ -247,6 +248,8 @@ tbody tr:hover { background: #f9fbfb; }
 .switch-row .switch { width: 38px; height: 22px; left: auto; right: 0; top: 0; }
 .switch-row input:checked + .switch { background: var(--accent); }
 .switch-row input:checked + .switch::after { transform: translateX(16px); }
+.switch-row input:disabled + .switch { opacity: .45; cursor: not-allowed; }
+.switch-row small { display: block; margin-top: 4px; color: var(--muted); font-weight: 400; line-height: 1.4; }
 
 .report-modal { width: min(940px, calc(100vw - 28px)); }
 .report-detail { max-height: calc(100vh - 100px); padding: 20px 24px 28px; overflow-y: auto; }
@@ -341,7 +344,8 @@ tbody tr:hover { background: #f9fbfb; }
 .ai-run-detail-table th:nth-child(4) { width: 10%; }
 .ai-run-detail-table th:nth-child(5) { width: 14%; }
 .ai-run-detail-table th:nth-child(6) { width: 25%; }
-#view-reports .report-table th:nth-child(1) { width: 27%; }
+#view-reports .report-table { min-width: 1120px; }
+#view-reports .report-table th:nth-child(1) { width: 24%; }
 
 @media (max-width: 980px) {
   .app-shell { grid-template-columns: 1fr; }
