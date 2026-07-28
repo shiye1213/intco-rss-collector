@@ -68,6 +68,13 @@ def test_prompt_settings_and_cited_report_content_are_wired() -> None:
     assert "article.source_url" in javascript
 
 
+def test_reports_can_be_manually_sent_to_feishu() -> None:
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "report-feishu-button" in javascript
+    assert 'api(`/api/reports/${id}/feishu`, { method: "POST" })' in javascript
+
+
 def test_incremental_collection_setting_is_wired() -> None:
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")

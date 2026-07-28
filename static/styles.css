@@ -222,6 +222,7 @@ tbody tr:hover { background: #f9fbfb; }
   border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
 }
 .report-toolbar label { width: 210px; }
+.report-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .report-toolbar label > span, .ai-settings-form label > span {
   display: block; margin-bottom: 6px; color: #4a5762; font-size: 13px; font-weight: 600;
 }

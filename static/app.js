@@ -568,11 +568,18 @@ async function loadReports() {
         <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(keywordCategory)}</td><td>${report.article_count}</td>
         <td>${riskMarkup(report.risk_level, report.risk_score)}</td><td>${statusLabel(report.status)}</td>
         <td>${formatFullTime(report.updated_at)}</td>
-        <td><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button></td>
+        <td><div class="report-actions"><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button><button class="icon-button report-feishu-button" data-id="${report.id}" type="button" title="推送到飞书" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="send"></i></button></div></td>
       </tr>`;
     }).join("");
     $("report-empty").classList.toggle("hidden", data.items.length > 0);
     refreshIcons();
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function sendReportToFeishu(id) {
+  try {
+    const data = await api(`/api/reports/${id}/feishu`, { method: "POST" });
+    showToast(`日报 #${data.report_id} 已推送到飞书`);
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -1111,6 +1118,7 @@ function bindEvents() {
     if (target.classList.contains("run-detail")) openRunDetail(id);
     if (target.classList.contains("ai-run-detail")) openAIRunDetail(id);
     if (target.classList.contains("report-detail-button")) openReportDetail(id);
+    if (target.classList.contains("report-feishu-button")) sendReportToFeishu(id);
     if (target.classList.contains("source-edit")) openSourceDialog(state.sources.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-edit")) openKeywordDialog(state.keywords.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-category-button")) {

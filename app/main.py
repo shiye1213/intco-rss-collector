@@ -22,6 +22,7 @@ from .collector import (
 )
 from .content import ArticleContentReader
 from .database import Database
+from .feishu import FeishuWebhookError, FeishuWebhookNotConfigured
 from .intelligence import (
     ArticleAnalysisManager,
     AutomaticIntelligenceWorkflow,
@@ -836,6 +837,18 @@ def create_app(
         if report is None:
             raise HTTPException(status_code=404, detail="日报不存在")
         return report
+
+    @app.post("/api/reports/{report_id}/feishu")
+    async def send_daily_report_to_feishu(report_id: int):
+        try:
+            await asyncio.to_thread(report_manager.send_to_feishu, report_id)
+        except FeishuWebhookNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except FeishuWebhookError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"report_id": report_id, "status": "sent"}
 
     @app.exception_handler(sqlite3.Error)
     async def sqlite_error_handler(_: Request, exc: sqlite3.Error):

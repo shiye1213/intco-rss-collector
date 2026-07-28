@@ -42,8 +42,7 @@
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
-Copy-Item .env.example .env
-# 编辑 .env，填写 OPENAI_API_KEY 和 DEEPSEEK_API_KEY
+# 编辑项目根目录 .env，填写 OPENAI_API_KEY 和 DEEPSEEK_API_KEY
 .\start.ps1
 ```
 
@@ -69,7 +68,7 @@ FastAPI 启动后还可访问 `http://127.0.0.1:8000/docs` 查看自动生成的
 
 ## 数据与安全
 
-运行数据保存在 `data/rss_collector.db`，页面清理前的自动备份保存在 `data/backups/`。OpenAI 与 DeepSeek Key 只从 `.env` 或进程环境变量读取。数据库、备份、日志、虚拟环境和本地环境变量已经加入 `.gitignore`，不会提交到仓库。项目目前没有账号认证，部署到共享环境前必须增加身份认证和访问控制。
+运行数据保存在 `data/rss_collector.db`，页面清理前的自动备份保存在 `data/backups/`。OpenAI、DeepSeek 与飞书 Webhook 配置只从 `.env` 或进程环境变量读取。数据库、备份、日志、虚拟环境和本地环境变量已经加入 `.gitignore`，不会提交到仓库。项目目前没有账号认证，部署到共享环境前必须增加身份认证和访问控制。
 
 ## 当前限制
 

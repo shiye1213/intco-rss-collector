@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from datetime import UTC, date, datetime, time, timedelta
@@ -17,6 +18,7 @@ from .content import (
     ContentFetchError,
 )
 from .database import Database, utc_now_iso
+from .feishu import FeishuWebhookClient
 from .llm import JSONLLMClient, LLMResult
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
@@ -2120,10 +2122,12 @@ class DailyReportManager:
         database: Database,
         repository: IntelligenceRepository,
         client: JSONLLMClient,
+        feishu_client: FeishuWebhookClient | None = None,
     ) -> None:
         self.database = database
         self.repository = repository
         self.client = client
+        self.feishu_client = feishu_client or FeishuWebhookClient()
         self._state_lock = threading.Lock()
         self._running_report_id: int | None = None
 
@@ -2229,12 +2233,29 @@ class DailyReportManager:
                 }
             )
             self.repository.save_report(report_id, assessment, result)
+            self._send_report_to_feishu(report_id)
         except Exception as exc:
             self.repository.fail_report(report_id, f"{type(exc).__name__}: {exc}")
         finally:
             with self._state_lock:
                 if self._running_report_id == report_id:
                     self._running_report_id = None
+
+    def send_to_feishu(self, report_id: int) -> None:
+        report = self.repository.get_report(report_id)
+        if report is None:
+            raise ValueError("日报不存在")
+        if report["status"] != "success":
+            raise ValueError("只有生成成功的日报可以推送到飞书")
+        self.feishu_client.send_report(report)
+
+    def _send_report_to_feishu(self, report_id: int) -> None:
+        if not self.feishu_client.configured:
+            return
+        try:
+            self.send_to_feishu(report_id)
+        except Exception:
+            logging.getLogger(__name__).exception("日报 #%s 推送飞书失败", report_id)
 
     @staticmethod
     def _report_article(article: dict[str, Any]) -> dict[str, Any]:
