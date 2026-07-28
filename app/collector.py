@@ -22,6 +22,57 @@ from .query_builder import build_keyword_query, localize_keyword_for_source
 
 USER_AGENT = "INTCO-RSS-Collector/1.0 (+internal market intelligence)"
 TRACKING_PARAMETERS = {"gclid", "fbclid", "mc_cid", "mc_eid"}
+MAX_CRAWL_ARTICLES = 30
+_ARTICLE_JSON_LD_TYPES = {"article", "blogposting", "newsarticle", "report"}
+_ARTICLE_PATH_HINTS = {
+    "article",
+    "articles",
+    "bulletin",
+    "news",
+    "notice",
+    "policy",
+    "press",
+    "regulation",
+    "release",
+    "story",
+}
+_NON_ARTICLE_PATH_HINTS = {
+    "about",
+    "account",
+    "archive",
+    "author",
+    "category",
+    "contact",
+    "cookie",
+    "events",
+    "login",
+    "privacy",
+    "search",
+    "subscribe",
+    "tag",
+    "terms",
+}
+_NON_HTML_SUFFIXES = {
+    ".avi",
+    ".csv",
+    ".doc",
+    ".docx",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".json",
+    ".mp3",
+    ".mp4",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".svg",
+    ".xls",
+    ".xlsx",
+    ".xml",
+    ".zip",
+}
 
 
 class CollectionAlreadyRunningError(RuntimeError):
@@ -38,6 +89,104 @@ class _TextExtractor(HTMLParser):
 
     def value(self) -> str:
         return " ".join(" ".join(self.parts).split())
+
+
+class _CrawlHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.metadata: dict[str, str] = {}
+        self.anchors: list[tuple[str, str]] = []
+        self.json_ld_blocks: list[str] = []
+        self.title_parts: list[str] = []
+        self.heading_parts: list[str] = []
+        self.time_values: list[str] = []
+        self.base_url = ""
+        self._anchor_href: str | None = None
+        self._anchor_parts: list[str] = []
+        self._capture_title = False
+        self._capture_heading = False
+        self._capture_time = False
+        self._time_parts: list[str] = []
+        self._capture_json_ld = False
+        self._json_ld_parts: list[str] = []
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        tag = tag.casefold()
+        attributes = {
+            key.casefold(): (value or "").strip()
+            for key, value in attrs
+        }
+        if tag == "base" and not self.base_url:
+            self.base_url = attributes.get("href", "")
+        elif tag == "meta":
+            key = (
+                attributes.get("property")
+                or attributes.get("name")
+                or attributes.get("itemprop")
+                or ""
+            ).casefold()
+            content = attributes.get("content", "")
+            if key and content and key not in self.metadata:
+                self.metadata[key] = content
+        elif tag == "a" and self._anchor_href is None:
+            self._anchor_href = attributes.get("href", "")
+            self._anchor_parts = []
+        elif tag == "title":
+            self._capture_title = True
+        elif tag == "h1" and not self.heading_parts:
+            self._capture_heading = True
+        elif tag == "time":
+            value = attributes.get("datetime", "")
+            if value:
+                self.time_values.append(value)
+            self._capture_time = True
+            self._time_parts = []
+        elif (
+            tag == "script"
+            and attributes.get("type", "").casefold()
+            == "application/ld+json"
+        ):
+            self._capture_json_ld = True
+            self._json_ld_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag == "a" and self._anchor_href is not None:
+            text = " ".join(" ".join(self._anchor_parts).split())
+            if self._anchor_href and text:
+                self.anchors.append((self._anchor_href, text))
+            self._anchor_href = None
+            self._anchor_parts = []
+        elif tag == "title":
+            self._capture_title = False
+        elif tag == "h1":
+            self._capture_heading = False
+        elif tag == "time":
+            value = " ".join(" ".join(self._time_parts).split())
+            if value:
+                self.time_values.append(value)
+            self._capture_time = False
+            self._time_parts = []
+        elif tag == "script" and self._capture_json_ld:
+            value = "".join(self._json_ld_parts).strip()
+            if value:
+                self.json_ld_blocks.append(value)
+            self._capture_json_ld = False
+            self._json_ld_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._anchor_href is not None:
+            self._anchor_parts.append(data)
+        if self._capture_title:
+            self.title_parts.append(data)
+        if self._capture_heading:
+            self.heading_parts.append(data)
+        if self._capture_time:
+            self._time_parts.append(data)
+        if self._capture_json_ld:
+            self._json_ld_parts.append(data)
 
 
 @dataclass(frozen=True)
@@ -135,6 +284,350 @@ def parse_feed(xml_data: bytes) -> list[FeedItem]:
                     categories=tuple(categories),
                 )
             )
+    return items
+
+
+def decode_html_document(data: bytes) -> str:
+    prefix = data[:4096]
+    match = re.search(
+        br"""charset\s*=\s*["']?\s*([a-zA-Z0-9._-]+)""",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    encodings = ["utf-8-sig"]
+    if match:
+        encodings.insert(0, match.group(1).decode("ascii", errors="ignore"))
+    encodings.extend(("gb18030", "latin-1"))
+    for encoding in dict.fromkeys(encodings):
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def looks_like_html(data: bytes) -> bool:
+    prefix = data[:4096].lstrip().lower()
+    return any(
+        marker in prefix
+        for marker in (b"<!doctype html", b"<html", b"<article", b"<a ")
+    )
+
+
+def parse_crawl_document(data: bytes) -> _CrawlHTMLParser:
+    parser = _CrawlHTMLParser()
+    parser.feed(decode_html_document(data))
+    parser.close()
+    return parser
+
+
+def _iter_json_objects(value: object):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _iter_json_objects(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_json_objects(child)
+
+
+def _json_ld_types(value: object) -> set[str]:
+    if isinstance(value, str):
+        return {value.casefold()}
+    if isinstance(value, list):
+        return {
+            item.casefold()
+            for item in value
+            if isinstance(item, str)
+        }
+    return set()
+
+
+def _json_ld_publisher(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        name = value.get("name")
+        return str(name) if name else ""
+    return ""
+
+
+def _json_ld_url(value: dict[str, object], page_url: str) -> str:
+    candidate = value.get("url") or value.get("mainEntityOfPage") or ""
+    if isinstance(candidate, dict):
+        candidate = candidate.get("@id") or candidate.get("url") or ""
+    if not isinstance(candidate, str):
+        return page_url
+    return urljoin(page_url, candidate)
+
+
+def _json_ld_items(
+    parser: _CrawlHTMLParser,
+    page_url: str,
+    default_publisher: str,
+) -> list[FeedItem]:
+    items: list[FeedItem] = []
+    for block in parser.json_ld_blocks:
+        try:
+            payload = json.loads(block)
+        except (TypeError, ValueError):
+            continue
+        for value in _iter_json_objects(payload):
+            if not (_json_ld_types(value.get("@type")) & _ARTICLE_JSON_LD_TYPES):
+                continue
+            title = strip_html(
+                str(value.get("headline") or value.get("name") or "")
+            )
+            published_at = parse_datetime(
+                str(
+                    value.get("datePublished")
+                    or value.get("dateCreated")
+                    or value.get("dateModified")
+                    or ""
+                )
+            )
+            article_url = _json_ld_url(value, page_url)
+            if not title or published_at is None or not article_url:
+                continue
+            section = value.get("articleSection")
+            categories = normalize_categories(
+                section if isinstance(section, list) else [str(section or "")]
+            )
+            items.append(
+                FeedItem(
+                    title=title,
+                    url=article_url,
+                    publisher=normalize_publisher(
+                        _json_ld_publisher(value.get("publisher"))
+                        or default_publisher
+                    ),
+                    summary=strip_html(
+                        str(value.get("description") or value.get("abstract") or "")
+                    ),
+                    published_at=published_at,
+                    guid=article_url,
+                    categories=tuple(categories),
+                )
+            )
+    return items
+
+
+def _first_metadata(parser: _CrawlHTMLParser, *keys: str) -> str:
+    for key in keys:
+        value = parser.metadata.get(key.casefold(), "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _date_from_url(url: str) -> datetime | None:
+    path = urlsplit(url).path
+    match = re.search(
+        r"/(20\d{2})[/-](0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])(?:/|$)",
+        path,
+    )
+    if not match:
+        return None
+    try:
+        return datetime(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+            tzinfo=UTC,
+        )
+    except ValueError:
+        return None
+
+
+def extract_crawled_article(
+    data: bytes,
+    page_url: str,
+    default_publisher: str = "",
+) -> FeedItem | None:
+    parser = parse_crawl_document(data)
+    json_ld_items = _json_ld_items(parser, page_url, default_publisher)
+    canonical_page_url = canonicalize_url(page_url)
+    for item in json_ld_items:
+        if canonicalize_url(item.url) == canonical_page_url:
+            return item
+    if len(json_ld_items) == 1:
+        return json_ld_items[0]
+
+    title = strip_html(
+        _first_metadata(
+            parser,
+            "og:title",
+            "twitter:title",
+            "headline",
+        )
+        or " ".join(parser.heading_parts)
+        or " ".join(parser.title_parts)
+    )
+    published_at = None
+    date_values = [
+        _first_metadata(
+            parser,
+            "article:published_time",
+            "datepublished",
+            "date",
+            "dc.date",
+            "dcterms.date",
+            "pubdate",
+        ),
+        *parser.time_values,
+    ]
+    for value in date_values:
+        published_at = parse_datetime(value)
+        if published_at is not None:
+            break
+    published_at = published_at or _date_from_url(page_url)
+    if not title or published_at is None:
+        return None
+    publisher = normalize_publisher(
+        _first_metadata(parser, "og:site_name", "author")
+        or default_publisher
+    )
+    summary = strip_html(
+        _first_metadata(
+            parser,
+            "og:description",
+            "twitter:description",
+            "description",
+        )
+    )
+    categories = normalize_categories(
+        [_first_metadata(parser, "article:section", "section")]
+    )
+    return FeedItem(
+        title=title,
+        url=page_url,
+        publisher=publisher,
+        summary=summary,
+        published_at=published_at,
+        guid=page_url,
+        categories=tuple(categories),
+    )
+
+
+def _same_site(left: str, right: str) -> bool:
+    left_host = (urlsplit(left).hostname or "").casefold()
+    right_host = (urlsplit(right).hostname or "").casefold()
+    if left_host.startswith("www."):
+        left_host = left_host[4:]
+    if right_host.startswith("www."):
+        right_host = right_host[4:]
+    return bool(left_host and left_host == right_host)
+
+
+def _crawl_link_score(url: str, text: str) -> int | None:
+    parsed = urlsplit(url)
+    path = parsed.path.casefold()
+    suffix = next(
+        (item for item in _NON_HTML_SUFFIXES if path.endswith(item)),
+        "",
+    )
+    if suffix or path in {"", "/"}:
+        return None
+    segments = {
+        segment
+        for segment in re.split(r"[/_.-]+", path)
+        if segment
+    }
+    if segments & _NON_ARTICLE_PATH_HINTS:
+        return None
+    cleaned_text = " ".join(text.split())
+    if len(cleaned_text) < 6 or len(cleaned_text) > 300:
+        return None
+    score = 2
+    if segments & _ARTICLE_PATH_HINTS:
+        score += 3
+    if re.search(r"/20\d{2}[/-]\d{1,2}[/-]\d{1,2}(?:/|$)", path):
+        score += 4
+    if re.search(r"\d{4,}", path):
+        score += 1
+    if len([segment for segment in path.split("/") if segment]) >= 2:
+        score += 1
+    return score
+
+
+def crawl_web_page(
+    page_url: str,
+    page_data: bytes,
+    fetcher: Callable[[str, float], bytes],
+    timeout: float,
+    *,
+    publisher: str = "",
+    max_articles: int = MAX_CRAWL_ARTICLES,
+) -> list[FeedItem]:
+    parser = parse_crawl_document(page_data)
+    proposed_base_url = (
+        urljoin(page_url, parser.base_url)
+        if parser.base_url
+        else page_url
+    )
+    base_url = (
+        proposed_base_url
+        if _same_site(page_url, proposed_base_url)
+        else page_url
+    )
+    items: list[FeedItem] = []
+    seen_urls: set[str] = set()
+
+    def add_item(item: FeedItem) -> None:
+        parsed = urlsplit(item.url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not _same_site(page_url, item.url)
+        ):
+            return
+        canonical_url = canonicalize_url(item.url)
+        if canonical_url in seen_urls or len(items) >= max_articles:
+            return
+        seen_urls.add(canonical_url)
+        items.append(item)
+
+    for item in _json_ld_items(parser, base_url, publisher):
+        add_item(item)
+
+    current_item = extract_crawled_article(page_data, page_url, publisher)
+    if current_item is not None:
+        add_item(current_item)
+
+    ranked_links: list[tuple[int, int, str]] = []
+    candidate_urls: set[str] = set()
+    for position, (href, text) in enumerate(parser.anchors):
+        url = urljoin(base_url, html.unescape(href))
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not _same_site(base_url, url)
+            or canonicalize_url(url) == canonicalize_url(page_url)
+        ):
+            continue
+        canonical_url = canonicalize_url(url)
+        if canonical_url in candidate_urls or canonical_url in seen_urls:
+            continue
+        score = _crawl_link_score(url, text)
+        if score is None:
+            continue
+        candidate_urls.add(canonical_url)
+        ranked_links.append((-score, position, url))
+
+    failures: list[str] = []
+    for _score, _position, url in sorted(ranked_links)[: max_articles * 2]:
+        if len(items) >= max_articles:
+            break
+        try:
+            item = extract_crawled_article(fetcher(url, timeout), url, publisher)
+        except Exception as exc:
+            failures.append(f"{url}: {type(exc).__name__}")
+            continue
+        if item is not None:
+            add_item(item)
+
+    if not items:
+        detail = f"，其中 {len(failures)} 个详情页下载失败" if failures else ""
+        raise ValueError(f"网页爬虫未提取到带发布日期的文章{detail}")
     return items
 
 
@@ -237,6 +730,42 @@ class Collector:
         self.feed_fetcher = feed_fetcher
         self.timeout = timeout
 
+    def _load_source_items(
+        self,
+        source: dict[str, object],
+        url: str,
+    ) -> list[FeedItem]:
+        data = self.feed_fetcher(url, self.timeout)
+        if source["mode"] == "crawler":
+            return crawl_web_page(
+                url,
+                data,
+                self.feed_fetcher,
+                self.timeout,
+                publisher=str(source.get("name", "")),
+            )
+        try:
+            items = parse_feed(data)
+        except ElementTree.ParseError:
+            if not looks_like_html(data):
+                raise
+            return crawl_web_page(
+                url,
+                data,
+                self.feed_fetcher,
+                self.timeout,
+                publisher=str(source.get("name", "")),
+            )
+        if not items and looks_like_html(data):
+            return crawl_web_page(
+                url,
+                data,
+                self.feed_fetcher,
+                self.timeout,
+                publisher=str(source.get("name", "")),
+            )
+        return items
+
     def collect(self, run_id: int, run_started_at: datetime) -> None:
         sources = self.database.get_sources(active_only=True)
         keywords = self.database.get_keywords(active_only=True)
@@ -251,7 +780,7 @@ class Collector:
         end_iso = iso_utc(run_started_at)
 
         if not sources or not keywords:
-            self.database.fail_run(run_id, "没有启用的 RSS 源或关键词")
+            self.database.fail_run(run_id, "没有启用的数据源或关键词")
             return
 
         routed_sources: list[tuple[dict[str, object], list[dict[str, object]]]] = []
@@ -270,7 +799,7 @@ class Collector:
                 routed_sources.append((source, source_keywords))
 
         if not routed_sources:
-            self.database.fail_run(run_id, "没有语言匹配的 RSS 源与关键词组合")
+            self.database.fail_run(run_id, "没有语言匹配的数据源与关键词组合")
             return
 
         totals = {
@@ -288,10 +817,10 @@ class Collector:
 
         with self.database.connect() as connection:
             for source, source_keywords in routed_sources:
-                if source["mode"] == "direct":
+                if source["mode"] in {"direct", "crawler"}:
                     url = build_feed_url(source, source_keywords[0])
                     try:
-                        feed_items = parse_feed(self.feed_fetcher(url, self.timeout))
+                        feed_items = self._load_source_items(source, url)
                         totals["items_seen"] += len(feed_items)
                     except Exception as exc:
                         for keyword in source_keywords:
@@ -361,7 +890,7 @@ class Collector:
                         )
                         url = build_feed_url(source, runtime_keyword)
                         try:
-                            feed_items = parse_feed(self.feed_fetcher(url, self.timeout))
+                            feed_items = self._load_source_items(source, url)
                             totals["items_seen"] += len(feed_items)
                             self._process_pair(
                                 connection,
@@ -399,10 +928,10 @@ class Collector:
             message = "采集完成"
             if totals["tasks_failed"] and totals["tasks_succeeded"]:
                 status = "partial"
-                message = "部分 RSS 任务失败，失败任务的游标未推进"
+                message = "部分采集任务失败，失败任务的游标未推进"
             elif totals["tasks_failed"] and not totals["tasks_succeeded"]:
                 status = "failed"
-                message = "所有 RSS 任务均失败"
+                message = "所有采集任务均失败"
             connection.execute(
                 """
                 UPDATE collection_runs
@@ -786,5 +1315,5 @@ class CollectionManager:
                 try:
                     self.on_complete()
                 except Exception:
-                    # AI follow-up failure must not alter the completed RSS run.
+                    # AI follow-up failure must not alter the completed collection run.
                     pass

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS rss_sources (
     language TEXT NOT NULL DEFAULT '',
     country TEXT NOT NULL DEFAULT '',
     site_domain TEXT NOT NULL DEFAULT '',
+    crawler_enabled INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -1164,6 +1165,13 @@ class Database:
                     ADD COLUMN site_domain TEXT NOT NULL DEFAULT ''
                     """
                 )
+            if "crawler_enabled" not in source_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE rss_sources
+                    ADD COLUMN crawler_enabled INTEGER NOT NULL DEFAULT 0
+                    """
+                )
             keyword_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(keywords)").fetchall()
@@ -1731,7 +1739,11 @@ class Database:
             rows = connection.execute(
                 f"SELECT * FROM rss_sources {where} ORDER BY id"  # noqa: S608
             ).fetchall()
-        return self.rows(rows)
+        result = self.rows(rows)
+        for item in result:
+            if item.pop("crawler_enabled", 0):
+                item["mode"] = "crawler"
+        return result
 
     def get_keyword_categories(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -1928,22 +1940,25 @@ class Database:
 
     def create_source(self, data: dict[str, Any]) -> int:
         now = utc_now_iso()
+        crawler_enabled = data["mode"] == "crawler"
+        storage_mode = "direct" if crawler_enabled else data["mode"]
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO rss_sources
                     (name, url_template, mode, language, country, site_domain,
-                     active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     crawler_enabled, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["name"],
                     data["url_template"],
-                    data["mode"],
+                    storage_mode,
                     data.get("language", ""),
                     data.get("country")
                     or infer_country(data["url_template"], data.get("language", "")),
                     data.get("site_domain", ""),
+                    int(crawler_enabled),
                     int(data.get("active", True)),
                     now,
                     now,
@@ -1953,22 +1968,25 @@ class Database:
 
     def update_source(self, source_id: int, data: dict[str, Any]) -> bool:
         now = utc_now_iso()
+        crawler_enabled = data["mode"] == "crawler"
+        storage_mode = "direct" if crawler_enabled else data["mode"]
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE rss_sources
                 SET name = ?, url_template = ?, mode = ?, language = ?, country = ?,
-                    site_domain = ?, active = ?, updated_at = ?
+                    site_domain = ?, crawler_enabled = ?, active = ?, updated_at = ?
                 WHERE id = ? AND archived = 0
                 """,
                 (
                     data["name"],
                     data["url_template"],
-                    data["mode"],
+                    storage_mode,
                     data.get("language", ""),
                     data.get("country")
                     or infer_country(data["url_template"], data.get("language", "")),
                     data.get("site_domain", ""),
+                    int(crawler_enabled),
                     int(data.get("active", True)),
                     now,
                     source_id,

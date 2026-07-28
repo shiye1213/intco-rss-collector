@@ -44,7 +44,7 @@
           <i data-lucide="file-chart-column"></i><span>情报日报</span>
         </button>
         <button class="nav-item" data-view="sources" type="button">
-          <i data-lucide="rss"></i><span>RSS 源</span>
+          <i data-lucide="rss"></i><span>数据源</span>
         </button>
         <button class="nav-item" data-view="keywords" type="button">
           <i data-lucide="tags"></i><span>关键词</span>
@@ -61,7 +61,7 @@
             <strong id="metric-articles">0</strong>
           </div>
           <div class="status-item">
-            <span>启用 RSS 源</span>
+            <span>启用数据源</span>
             <strong id="metric-sources">0</strong>
           </div>
           <div class="status-item">
@@ -90,8 +90,8 @@
               <i data-lucide="search"></i>
               <input id="article-search" type="search" placeholder="搜索标题、摘要或发布方" />
             </label>
-            <select id="article-source-filter" aria-label="按 RSS 源筛选">
-              <option value="">全部 RSS 源</option>
+            <select id="article-source-filter" aria-label="按数据源筛选">
+              <option value="">全部数据源</option>
             </select>
             <select id="article-keyword-filter" aria-label="按关键词筛选">
               <option value="">全部关键词</option>
@@ -248,12 +248,26 @@
 
         <section id="view-sources" class="view">
           <div class="view-heading">
-            <div><h2>RSS 源</h2><p>搜索型与直连型 Feed</p></div>
-            <button id="add-source" class="button primary" type="button"><i data-lucide="plus"></i><span>新增 RSS 源</span></button>
+            <div><h2>数据源</h2><p>RSS 优先，无 RSS 时使用网页爬虫</p></div>
+            <button id="add-source" class="button primary" type="button"><i data-lucide="plus"></i><span>新增数据源</span></button>
           </div>
+          <section class="source-fallback-overview" aria-label="网页爬虫兜底策略">
+            <div class="source-fallback-copy">
+              <span class="source-fallback-status"><i data-lucide="shield-check"></i>网页爬虫兜底已启用</span>
+              <strong>RSS 不可用时，采集任务自动切换到同站网页爬虫</strong>
+              <small>只抓取同站文章，单次最多 30 篇；识别到发布日期后，继续执行关键词匹配、去重和分类。</small>
+            </div>
+            <ol class="source-fallback-flow" aria-label="兜底执行流程">
+              <li><span>1</span><strong>优先读取 RSS</strong><small>搜索型或直连型 Feed</small></li>
+              <li class="source-fallback-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></li>
+              <li><span>2</span><strong>检测 HTML</strong><small>无 Feed 或返回网页</small></li>
+              <li class="source-fallback-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></li>
+              <li class="source-fallback-active"><span>3</span><strong>自动网页爬虫</strong><small>抓取同站新闻详情</small></li>
+            </ol>
+          </section>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>类型</th><th>语言</th><th>国家/地区</th><th>站点限制</th><th>地址</th><th>启用</th><th></th></tr></thead>
+              <thead><tr><th>名称</th><th>类型</th><th>采集 / 兜底策略</th><th>语言</th><th>国家/地区</th><th>站点限制</th><th>地址</th><th>启用</th><th></th></tr></thead>
               <tbody id="source-rows"></tbody>
             </table>
           </div>
@@ -331,15 +345,15 @@
 
     <dialog id="source-dialog" class="modal">
       <form id="source-form" method="dialog">
-        <div class="modal-header"><h3 id="source-dialog-title">新增 RSS 源</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+        <div class="modal-header"><h3 id="source-dialog-title">新增数据源</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
         <input id="source-id" type="hidden" />
         <div class="form-grid">
           <label><span>名称</span><input id="source-name" maxlength="100" required /></label>
-          <label><span>类型</span><select id="source-mode"><option value="search">搜索型</option><option value="direct">直连型</option></select></label>
+          <label><span>类型</span><select id="source-mode"><option value="search">搜索型 RSS</option><option value="direct">直连 RSS</option><option value="crawler">网页爬虫（无 RSS）</option></select></label>
           <label><span>语言</span><input id="source-language" maxlength="30" placeholder="zh-CN" /></label>
           <label><span>国家/地区</span><input id="source-country" maxlength="10" placeholder="CN" /></label>
           <label class="full"><span>站点限制（搜索型可选，可填写多个）</span><textarea id="source-site-domain" rows="3" maxlength="2000" placeholder="每行一个，或使用 OR 分隔，例如 reuters.com OR cls.cn"></textarea></label>
-          <label class="full"><span>Feed 地址</span><textarea id="source-url" rows="3" maxlength="2000" required placeholder="https://news.google.com/rss/search?q={query}&amp;hl=...；{query} 会由系统替换"></textarea></label>
+          <label class="full"><span id="source-url-label">Feed 地址</span><textarea id="source-url" rows="3" maxlength="2000" required placeholder="https://news.google.com/rss/search?q={query}&amp;hl=...；{query} 会由系统替换"></textarea><small id="source-url-hint">RSS 返回 HTML 时会自动切换为网页爬虫。</small></label>
           <label class="switch-label"><span>启用</span><input id="source-active" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
         </div>
         <div class="modal-actions"><button class="button secondary close-dialog" type="button">取消</button><button class="button primary" type="submit">保存</button></div>
@@ -369,7 +383,7 @@
       <div class="modal-header"><h3 id="run-dialog-title">采集日志</h3><button class="icon-button close-dialog" type="button" title="关闭"><i data-lucide="x"></i></button></div>
       <div id="run-summary" class="run-summary"></div>
       <div class="table-wrap modal-table">
-        <table><thead><tr><th>RSS 源</th><th>关键词</th><th>状态</th><th>读取</th><th>时间窗外</th><th>命中</th><th>新增</th><th>错误</th></tr></thead><tbody id="run-detail-rows"></tbody></table>
+        <table><thead><tr><th>数据源</th><th>关键词</th><th>状态</th><th>读取</th><th>时间窗外</th><th>命中</th><th>新增</th><th>错误</th></tr></thead><tbody id="run-detail-rows"></tbody></table>
       </div>
     </dialog>
 

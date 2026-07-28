@@ -11,6 +11,7 @@ from app.collector import (
     Collector,
     build_feed_url,
     canonicalize_url,
+    extract_crawled_article,
     parse_feed,
 )
 from app.database import DEFAULT_KEYWORDS, DEFAULT_SOURCES, Database
@@ -69,6 +70,61 @@ EMPTY_RSS_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Empty</title></channel></rss>
 """
 
+CRAWL_INDEX_HTML = b"""<!doctype html>
+<html><head>
+  <title>Industry news</title>
+  <base href="https://untrusted.example/" />
+</head><body>
+  <nav><a href="/about">About this website</a></nav>
+  <main>
+    <a href="/news/2026/07/20/nitrile-gloves-tariff">
+      Nitrile gloves tariff update in the United States
+    </a>
+    <a href="/news/2026/07/19/football-gloves">
+      Football gloves return for the new season
+    </a>
+    <a href="https://external.example/news/2026/07/20/other">
+      External article that must not be crawled
+    </a>
+  </main>
+</body></html>
+"""
+
+CRAWL_ARTICLE_HTML = b"""<!doctype html>
+<html><head>
+  <meta property="og:title" content="Nitrile gloves tariff update" />
+  <meta property="og:description"
+        content="Nitrile gloves imports face a revised tariff." />
+  <meta property="og:site_name" content="Example Policy News" />
+  <meta property="article:published_time" content="2026-07-20T02:00:00Z" />
+</head><body><article><h1>Nitrile gloves tariff update</h1></article></body></html>
+"""
+
+CRAWL_IRRELEVANT_HTML = b"""<!doctype html>
+<html><head>
+  <meta property="og:title" content="Football gloves return" />
+  <meta name="description" content="The new sports season begins." />
+  <meta property="article:published_time" content="2026-07-19T03:00:00Z" />
+</head><body><article><h1>Football gloves return</h1></article></body></html>
+"""
+
+CRAWL_JSON_LD_HTML = b"""<!doctype html>
+<html><head>
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "NewsArticle",
+      "headline": "Medical gloves procurement rule",
+      "description": "A public procurement rule was updated.",
+      "datePublished": "2026-07-21T06:30:00Z",
+      "url": "https://example.com/news/procurement-rule",
+      "publisher": {"@type": "Organization", "name": "Example Authority"},
+      "articleSection": "Procurement"
+    }
+  </script>
+</head><body><h1>Medical gloves procurement rule</h1></body></html>
+"""
+
 
 def configured_database(tmp_path) -> Database:
     database = Database(tmp_path / "test.db")
@@ -112,6 +168,95 @@ def test_parse_rss_and_atom() -> None:
     assert atom_items[0].guid == "atom-item-1"
     assert atom_items[0].categories == ("Regulation",)
     assert atom_items[0].published_at == datetime(2026, 7, 20, 3, tzinfo=UTC)
+
+
+def test_extract_crawled_article_reads_metadata() -> None:
+    item = extract_crawled_article(
+        CRAWL_ARTICLE_HTML,
+        "https://example.com/news/2026/07/20/nitrile-gloves-tariff",
+    )
+
+    assert item is not None
+    assert item.title == "Nitrile gloves tariff update"
+    assert item.publisher == "Example Policy News"
+    assert item.summary == "Nitrile gloves imports face a revised tariff."
+    assert item.published_at == datetime(2026, 7, 20, 2, tzinfo=UTC)
+
+
+def test_extract_crawled_article_reads_json_ld() -> None:
+    item = extract_crawled_article(
+        CRAWL_JSON_LD_HTML,
+        "https://example.com/news/procurement-rule",
+    )
+
+    assert item is not None
+    assert item.title == "Medical gloves procurement rule"
+    assert item.publisher == "Example Authority"
+    assert item.published_at == datetime(2026, 7, 21, 6, 30, tzinfo=UTC)
+    assert item.categories == ("Procurement",)
+
+
+@pytest.mark.parametrize("mode", ["crawler", "direct"])
+def test_web_crawler_mode_and_html_fallback_collect_articles(
+    tmp_path,
+    mode: str,
+) -> None:
+    database = Database(tmp_path / f"{mode}-source.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": f"{mode} source",
+            "url_template": "https://example.com/news/",
+            "mode": mode,
+            "language": "en-US",
+            "country": "US",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Nitrile gloves",
+            "match_terms": ["nitrile gloves"],
+            "lookback_days": 30,
+            "active": True,
+        }
+    )
+    pages = {
+        "https://example.com/news/": CRAWL_INDEX_HTML,
+        (
+            "https://example.com/news/2026/07/20/nitrile-gloves-tariff"
+        ): CRAWL_ARTICLE_HTML,
+        "https://example.com/news/2026/07/19/football-gloves": (
+            CRAWL_IRRELEVANT_HTML
+        ),
+    }
+
+    collector = Collector(
+        database,
+        feed_fetcher=lambda url, _timeout: pages[url],
+    )
+    started = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual",
+        started.isoformat(),
+        "2026-06-22T00:00:00Z",
+    )
+
+    collector.collect(run_id, started)
+
+    result = database.get_run(run_id)
+    assert result is not None
+    assert result["status"] == "success"
+    assert result["items_seen"] == 2
+    assert result["items_matched"] == 1
+    assert result["items_inserted"] == 1
+    assert database.get_sources(active_only=True)[0]["mode"] == mode
+    article = database.list_articles()["items"][0]
+    assert article["url"].endswith("/nitrile-gloves-tariff")
+    assert article["publisher"] == "Example Policy News"
 
 
 def test_build_search_url_and_canonicalize_tracking_parameters() -> None:
@@ -1206,7 +1351,11 @@ def test_initialize_migrates_existing_article_metadata(tmp_path) -> None:
 
     with database.connect() as connection:
         source = connection.execute(
-            "SELECT country, site_domain FROM rss_sources WHERE id = 1"
+            """
+            SELECT country, site_domain, crawler_enabled
+            FROM rss_sources
+            WHERE id = 1
+            """
         ).fetchone()
         article = connection.execute(
             "SELECT publisher_normalized FROM articles WHERE id = 1"
@@ -1214,6 +1363,10 @@ def test_initialize_migrates_existing_article_metadata(tmp_path) -> None:
         provenance = connection.execute(
             "SELECT language, country FROM article_sources WHERE article_id = 1"
         ).fetchone()
-    assert dict(source) == {"country": "US", "site_domain": ""}
+    assert dict(source) == {
+        "country": "US",
+        "site_domain": "",
+        "crawler_enabled": 0,
+    }
     assert article["publisher_normalized"] == "Example News"
     assert dict(provenance) == {"language": "en-US", "country": "US"}

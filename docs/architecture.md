@@ -9,10 +9,13 @@ flowchart LR
     API --> DB["MySQL 8.4"]
     API --> CM["采集任务管理器"]
     SCH["每日调度器"] --> CM
-    CM --> COL["RSS 采集器"]
+    CM --> COL["RSS / 网页采集器"]
     COL -->|"HTTP/HTTPS"| RSS["Google News 与其他 RSS 源"]
+    COL -->|"无 RSS 或返回 HTML"| WEB["同站新闻列表与文章页"]
     COL --> PARSE["RSS/Atom XML 解析与过滤"]
+    WEB --> CRAWL["HTML 元数据与 JSON-LD 抽取"]
     PARSE --> DB
+    CRAWL --> DB
     CM -->|"采集完成回调"| AIM["全文与 AI 处理管理器"]
     UI -->|"人工处理/日报"| AIM
     AIM --> READER["大模型 URL 正文读取器"]
@@ -34,7 +37,7 @@ flowchart LR
 | 模块 | 文件 | 职责 |
 |---|---|---|
 | Web/API | `app/main.py` | FastAPI 生命周期、接口、参数校验、静态文件服务 |
-| 采集器 | `app/collector.py` | 来源与关键词语言路由、Feed 下载、解析、匹配、时间过滤、去重和入库 |
+| 采集器 | `app/collector.py` | 来源与关键词语言路由、Feed 下载、HTML 爬虫兜底、匹配、时间过滤、去重和入库 |
 | 正文读取接口 | `app/content.py` | 文章引用、正文文档、失败分类和外部 URL 安全校验 |
 | 数据访问 | `app/database.py` | MySQL 表结构、SQL 兼容层和数据访问方法 |
 | 调度器 | `app/scheduler.py` | 北京时间每日执行和下次执行时间计算 |
@@ -61,9 +64,16 @@ sequenceDiagram
     API->>Manager: 创建运行记录并获取任务锁
     Manager->>Collector: 后台执行
     Collector->>DB: 读取启用源、关键词及游标
-    Collector->>Feed: 请求 RSS/Atom
-    Feed-->>Collector: XML Feed
-    Collector->>Collector: 解析、时间过滤、关键词匹配、去重
+    Collector->>Source: 请求 RSS/Atom 或新闻列表页
+    alt 返回 XML Feed
+        Source-->>Collector: RSS/Atom
+        Collector->>Collector: 解析 Feed
+    else 网页爬虫或返回 HTML
+        Source-->>Collector: 新闻列表页 HTML
+        Collector->>Source: 有界读取同站文章详情
+        Collector->>Collector: 抽取元数据与发布日期
+    end
+    Collector->>Collector: 时间过滤、关键词匹配、去重
     Collector->>DB: 保存文章、明细并推进成功游标
     Collector->>DB: 完成采集运行日志
 ```
@@ -109,7 +119,7 @@ sequenceDiagram
 
 | 表 | 用途 |
 |---|---|
-| `rss_sources` | RSS 源配置、类型、语言和启用状态 |
+| `rss_sources` | RSS/网页数据源配置、类型、语言、爬虫标记和启用状态 |
 | `keyword_categories` | 关键词分类、排序与启用状态；分类日报按其筛选文章 |
 | `keywords` | 所属关键词分类、关键词组、查询表达式、主题词、业务信号词、排除词、回溯天数和本地主题校验开关 |
 | `articles` | 新闻标题、链接、发布方、摘要和发布时间 |
@@ -132,7 +142,7 @@ sequenceDiagram
 
 ### 增量与失败恢复
 
-游标只在对应任务成功后推进。某个 RSS 源请求或解析失败不会影响其他组合，也不会造成该组合采集范围丢失。
+游标只在对应任务成功后推进。某个数据源请求、Feed 解析或网页抽取失败不会影响其他组合，也不会造成该组合采集范围丢失。
 
 ### 去重
 

@@ -202,7 +202,7 @@ async function loadCatalogs() {
 function fillFilters() {
   const sourceValue = $("article-source-filter").value;
   const keywordValue = $("article-keyword-filter").value;
-  $("article-source-filter").innerHTML = `<option value="">全部 RSS 源</option>${state.sources.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
+  $("article-source-filter").innerHTML = `<option value="">全部数据源</option>${state.sources.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
   $("article-keyword-filter").innerHTML = `<option value="">全部关键词</option>${state.keywords.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
   $("article-source-filter").value = sourceValue;
   $("article-keyword-filter").value = keywordValue;
@@ -686,10 +686,26 @@ function toggleMarkup(type, item) {
   return `<label class="toggle" title="${item.active ? "停用" : "启用"}"><input class="${type}-toggle" data-id="${item.id}" type="checkbox" ${item.active ? "checked" : ""} /><span class="toggle-track"></span></label>`;
 }
 
+function sourceModeLabel(mode) {
+  return {
+    search: "搜索型 RSS",
+    direct: "直连 RSS",
+    crawler: "网页爬虫",
+  }[mode] || mode;
+}
+
+function sourceFallbackMarkup(mode) {
+  if (mode === "crawler") {
+    return `<span class="source-strategy source-strategy-direct"><strong>直接网页爬虫</strong><small>此源不依赖 RSS</small></span>`;
+  }
+  return `<span class="source-strategy"><strong>RSS 优先 · 自动兜底</strong><small>返回 HTML 时切换爬虫</small></span>`;
+}
+
 function renderSources() {
   $("source-rows").innerHTML = state.sources.map((item) => `<tr>
     <td><strong>${escapeHtml(item.name)}</strong></td>
-    <td><span class="tag">${item.mode === "search" ? "搜索型" : "直连型"}</span></td>
+    <td><span class="tag">${escapeHtml(sourceModeLabel(item.mode))}</span></td>
+    <td>${sourceFallbackMarkup(item.mode)}</td>
     <td>${escapeHtml(item.language || "-")}</td><td>${escapeHtml(item.country || "-")}</td><td class="url-cell" title="${escapeHtml(item.site_domain || "")}">${escapeHtml(item.site_domain || "-")}</td><td class="url-cell" title="${escapeHtml(item.url_template)}">${escapeHtml(item.url_template)}</td>
     <td>${toggleMarkup("source", item)}</td>
     <td><div class="row-actions"><button class="icon-button source-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button source-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
@@ -767,13 +783,23 @@ function renderKeywords() {
 
 function syncSourceSiteField() {
   const siteInput = $("source-site-domain");
-  const isSearch = $("source-mode").value === "search";
+  const mode = $("source-mode").value;
+  const isSearch = mode === "search";
   if (!isSearch) siteInput.value = "";
   siteInput.disabled = !isSearch;
+  $("source-url-label").textContent = mode === "crawler" ? "新闻列表页地址" : "Feed 地址";
+  $("source-url").placeholder = mode === "search"
+    ? "https://news.google.com/rss/search?q={query}&hl=...；{query} 会由系统替换"
+    : mode === "crawler"
+      ? "https://example.com/news/；系统会抓取同站文章详情"
+      : "https://example.com/feed.xml";
+  $("source-url-hint").textContent = mode === "crawler"
+    ? "最多抓取 30 篇同站文章；必须能从页面或结构化数据识别发布日期。"
+    : "RSS 返回 HTML 时会自动切换为网页爬虫。";
 }
 
 function openSourceDialog(item = null) {
-  $("source-dialog-title").textContent = item ? "编辑 RSS 源" : "新增 RSS 源";
+  $("source-dialog-title").textContent = item ? "编辑数据源" : "新增数据源";
   $("source-id").value = item?.id || "";
   $("source-name").value = item?.name || "";
   $("source-mode").value = item?.mode || "search";
@@ -851,7 +877,7 @@ async function saveSource(event) {
     await api(id ? `/api/sources/${id}` : "/api/sources", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("source-dialog").close();
     await Promise.all([loadCatalogs(), loadStatus()]);
-    showToast(id ? "RSS 源已更新" : "RSS 源已新增");
+    showToast(id ? "数据源已更新" : "数据源已新增");
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -897,7 +923,7 @@ async function updateKeywordActive(id, active) {
 }
 
 async function archiveItem(type, id) {
-  const label = type === "sources" ? "RSS 源" : "关键词组";
+  const label = type === "sources" ? "数据源" : "关键词组";
   if (!window.confirm(`确定删除这个${label}吗？历史文章和日志仍会保留。`)) return;
   try {
     await api(`/api/${type}/${id}`, { method: "DELETE" });
