@@ -114,7 +114,7 @@ def normalize_site_domain(value: str) -> str:
 class SourcePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     url_template: str = Field(min_length=8, max_length=2000)
-    mode: Literal["search", "direct"]
+    mode: Literal["search", "direct", "crawler"]
     language: str = Field(default="", max_length=30)
     country: str = Field(default="", max_length=10)
     site_domain: str = Field(default="", max_length=2000)
@@ -143,8 +143,10 @@ class SourcePayload(BaseModel):
     def validate_mode_template(self) -> None:
         if self.mode == "search" and "{query}" not in self.url_template:
             raise ValueError("搜索型 RSS 地址必须包含 {query} 占位符")
-        if self.mode == "direct" and self.site_domain:
+        if self.mode != "search" and self.site_domain:
             raise ValueError("站点限制只适用于搜索型 RSS")
+        if self.mode == "crawler" and "{query}" in self.url_template:
+            raise ValueError("网页爬虫地址应填写固定的新闻列表页，不使用 {query}")
 
 
 class KeywordQueryPayload(BaseModel):
@@ -415,7 +417,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail="RSS 源名称或地址已存在") from exc
+            raise HTTPException(status_code=409, detail="数据源名称或地址已存在") from exc
         return {"id": source_id}
 
     @app.put("/api/sources/{source_id}")
@@ -426,15 +428,15 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail="RSS 源名称已存在") from exc
+            raise HTTPException(status_code=409, detail="数据源名称已存在") from exc
         if not updated:
-            raise HTTPException(status_code=404, detail="RSS 源不存在")
+            raise HTTPException(status_code=404, detail="数据源不存在")
         return {"id": source_id}
 
     @app.delete("/api/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_source(source_id: int):
         if not database.archive_source(source_id):
-            raise HTTPException(status_code=404, detail="RSS 源不存在")
+            raise HTTPException(status_code=404, detail="数据源不存在")
 
     @app.get("/api/keyword-categories")
     def list_keyword_categories():

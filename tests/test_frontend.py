@@ -88,3 +88,20 @@ def test_source_site_domain_setting_is_wired() -> None:
     assert "reuters.com OR cls.cn" in html
     assert 'site_domain: $("source-site-domain").value.trim()' in javascript
     assert "syncSourceSiteField" in javascript
+
+
+def test_web_crawler_source_mode_is_wired() -> None:
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert '<option value="crawler">网页爬虫（无 RSS）</option>' in html
+    assert 'id="source-url-hint"' in html
+    assert "RSS 优先，无 RSS 时使用网页爬虫" in html
+    assert "网页爬虫兜底已启用" in html
+    assert "RSS 不可用时，采集任务自动切换到同站网页爬虫" in html
+    assert "采集 / 兜底策略" in html
+    assert 'crawler: "网页爬虫"' in javascript
+    assert 'mode === "crawler" ? "新闻列表页地址"' in javascript
+    assert "function sourceFallbackMarkup(mode)" in javascript
+    assert "RSS 优先 · 自动兜底" in javascript
+    assert "直接网页爬虫" in javascript
