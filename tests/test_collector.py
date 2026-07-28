@@ -132,6 +132,22 @@ def test_build_search_url_and_canonicalize_tracking_parameters() -> None:
     )
 
 
+def test_build_search_url_combines_multiple_sites_with_or() -> None:
+    source = {
+        "mode": "search",
+        "url_template": "https://example.com/rss?q={query}",
+        "site_domain": "reuters.com OR wallstreetcn.com OR cls.cn",
+    }
+    keyword = {"query": '("tariff"OR"关税")'}
+
+    url = build_feed_url(source, keyword)
+
+    assert parse_qs(urlsplit(url).query)["q"] == [
+        '(site:reuters.com OR site:wallstreetcn.com OR site:cls.cn) '
+        '("tariff"OR"关税")'
+    ]
+
+
 def test_default_sources_include_site_limited_malaysia_publishers() -> None:
     sources = {item["name"]: item for item in DEFAULT_SOURCES}
 
