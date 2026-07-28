@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager
@@ -21,7 +22,11 @@ from .collector import (
     Collector,
 )
 from .content import ArticleContentReader
-from .database import Database
+from .database import (
+    Database,
+    DatabaseBackendError,
+    DatabaseIntegrityError,
+)
 from .intelligence import (
     ArticleAnalysisManager,
     AutomaticIntelligenceWorkflow,
@@ -52,8 +57,11 @@ from .scheduler import DailyScheduler, next_scheduled_at, parse_schedule_time
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
-DEFAULT_DATABASE_PATH = BASE_DIR / "data" / "rss_collector.db"
 load_dotenv(BASE_DIR / ".env")
+DEFAULT_DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "mysql://rss_collector:rss_collector@127.0.0.1:3306/rss_collector?charset=utf8mb4",
+)
 
 
 def validate_http_url(value: str) -> str:
@@ -283,11 +291,13 @@ class CleanupPayload(BaseModel):
 
 
 def create_app(
-    database_path: Path | None = None,
+    database_path: Path | str | None = None,
     llm_client: JSONLLMClient | None = None,
     content_reader: ArticleContentReader | None = None,
 ) -> FastAPI:
-    database = Database(database_path or DEFAULT_DATABASE_PATH)
+    database = Database(
+        database_path if database_path is not None else DEFAULT_DATABASE_URL
+    )
     collector = Collector(database)
     manager = CollectionManager(database, collector)
     intelligence_repository = IntelligenceRepository(database)
@@ -304,7 +314,7 @@ def create_app(
     )
     cleanup_service = CleanupService(
         database,
-        backup_dir=database.path.parent / "backups",
+        backup_dir=BASE_DIR / "data" / "backups",
         is_busy=lambda: any(
             (
                 manager.running_run_id is not None,
@@ -416,8 +426,8 @@ def create_app(
             source_id = database.create_source(payload.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail="数据源名称或地址已存在") from exc
+        except (sqlite3.IntegrityError, DatabaseIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail="RSS 源名称或地址已存在") from exc
         return {"id": source_id}
 
     @app.put("/api/sources/{source_id}")
@@ -427,8 +437,8 @@ def create_app(
             updated = database.update_source(source_id, payload.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail="数据源名称已存在") from exc
+        except (sqlite3.IntegrityError, DatabaseIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail="RSS 源名称已存在") from exc
         if not updated:
             raise HTTPException(status_code=404, detail="数据源不存在")
         return {"id": source_id}
@@ -460,7 +470,7 @@ def create_app(
             keyword_id = database.create_keyword(payload.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, DatabaseIntegrityError) as exc:
             raise HTTPException(status_code=409, detail="关键词组名称已存在") from exc
         return {"id": keyword_id}
 
@@ -470,7 +480,7 @@ def create_app(
             updated = database.update_keyword(keyword_id, payload.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, DatabaseIntegrityError) as exc:
             raise HTTPException(status_code=409, detail="关键词组名称已存在") from exc
         if not updated:
             raise HTTPException(status_code=404, detail="关键词组不存在")
@@ -839,6 +849,13 @@ def create_app(
 
     @app.exception_handler(sqlite3.Error)
     async def sqlite_error_handler(_: Request, exc: sqlite3.Error):
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"数据库错误: {exc}"},
+        )
+
+    @app.exception_handler(DatabaseBackendError)
+    async def database_error_handler(_: Request, exc: DatabaseBackendError):
         return JSONResponse(
             status_code=500,
             content={"detail": f"数据库错误: {exc}"},

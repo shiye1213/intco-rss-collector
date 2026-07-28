@@ -24,7 +24,7 @@
 - 手动分析一次点击即可处理当时全部待办，并按配置的批次大小连续执行；也可配置为采集后自动分析，并为当天各活跃关键词分类分别生成日报。
 - 全文读取失败按 OpenAI 网络、限流、未联网、网页不可用、正文不完整和响应格式分类；瞬时错误最多自动尝试 3 次并指数退避。
 - AI 情报页面提供失败列表、错误原因、立即重试和忽略入口。
-- 系统设置提供错误数据、指定日期前历史数据和全部采集数据三层清理；执行前自动备份 SQLite，任务运行中禁止清理。
+- 系统设置提供错误数据、指定日期前历史数据和全部采集数据三层清理；执行前自动备份 MySQL，任务运行中禁止清理。
 - 系统设置可查看和修改企业业务边界、相关性审核、通用日报以及贸易政策、关税调整、行业法规三类专属日报提示词；固定 JSON、安全、关键词分类边界、业务分类和来源引用约束由系统追加。
 - 默认包含马来西亚通用 Google News，以及 The Star、The Edge 站点限定搜索源。
 
@@ -32,7 +32,7 @@
 
 - Python 3.12
 - FastAPI、Pydantic、Uvicorn
-- SQLite
+- MySQL 8.4、PyMySQL
 - HTML、CSS、原生 JavaScript
 - pytest
 
@@ -43,11 +43,28 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
-# 编辑 .env，填写 OPENAI_API_KEY 和 DEEPSEEK_API_KEY
+# 先启动 MySQL 8.4（已安装 Docker 时）
+docker compose up -d mysql
+# 编辑 .env，确认 DATABASE_URL，并填写 OPENAI_API_KEY 和 DEEPSEEK_API_KEY
 .\start.ps1
 ```
 
+使用 Windows 本机安装的 MySQL 时，首次启动前执行一键建库建表脚本：
+
+```powershell
+python scripts/setup_mysql.py
+```
+
+脚本读取 `.env` 中的 `DATABASE_URL`，提示输入 MySQL root 密码，随后创建数据库、应用用户、18 张业务表和默认配置；不会删除已有表数据，也不会保存 root 密码。
 浏览器访问 `http://127.0.0.1:8000`。在 VS Code 中也可以按 `F5`，选择“启动 RSS 情报系统”。
+
+如需把现有 SQLite 数据导入 MySQL，请先确认目标 MySQL 可连接，再执行：
+
+```powershell
+python scripts/migrate_sqlite_to_mysql.py --confirm REPLACE_MYSQL
+```
+
+该命令会先备份并清空目标 MySQL，再完整导入 `data/rss_collector.db`；源 SQLite 文件保持不变。
 
 运行测试：
 
@@ -69,13 +86,12 @@ FastAPI 启动后还可访问 `http://127.0.0.1:8000/docs` 查看自动生成的
 
 ## 数据与安全
 
-运行数据保存在 `data/rss_collector.db`，页面清理前的自动备份保存在 `data/backups/`。OpenAI 与 DeepSeek Key 只从 `.env` 或进程环境变量读取。数据库、备份、日志、虚拟环境和本地环境变量已经加入 `.gitignore`，不会提交到仓库。项目目前没有账号认证，部署到共享环境前必须增加身份认证和访问控制。
+运行数据保存在 `DATABASE_URL` 指定的 MySQL 数据库中，页面清理前的逻辑备份保存在 `data/backups/`。原有 `data/rss_collector.db` 不会被删除，可用于迁移或回退。OpenAI 与 DeepSeek Key 只从 `.env` 或进程环境变量读取。数据库、备份、日志、虚拟环境和本地环境变量已经加入 `.gitignore`，不会提交到仓库。项目目前没有账号认证，部署到共享环境前必须增加身份认证和访问控制。
 
 ## 当前限制
 
 - 当前调度器运行在单个 Web 进程内，不适合直接多进程部署。
-- 通用网页爬虫面向服务端渲染的新闻页面，不执行 JavaScript；强登录、验证码或纯前端渲染站点需要后续增加站点专用适配器。
-- SQLite 适合当前 MVP 和小团队试用，数据量或并发增加后应迁移到 PostgreSQL。
+- 默认使用单个 MySQL 实例；任务调度和互斥状态仍由单个 Web 进程维护。
 - OpenAI 内置网页搜索无法访问、只返回摘要或不能确认完整正文时，任务记录全文读取失败，不会用 RSS 摘要替代。
 - 当前没有历史日期范围补采和消息通知能力。
 - AI 调用产生外部 API 成本，自动分析和自动日报默认关闭。

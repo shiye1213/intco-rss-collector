@@ -253,7 +253,7 @@
 }
 ```
 
-必须精确提交 `confirmation=DELETE`。系统在删除前自动将 SQLite 备份到 `data/backups/`；采集、AI 分析或日报任务运行中返回 `409`。配置表、RSS 源和关键词组不在清理范围内。
+必须精确提交 `confirmation=DELETE`。系统在删除前自动将 MySQL 逻辑备份到 `data/backups/`；采集、AI 分析或日报任务运行中返回 `409`。配置表、RSS 源和关键词组不在清理范围内。
 
 ## 情报日报
 

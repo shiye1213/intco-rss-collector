@@ -48,19 +48,19 @@
 | Web 框架 | FastAPI | REST API、生命周期、静态文件服务 | 基于类型注解自动校验请求，自动生成 OpenAPI，适合快速构建内部 API，同时保留后续前后端分离能力 |
 | 数据校验 | Pydantic | API 入参和模型 JSON 输出校验 | 统一处理枚举、长度、范围和结构约束，避免未经验证的 LLM 输出直接进入数据库 |
 | Web 服务器 | Uvicorn | 本地 ASGI 服务 | 与 FastAPI 原生配合，开发启动简单，满足当前单进程 MVP |
-| 数据库 | SQLite | 配置、文章、游标、日志、AI 结果和日报 | 无需独立数据库服务，便于本地开发和演示；事务足以支持当前低并发单机工作流 |
+| 数据库 | MySQL 8.4 + PyMySQL | 配置、文章、游标、日志、AI 结果和日报 | 使用 InnoDB、utf8mb4、外键和事务，支持更大的数据量与并发，并便于部署为独立数据库服务 |
 | RSS 解析 | Python 标准库 ElementTree | RSS 2.0 和 Atom XML 解析 | 当前 Feed 字段有限，标准库可控且减少依赖；解析逻辑可以直接兼容不同命名空间 |
 | 网络请求 | Python 标准库 urllib | Feed、OpenAI 和 DeepSeek HTTP 请求 | 当前请求模式简单，避免再引入 HTTP 客户端依赖；项目不直接请求新闻网页 |
 | 正文读取 | CCTQ Responses API + `gpt-5.4-mini` + `web_search` | 服务器端打开候选链接并返回正文 | 使用已验证能转发内置网页搜索的低成本模型；项目校验 `web_search_call`、成功标记、正文长度和最终 URL |
 | 大模型 | DeepSeek JSON Chat Completion | 相关性审核、业务分析和日报 | 支持结构化 JSON 输出，便于通过 Pydantic 强约束；模型名、地址和超时可用环境变量替换 |
 | 前端 | HTML、CSS、原生 JavaScript | 管理界面、筛选、日志和设置 | 当前页面规模较小，无需构建链和 Node 运行时，克隆后即可启动；减少 MVP 的依赖与部署复杂度 |
 | 图标 | Lucide | 操作按钮和导航图标 | 图标语义一致，避免维护手写 SVG |
-| 测试 | pytest | 采集、调度、正文、AI 门控和日报测试 | Python 生态成熟，fixture 和临时目录适合测试 SQLite 及依赖注入 |
+| 测试 | pytest | 采集、调度、正文、AI 门控和日报测试 | Python 生态成熟，fixture 和临时 SQLite 兼容后端适合快速测试及依赖注入 |
 | 配置 | python-dotenv | 读取 `.env` 中的 OpenAI 与 DeepSeek 配置 | 将密钥与代码、数据库分离，便于每位开发者使用独立本地配置 |
 
-### 3.1 为什么当前不使用 PostgreSQL
+### 3.1 为什么选择 MySQL 8.4
 
-SQLite 能让团队在没有额外服务的情况下直接运行项目，适合当前单机、低并发、MVP 验证阶段。其限制是写并发能力、在线迁移、备份治理和多实例协作较弱。当出现多用户同时操作、任务 worker 并发或数据量显著增长时，应迁移到 PostgreSQL。
+MySQL 8.4 LTS 作为默认运行数据库，使用 InnoDB、utf8mb4 和外键约束保存业务数据。PyMySQL 适配层维持现有数据访问接口，并保留 SQLite 作为测试和旧数据迁移兼容后端。
 
 ### 3.2 为什么当前不使用 Celery、Redis 或消息队列
 
@@ -80,7 +80,7 @@ flowchart LR
     API --> Collection
     Collection --> Collector["Collector"]
     Collector -->|"HTTP"| Feeds["Google News / 机构 RSS"]
-    Collector --> DB[("SQLite")]
+    Collector --> DB[("MySQL 8.4")]
 
     Collection -->|"可选完成回调"| Pipeline["ArticleAnalysisManager"]
     API --> Pipeline
@@ -103,7 +103,7 @@ flowchart LR
 | 路径 | 主要职责 |
 |---|---|
 | `app/main.py` | FastAPI 应用创建、生命周期、REST 接口、参数校验、后台任务启动和静态文件服务 |
-| `app/database.py` | SQLite Schema、兼容迁移、默认配置和基础数据访问 |
+| `app/database.py` | MySQL Schema、SQL 兼容层、默认配置和基础数据访问 |
 | `app/collector.py` | Feed 请求、RSS/Atom 解析、时间窗过滤、关键词匹配、去重和采集日志 |
 | `app/query_builder.py` | 统一生成主题词、业务信号、排除词和回溯窗口组成的 Google News 查询表达式 |
 | `app/normalization.py` | 发布方、分类和国家字段规范化 |
@@ -112,7 +112,7 @@ flowchart LR
 | `app/llm.py` | OpenAI Responses API 网页读取、DeepSeek JSON 对话、联网证据与正文完整性校验 |
 | `app/prompts.py` | 企业业务边界、相关性 Prompt、业务分析 Prompt 和日报 Prompt |
 | `app/intelligence.py` | 三阶段处理状态机、阈值门控、业务结果、风险规则和日报持久化 |
-| `app/maintenance.py` | 清理范围预览、运行中保护、SQLite 备份和删除事务 |
+| `app/maintenance.py` | 清理范围预览、运行中保护、MySQL 逻辑备份和删除事务 |
 | `static/index.html` | 页面语义结构和对话框 |
 | `static/app.js` | API 调用、状态管理、筛选、分页和页面交互 |
 | `static/styles.css` | 桌面、平板和移动端响应式样式 |
@@ -141,8 +141,8 @@ sequenceDiagram
     participant Trigger as 用户或每日调度器
     participant Manager as CollectionManager
     participant Collector as Collector
-    participant Source as RSS/Atom 或网页数据源
-    participant DB as SQLite
+    participant Feed as RSS/Atom 源
+    participant DB as MySQL
 
     Trigger->>Manager: prepare(trigger_type)
     Manager->>DB: 创建 collection_runs
@@ -337,7 +337,7 @@ AI 任务启动时先查询并固定当前待办文章 ID，随后按 `ai_batch_
 ### 10.1 密钥与本地数据
 
 - DeepSeek Key 只从项目根目录 `.env` 或进程环境变量读取。
-- `.env`、SQLite 数据库、日志和虚拟环境均被 `.gitignore` 排除。
+- `.env`、数据库备份、日志和虚拟环境均被 `.gitignore` 排除。
 - `.env.example` 只保存变量名和非敏感示例，不能填写真实 Key。
 - 每位开发者使用自己的本地 `.env`，团队仓库不分发共享密钥。
 
@@ -385,6 +385,7 @@ FastAPI 在 `/docs` 自动提供 OpenAPI 调试页面。详细参数和响应见
 ### 12.1 模型环境变量
 
 ```dotenv
+DATABASE_URL=mysql://rss_collector:rss_collector@127.0.0.1:3306/rss_collector?charset=utf8mb4
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
@@ -448,7 +449,7 @@ python -m pip check
 ```mermaid
 flowchart LR
     Browser["本机浏览器"] --> Uvicorn["单个 Uvicorn 进程"]
-    Uvicorn --> SQLite["data/rss_collector.db"]
+    Uvicorn --> MySQL["MySQL 8.4"]
     Uvicorn --> Internet["RSS / 出版社 / DeepSeek"]
     Env["本机 .env"] --> Uvicorn
 ```
@@ -457,7 +458,7 @@ flowchart LR
 
 - 每个进程都会启动自己的每日调度器，多进程会重复调度。
 - 采集和 AI 互斥锁在进程内，多进程不能共享锁状态。
-- SQLite 写锁不适合多个高并发 worker。
+- 进程内互斥锁不能协调多个 API 实例，生产化前仍需分布式任务锁。
 
 ### 14.2 推荐生产化拓扑
 
@@ -465,11 +466,11 @@ flowchart LR
 flowchart LR
     User["用户"] --> Proxy["HTTPS 反向代理 / SSO"]
     Proxy --> API["FastAPI API 实例"]
-    API --> PG[("PostgreSQL")]
+    API --> MYSQL[("MySQL")]
     API --> Queue["Redis / 持久化任务队列"]
     Scheduler["独立调度服务"] --> Queue
     Queue --> Workers["采集与 AI Workers"]
-    Workers --> PG
+    Workers --> MYSQL
     Workers --> External["RSS / 网页 / DeepSeek"]
     Monitor["日志、指标与告警"] --> API
     Monitor --> Workers
@@ -482,7 +483,7 @@ flowchart LR
 - 模型判断存在误判可能，需要持续建设人工标注评估集。
 - 当前 `article_relevance_reviews` 和 `business_articles` 保存最新结果，不是完整版本历史。
 - 日报保留依据文章关系，但后续若业务结果被重新审核，历史分析字段不是完全不可变快照。
-- SQLite 数据库需要制定本地备份策略，不能依赖 Git 保存运行数据。
+- MySQL 需要制定自动备份、恢复演练和权限隔离策略，不能依赖 Git 保存运行数据。
 - 前端图标当前从公共 CDN 加载，离线部署需改为本地静态资源。
 
 ## 16. 演进路线
@@ -503,7 +504,7 @@ flowchart LR
 
 ### 阶段三：生产化
 
-- 迁移 PostgreSQL。
+- 将 MySQL 部署为受管或高可用服务，并完成备份恢复演练。
 - 引入独立调度服务和持久化任务队列。
 - 增加并发限制、指数退避、熔断和调用成本预算。
 - 容器化部署，增加 CI、备份、指标、日志和告警。
@@ -512,4 +513,4 @@ flowchart LR
 
 当前方案以“候选、证据、审核、业务情报、日报”五层数据边界保证流程清晰：RSS 负责广泛发现，网页正文提供事实证据，第一次模型调用负责严格门控，第二次调用负责业务分析，日报只汇总最终成功结果。
 
-模块化单体、SQLite 和原生前端使项目可以在团队电脑上快速运行；正文哈希、独立审核表、结构化模型输出和阶段日志又为后续迁移到 PostgreSQL、任务队列和多用户平台保留了明确的演进路径。
+模块化单体、MySQL 和原生前端使项目保持清晰的数据边界；正文哈希、独立审核表、结构化模型输出和阶段日志又为后续引入任务队列、多实例服务和多用户平台保留了明确的演进路径。
