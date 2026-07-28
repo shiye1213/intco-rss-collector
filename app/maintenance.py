@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -117,13 +116,7 @@ class CleanupService:
         }
 
     def _create_backup(self) -> Path:
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        backup_path = self.backup_dir / f"rss_collector-before-cleanup-{timestamp}.db"
-        with sqlite3.connect(self.database.path) as source:
-            with sqlite3.connect(backup_path) as destination:
-                source.backup(destination)
-        return backup_path
+        return self.database.create_backup(self.backup_dir)
 
     @staticmethod
     def _validate(
@@ -175,12 +168,12 @@ class CleanupService:
         cutoff = f"{before}T00:00:00Z"
         return (
             {
-                "articles": "WHERE datetime(published_at) < datetime(?)",
+                "articles": "WHERE published_at < ?",
                 "collection_runs": (
-                    "WHERE status <> 'running' AND datetime(started_at) < datetime(?)"
+                    "WHERE status <> 'running' AND started_at < ?"
                 ),
                 "ai_analysis_runs": (
-                    "WHERE status <> 'running' AND datetime(started_at) < datetime(?)"
+                    "WHERE status <> 'running' AND started_at < ?"
                 ),
                 "daily_reports": "WHERE report_date < ?",
             },
