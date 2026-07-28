@@ -5,6 +5,7 @@
 - Windows 10/11
 - Python 3.12
 - Git
+- MySQL 8.4（或 Docker Desktop）
 - VS Code 与 Python 扩展
 - 能访问配置的 RSS 源
 
@@ -46,9 +47,35 @@ python -m pytest -q
 
 ## 5. 数据库
 
-应用首次启动时自动创建 `data/rss_collector.db` 并初始化表结构及默认配置。该文件是本地运行数据，已被 Git 忽略。
+默认数据库为 MySQL 8.4。首次开发可使用仓库内的 Compose 配置：
 
-优先使用“系统设置 → 数据清理”：它会先预览影响，在确认后通过 SQLite Online Backup 写入 `data/backups/`，并在采集、AI 分析或日报运行时拒绝执行。不要在团队聊天、Issue 或提交记录中上传包含业务数据的数据库或备份文件。
+```powershell
+docker compose up -d mysql
+docker compose ps
+```
+
+应用读取 `.env` 中的 `DATABASE_URL`，启动时自动初始化表结构和默认配置：
+
+```dotenv
+DATABASE_URL=mysql://rss_collector:rss_collector@127.0.0.1:3306/rss_collector?charset=utf8mb4
+```
+
+如果使用 Windows 本机安装的 MySQL，首次运行：
+
+```powershell
+python scripts/setup_mysql.py
+```
+
+脚本只在终端中读取 MySQL root 密码，自动创建数据库、修复 `DATABASE_URL` 对应用户的密码和权限，并初始化全部表与默认配置。该过程不会删除已有数据，可重复执行。
+优先使用“系统设置 → 数据清理”：它会先预览影响，在确认后将 MySQL 逻辑备份写入 `data/backups/`，并在采集、AI 分析或日报运行时拒绝执行。原有 `data/rss_collector.db` 不会自动删除；迁移确认前请保留。不要在团队聊天、Issue 或提交记录中上传包含业务数据的数据库或备份文件。
+
+迁移现有 SQLite 数据：
+
+```powershell
+python scripts/migrate_sqlite_to_mysql.py --confirm REPLACE_MYSQL
+```
+
+迁移工具会先为目标 MySQL 生成 `.sql` 备份，再清空目标表并保留原主键导入；源 SQLite 以只读方式打开，不会删除或改写。
 
 ## 6. 调试
 
@@ -70,6 +97,7 @@ python -m pytest -q
 在项目根目录 `.env` 中配置：
 
 ```dotenv
+DATABASE_URL=mysql://rss_collector:rss_collector@127.0.0.1:3306/rss_collector?charset=utf8mb4
 DEEPSEEK_API_KEY=你的API密钥
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
@@ -105,7 +133,7 @@ URL 模板必须包含 `{query}`。采集时系统将自动生成并 URL 编码�
 - 读取到新闻但未入库：检查采集明细中的“时间窗外”和“命中”数量。
 - 手动采集返回 409：已有采集任务正在运行，等待任务结束。
 - 页面仍显示旧功能：确认服务已重启并刷新页面。
-- 数据库被锁：确认没有同时启动多个应用进程或直接编辑 SQLite 文件。
+- 无法连接数据库：确认 MySQL 已启动，且 `.env` 中的主机、端口、用户名、密码和数据库名正确。
 - AI 按钮不可用：检查“系统设置”中的 DeepSeek 状态，并确认 `.env` 已填写 Key 后重启应用。
 - 全文读取失败：打开“AI 情报”的失败列表，查看错误分类、次数和下一次重试时间；可立即重试或忽略。正文由 CCTQ 的 GPT-5.4 mini 内置网页搜索读取，登录墙、付费墙或搜索服务不可达时不会使用 RSS 摘要兜底。
 - OpenAI 网页读取限流或搜索服务不可用：当前队列会在首次 HTTP 429 或搜索调用失败后暂停，尚未开始的文章保留为待办；服务恢复后再点击处理即可。

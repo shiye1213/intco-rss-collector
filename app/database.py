@@ -7,6 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from .mysql_backend import (
+    DatabaseBackendError,
+    DatabaseIntegrityError,
+    MySQLConnection,
+    dump_mysql_database,
+    parse_mysql_url,
+)
 from .normalization import infer_country, normalize_publisher
 from .prompts import (
     DEFAULT_BUSINESS_PROFILE,
@@ -1072,16 +1079,10 @@ KEYWORD_CATEGORY_RELEVANCE_SQL = """
         OR kc.name NOT IN ('贸易政策', '关税调整', '行业法规')
         OR (
             rr.prompt_version IN ('intco-relevance-v7', 'intco-relevance-v8')
-            AND EXISTS (
-                SELECT 1
-                FROM json_each(
-                    CASE
-                        WHEN json_valid(rr.keyword_categories)
-                        THEN rr.keyword_categories
-                        ELSE '[]'
-                    END
-                )
-                WHERE value = kc.name
+            AND (
+                (kc.name = '贸易政策' AND rr.keyword_categories LIKE '%"贸易政策"%')
+                OR (kc.name = '关税调整' AND rr.keyword_categories LIKE '%"关税调整"%')
+                OR (kc.name = '行业法规' AND rr.keyword_categories LIKE '%"行业法规"%')
             )
         )
         OR (
@@ -1091,34 +1092,14 @@ KEYWORD_CATEGORY_RELEVANCE_SQL = """
                     kc.name IN ('贸易政策', '行业法规')
                     AND (
                         rr.category = 'policy_regulation'
-                        OR EXISTS (
-                            SELECT 1
-                            FROM json_each(
-                                CASE
-                                    WHEN json_valid(rr.secondary_categories)
-                                    THEN rr.secondary_categories
-                                    ELSE '[]'
-                                END
-                            )
-                            WHERE value = 'policy_regulation'
-                        )
+                        OR rr.secondary_categories LIKE '%"policy_regulation"%'
                     )
                 )
                 OR (
                     kc.name = '关税调整'
                     AND (
                         rr.category = 'trade_tariff'
-                        OR EXISTS (
-                            SELECT 1
-                            FROM json_each(
-                                CASE
-                                    WHEN json_valid(rr.secondary_categories)
-                                    THEN rr.secondary_categories
-                                    ELSE '[]'
-                                END
-                            )
-                            WHERE value = 'trade_tariff'
-                        )
+                        OR rr.secondary_categories LIKE '%"trade_tariff"%'
                     )
                 )
             )
@@ -1132,15 +1113,27 @@ def utc_now_iso() -> str:
 
 
 class Database:
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
+    def __init__(self, target: Path | str) -> None:
+        target_text = str(target)
+        if target_text.lower().startswith(("mysql://", "mysql+pymysql://")):
+            self.backend = "mysql"
+            self.path: Path | None = None
+            self._mysql_settings = parse_mysql_url(target_text)
+        else:
+            self.backend = "sqlite"
+            self.path = Path(target)
+            self._mysql_settings = None
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 30000")
+    def connect(self) -> Iterator[Any]:
+        if self._mysql_settings is not None:
+            connection: Any = MySQLConnection(self._mysql_settings)
+        else:
+            assert self.path is not None
+            connection = sqlite3.connect(self.path, timeout=30)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
         try:
             yield connection
             connection.commit()
@@ -1151,7 +1144,8 @@ class Database:
             connection.close()
 
     def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         now = utc_now_iso()
         with self.connect() as connection:
             connection.executescript(SCHEMA)
@@ -1677,9 +1671,9 @@ class Database:
             for key, value in defaults.items():
                 connection.execute(
                     """
-                    INSERT INTO app_settings (key, value, updated_at)
+                    INSERT INTO app_settings (`key`, value, updated_at)
                     VALUES (?, ?, ?)
-                    ON CONFLICT(key) DO NOTHING
+                    ON CONFLICT(`key`) DO NOTHING
                     """,
                     (key, value, now),
                 )
@@ -1720,13 +1714,13 @@ class Database:
                         """
                         UPDATE app_settings
                         SET value = ?, updated_at = ?
-                        WHERE key = ? AND value = ?
+                        WHERE `key` = ? AND value = ?
                         """,
                         (current_value, now, key, legacy_value),
                     )
 
     @staticmethod
-    def rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    def rows(rows: list[Any]) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
     def get_sources(self, active_only: bool = False) -> list[dict[str, Any]]:
@@ -2115,9 +2109,25 @@ class Database:
             )
             return cursor.rowcount > 0
 
+    def create_backup(self, backup_dir: Path) -> Path:
+        backup_dir = Path(backup_dir)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        suffix = ".sql" if self.backend == "mysql" else ".db"
+        backup_path = backup_dir / f"rss_collector-before-cleanup-{timestamp}{suffix}"
+        if self._mysql_settings is not None:
+            with self.connect() as connection:
+                dump_mysql_database(connection, backup_path)
+        else:
+            assert self.path is not None
+            with sqlite3.connect(self.path) as source:
+                with sqlite3.connect(backup_path) as destination:
+                    source.backup(destination)
+        return backup_path
+
     def get_settings(self) -> dict[str, str]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT key, value FROM app_settings").fetchall()
+            rows = connection.execute("SELECT `key`, value FROM app_settings").fetchall()
         return {row["key"]: row["value"] for row in rows}
 
     def set_setting(self, key: str, value: str) -> None:
@@ -2125,9 +2135,10 @@ class Database:
         with self.connect() as connection:
             connection.execute(
                 """
-                INSERT INTO app_settings (key, value, updated_at)
+                INSERT INTO app_settings (`key`, value, updated_at)
                 VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                ON CONFLICT(`key`) DO UPDATE SET
+                    value = excluded.value, updated_at = excluded.updated_at
                 """,
                 (key, value, now),
             )
@@ -2225,7 +2236,10 @@ class Database:
             ).fetchone()[0]
             rows = connection.execute(
                 f"""
-                SELECT a.*, s.name AS feed_name
+                SELECT a.id, a.title, a.url, a.canonical_url, a.fingerprint,
+                       a.publisher, a.publisher_normalized, a.summary,
+                       a.published_at, a.collected_at, a.rss_source_id,
+                       s.name AS feed_name
                 FROM articles a
                 LEFT JOIN rss_sources s ON s.id = a.rss_source_id
                 {where}
@@ -2241,7 +2255,11 @@ class Database:
             placeholders = ",".join("?" for _ in article_ids)
             source_rows = connection.execute(
                 f"""
-                SELECT axs.*, s.name AS source_name
+                SELECT axs.id, axs.article_id, axs.rss_source_id,
+                       axs.feed_url, axs.observed_url, axs.canonical_url,
+                       axs.guid, axs.language, axs.country, axs.categories,
+                       axs.first_seen_at, axs.last_seen_at,
+                       s.name AS source_name
                 FROM article_sources axs
                 JOIN rss_sources s ON s.id = axs.rss_source_id
                 WHERE axs.article_id IN ({placeholders})

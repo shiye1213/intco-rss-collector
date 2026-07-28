@@ -10,4 +10,5 @@ htmlcov/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.sql
 data/backups/

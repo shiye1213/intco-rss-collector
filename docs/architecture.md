@@ -6,7 +6,7 @@
 flowchart LR
     U["业务用户"] --> UI["HTML/CSS/JavaScript 管理页面"]
     UI -->|"REST API"| API["FastAPI 应用"]
-    API --> DB["SQLite"]
+    API --> DB["MySQL 8.4"]
     API --> CM["采集任务管理器"]
     SCH["每日调度器"] --> CM
     CM --> COL["RSS 采集器"]
@@ -36,13 +36,13 @@ flowchart LR
 | Web/API | `app/main.py` | FastAPI 生命周期、接口、参数校验、静态文件服务 |
 | 采集器 | `app/collector.py` | 来源与关键词语言路由、Feed 下载、解析、匹配、时间过滤、去重和入库 |
 | 正文读取接口 | `app/content.py` | 文章引用、正文文档、失败分类和外部 URL 安全校验 |
-| 数据访问 | `app/database.py` | SQLite 表结构、迁移和数据访问方法 |
+| 数据访问 | `app/database.py` | MySQL 表结构、SQL 兼容层和数据访问方法 |
 | 调度器 | `app/scheduler.py` | 北京时间每日执行和下次执行时间计算 |
 | 查询构建 | `app/query_builder.py` | 统一生成查询表达式，并按 `zh-*`/`en-*` 来源切分中英文词组 |
 | AI 客户端 | `app/llm.py` | OpenAI 网页读取、DeepSeek JSON 分析、联网证据校验、正文完整性校验和错误处理 |
 | Prompt | `app/prompts.py` | 相关性、业务分析与日报的独立 Prompt 及版本 |
 | 情报流水线 | `app/intelligence.py` | 全文、相关性门控、业务分析、批次日志和日报持久化 |
-| 数据维护 | `app/maintenance.py` | 分层清理预览、运行中保护、SQLite 备份和事务删除 |
+| 数据维护 | `app/maintenance.py` | 分层清理预览、运行中保护、MySQL 逻辑备份和事务删除 |
 | 前端 | `static/` | 采集、AI 情报、日报、配置和日志界面 |
 | 测试 | `tests/` | 采集、调度、AI 阈值、风险和日报测试 |
 
@@ -55,7 +55,7 @@ sequenceDiagram
     participant Manager as CollectionManager
     participant Collector as Collector
     participant Feed as RSS 源
-    participant DB as SQLite
+    participant DB as MySQL
 
     User->>API: 触发采集
     API->>Manager: 创建运行记录并获取任务锁
@@ -77,7 +77,7 @@ sequenceDiagram
     participant Analysis as ArticleAnalysisManager
     participant OpenAI as CCTQ Responses API
     participant DeepSeek as DeepSeek API
-    participant DB as SQLite
+    participant DB as MySQL
     participant Report as DailyReportManager
 
     User->>API: 启动待处理文章分析
@@ -156,8 +156,8 @@ sequenceDiagram
 
 全文读取错误由 `ContentFetchError` 分类为 OpenAI 网络/HTTP、搜索服务不可用、未实际联网、单篇网页不可用、正文不完整或响应格式错误。瞬时错误跨任务按指数退避并最多尝试 3 次；首次 OpenAI HTTP 429 或网页搜索调用失败触发来源级熔断，当前批次停止，未开始的文章保持待办。达到上限的错误进入最终失败，已忽略记录不再进入待办。候选排序优先处理尚未读取的新文章，再处理后续 AI 阶段，最后处理到期重试。
 
-`CleanupService` 是清理能力的唯一接口：同一套范围规则同时用于预览和执行；执行要求确认词、检查三个任务管理器均空闲，并使用 SQLite Online Backup 生成恢复副本后才删除数据。
+`CleanupService` 是清理能力的唯一接口：同一套范围规则同时用于预览和执行；执行要求确认词、检查三个任务管理器均空闲，并生成 MySQL 逻辑备份后才删除数据。
 
 ## 7. 生产化演进
 
-建议将系统拆分为 API、任务队列 worker、调度服务和 PostgreSQL。通过 Redis/Celery、RQ 或同类成熟方案处理重试、并发和任务状态，并在 API 前增加身份认证、HTTPS、访问日志和监控告警。
+建议将系统拆分为 API、任务队列 worker、调度服务和独立 MySQL 服务。通过 Redis/Celery、RQ 或同类成熟方案处理重试、并发和任务状态，并在 API 前增加身份认证、HTTPS、访问日志和监控告警。

@@ -4,13 +4,12 @@ import hashlib
 import html
 import json
 import re
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -453,7 +452,7 @@ class Collector:
 
     @staticmethod
     def _window_start(
-        connection: sqlite3.Connection,
+        connection: Any,
         source_id: int,
         keyword_id: int,
         first_window: datetime,
@@ -476,7 +475,7 @@ class Collector:
 
     def _process_pair(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         run_id: int,
         source: dict[str, object],
         keyword: dict[str, object],
@@ -564,7 +563,7 @@ class Collector:
 
     @staticmethod
     def _upsert_article(
-        connection: sqlite3.Connection,
+        connection: Any,
         item: FeedItem,
         source: dict[str, object],
         feed_url: str,
@@ -668,7 +667,7 @@ class Collector:
 
     @staticmethod
     def _insert_detail(
-        connection: sqlite3.Connection,
+        connection: Any,
         run_id: int,
         source: dict[str, object],
         keyword: dict[str, object],
