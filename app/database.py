@@ -346,10 +346,7 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    error_message TEXT NOT NULL DEFAULT '',
-    feishu_status TEXT NOT NULL DEFAULT 'not_pushed',
-    feishu_pushed_at TEXT,
-    feishu_error_message TEXT NOT NULL DEFAULT ''
+    error_message TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_reports_date
@@ -1292,30 +1289,12 @@ class Database:
                     "PRAGMA table_info(daily_reports)"
                 ).fetchall()
             }
-            if self.backend == "mysql":
-                report_migrations = {
-                    "keyword_category_id": (
-                        "BIGINT REFERENCES keyword_categories(id) ON DELETE SET NULL"
-                    ),
-                    "keyword_category_name": "VARCHAR(191) NOT NULL DEFAULT ''",
-                    "feishu_status": (
-                        "VARCHAR(20) NOT NULL DEFAULT 'not_pushed'"
-                    ),
-                    "feishu_pushed_at": "VARCHAR(40) NULL",
-                    "feishu_error_message": (
-                        "LONGTEXT NOT NULL DEFAULT ('')"
-                    ),
-                }
-            else:
-                report_migrations = {
-                    "keyword_category_id": (
-                        "INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL"
-                    ),
-                    "keyword_category_name": "TEXT NOT NULL DEFAULT ''",
-                    "feishu_status": "TEXT NOT NULL DEFAULT 'not_pushed'",
-                    "feishu_pushed_at": "TEXT",
-                    "feishu_error_message": "TEXT NOT NULL DEFAULT ''",
-                }
+            report_migrations = {
+                "keyword_category_id": (
+                    "INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL"
+                ),
+                "keyword_category_name": "TEXT NOT NULL DEFAULT ''",
+            }
             for column, definition in report_migrations.items():
                 if column not in report_columns:
                     connection.execute(
@@ -1696,7 +1675,6 @@ class Database:
                 "ai_content_max_chars": "30000",
                 "ai_auto_analyze": "false",
                 "ai_auto_report": "false",
-                "feishu_auto_push": "false",
             }
             for key, value in defaults.items():
                 connection.execute(

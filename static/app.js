@@ -16,7 +16,6 @@ const state = {
   reviewTotal: 0,
   aiBatchSize: 20,
   categories: {},
-  feishuConfigured: false,
   wasRunning: false,
   wasAnalysisRunning: false,
   wasReportRunning: false,
@@ -74,7 +73,7 @@ function formatPercent(value) {
 }
 
 function statusLabel(status) {
-  const labels = { success: "成功", partial: "部分失败", failed: "失败", running: "运行中", interrupted: "已中断", pending: "待处理", processing: "处理中", skipped: "跳过", waiting: "等待重试", retry_ready: "可重试", final_failed: "最终失败", ignored: "已忽略", not_pushed: "未推送", sending: "推送中" };
+  const labels = { success: "成功", partial: "部分失败", failed: "失败", running: "运行中", interrupted: "已中断", pending: "待处理", processing: "处理中", skipped: "跳过", waiting: "等待重试", retry_ready: "可重试", final_failed: "最终失败", ignored: "已忽略" };
   return `<span class="status-chip status-${escapeHtml(status)}">${labels[status] || escapeHtml(status)}</span>`;
 }
 
@@ -290,7 +289,6 @@ async function loadAIStatus() {
   try {
     const data = await api("/api/ai/status");
     state.categories = data.categories || {};
-    state.feishuConfigured = Boolean(data.feishu_configured);
     fillCategoryOptions();
     $("ai-metric-pending").textContent = data.pending;
     $("ai-metric-content-ready").textContent = data.content_ready;
@@ -569,9 +567,8 @@ async function loadReports() {
         <td><strong>${escapeHtml(report.title || `日报 #${report.id}`)}</strong><span class="cell-subtitle">#${report.id} · ${escapeHtml(report.model)}</span></td>
         <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(keywordCategory)}</td><td>${report.article_count}</td>
         <td>${riskMarkup(report.risk_level, report.risk_score)}</td><td>${statusLabel(report.status)}</td>
-        <td>${statusLabel(report.feishu_status || "not_pushed")}${report.feishu_error_message ? `<span class="cell-subtitle" title="${escapeHtml(report.feishu_error_message)}">${escapeHtml(report.feishu_error_message)}</span>` : ""}</td>
         <td>${formatFullTime(report.updated_at)}</td>
-        <td><div class="row-actions"><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button><button class="icon-button report-feishu-button" data-id="${report.id}" type="button" title="${state.feishuConfigured ? "推送到飞书群" : "尚未配置飞书 Webhook"}" ${report.status !== "success" || report.feishu_status === "sending" ? "disabled" : ""}><i data-lucide="send"></i></button></div></td>
+        <td><div class="report-actions"><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button><button class="icon-button report-feishu-button" data-id="${report.id}" type="button" title="推送到飞书" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="send"></i></button></div></td>
       </tr>`;
     }).join("");
     $("report-empty").classList.toggle("hidden", data.items.length > 0);
@@ -579,17 +576,11 @@ async function loadReports() {
   } catch (error) { showToast(error.message, true); }
 }
 
-async function pushReportToFeishu(id) {
-  const button = document.querySelector(`.report-feishu-button[data-id="${id}"]`);
-  if (button) button.disabled = true;
+async function sendReportToFeishu(id) {
   try {
-    await api(`/api/reports/${id}/push-feishu`, { method: "POST" });
-    showToast(`日报 #${id} 已推送到飞书群`);
-  } catch (error) {
-    showToast(error.message, true);
-  } finally {
-    await loadReports();
-  }
+    const data = await api(`/api/reports/${id}/feishu`, { method: "POST" });
+    showToast(`日报 #${data.report_id} 已推送到飞书`);
+  } catch (error) { showToast(error.message, true); }
 }
 
 async function generateReport(event) {
@@ -987,12 +978,6 @@ async function loadAISettings() {
     $("ai-content-max-chars").value = data.content_max_chars;
     $("ai-auto-analyze").checked = data.auto_analyze;
     $("ai-auto-report").checked = data.auto_report;
-    $("feishu-auto-push").checked = data.feishu_auto_push;
-    $("feishu-auto-push").disabled = !data.feishu_configured;
-    $("feishu-config-state").textContent = data.feishu_configured
-      ? "Webhook 已配置；分类日报生成成功后将发送带出处链接的飞书卡片。"
-      : "Webhook 未配置，请先在 .env 中设置 FEISHU_WEBHOOK_URL；凭据不会在页面展示。";
-    state.feishuConfigured = Boolean(data.feishu_configured);
     state.aiBatchSize = data.batch_size;
   } catch (error) { showToast(error.message, true); }
 }
@@ -1013,7 +998,6 @@ async function saveAISettings(event) {
     content_max_chars: Number($("ai-content-max-chars").value),
     auto_analyze: $("ai-auto-analyze").checked,
     auto_report: $("ai-auto-report").checked,
-    feishu_auto_push: $("feishu-auto-push").checked,
   };
   try {
     const data = await api("/api/ai/settings", { method: "PUT", body: JSON.stringify(payload) });
@@ -1134,7 +1118,7 @@ function bindEvents() {
     if (target.classList.contains("run-detail")) openRunDetail(id);
     if (target.classList.contains("ai-run-detail")) openAIRunDetail(id);
     if (target.classList.contains("report-detail-button")) openReportDetail(id);
-    if (target.classList.contains("report-feishu-button")) pushReportToFeishu(id);
+    if (target.classList.contains("report-feishu-button")) sendReportToFeishu(id);
     if (target.classList.contains("source-edit")) openSourceDialog(state.sources.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-edit")) openKeywordDialog(state.keywords.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-category-button")) {

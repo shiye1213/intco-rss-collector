@@ -644,17 +644,10 @@ def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
         "secondary_categories",
         "keyword_categories",
     } <= review_columns
-    assert {
-        "keyword_category_id",
-        "keyword_category_name",
-        "feishu_status",
-        "feishu_pushed_at",
-        "feishu_error_message",
-    } <= report_columns
+    assert {"keyword_category_id", "keyword_category_name"} <= report_columns
     assert settings["ai_relevance_prompt"] == DEFAULT_RELEVANCE_PROMPT
     assert settings["ai_business_profile"] == DEFAULT_BUSINESS_PROFILE
     assert settings["ai_report_prompt"] == DEFAULT_REPORT_PROMPT
-    assert settings["feishu_auto_push"] == "false"
     assert {
         category_name: settings[REPORT_CATEGORY_SETTING_KEYS[category_name]]
         for category_name in DEFAULT_REPORT_CATEGORY_PROMPTS

@@ -18,7 +18,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
-Copy-Item .env.example .env
+# 编辑项目根目录的 .env，填入所需的本地环境变量
 ```
 
 如果 PowerShell 禁止激活脚本，可以直接使用 `.\.venv\Scripts\python.exe` 执行后续命令。

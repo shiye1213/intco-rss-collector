@@ -134,9 +134,9 @@ sequenceDiagram
 | `article_relevance_reviews` | 基于正文的相关性结果、理由、证据与调用审计字段 |
 | `business_articles` | 只保存真相关文章的摘要、分类、影响、风险和建议动作 |
 | `article_analyses` | 旧版兼容表；新流水线不再读取其结果 |
-| `daily_reports` | 按日期和关键词分类分别生成的日报正文、风险、结构化列表和飞书推送状态 |
+| `daily_reports` | 按日期和关键词分类分别生成的日报正文、风险和结构化列表 |
 | `daily_report_articles` | 日报与其依据文章的多对多关系 |
-| `app_settings` | 调度时间、时区、业务边界、阈值、批量大小及日报/飞书自动化开关 |
+| `app_settings` | 调度时间、时区、业务边界、阈值、批量大小和自动化开关 |
 
 ## 6. 关键设计
 

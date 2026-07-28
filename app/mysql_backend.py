@@ -461,9 +461,6 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     created_at VARCHAR(40) NOT NULL,
     updated_at VARCHAR(40) NOT NULL,
     error_message LONGTEXT NOT NULL DEFAULT (''),
-    feishu_status VARCHAR(20) NOT NULL DEFAULT 'not_pushed',
-    feishu_pushed_at VARCHAR(40) NULL,
-    feishu_error_message LONGTEXT NOT NULL DEFAULT (''),
     PRIMARY KEY (id),
     KEY idx_daily_reports_date (report_date DESC, id DESC),
     KEY idx_daily_reports_keyword_category (

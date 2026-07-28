@@ -66,13 +66,13 @@ def test_prompt_settings_and_cited_report_content_are_wired() -> None:
     assert "keyword_category_id: keywordCategoryId" in javascript
     assert "report.keyword_category_name" in javascript
     assert "article.source_url" in javascript
-    assert 'id="feishu-auto-push"' in html
-    assert 'id="feishu-config-state"' in html
-    assert "飞书推送" in html
-    assert 'feishu_auto_push: $("feishu-auto-push").checked' in javascript
-    assert "report.feishu_status" in javascript
-    assert 'api(`/api/reports/${id}/push-feishu`' in javascript
+
+
+def test_reports_can_be_manually_sent_to_feishu() -> None:
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
     assert "report-feishu-button" in javascript
+    assert 'api(`/api/reports/${id}/feishu`, { method: "POST" })' in javascript
 
 
 def test_incremental_collection_setting_is_wired() -> None:

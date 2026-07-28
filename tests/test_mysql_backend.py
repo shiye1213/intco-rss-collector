@@ -109,9 +109,6 @@ def test_mysql_schema_covers_all_application_tables() -> None:
     assert "ENGINE=InnoDB" in MYSQL_SCHEMA
     assert "CHARSET=utf8mb4" in MYSQL_SCHEMA
     assert "AUTOINCREMENT" not in MYSQL_SCHEMA
-    assert "feishu_status VARCHAR(20)" in MYSQL_SCHEMA
-    assert "feishu_pushed_at VARCHAR(40)" in MYSQL_SCHEMA
-    assert "feishu_error_message LONGTEXT" in MYSQL_SCHEMA
 
 
 def test_keyword_category_filter_is_portable() -> None:

@@ -73,17 +73,6 @@ class FakeContentFetcher:
         return response
 
 
-class FailingReportPublisher:
-    configured = True
-
-    def __init__(self) -> None:
-        self.report_ids: list[int] = []
-
-    def push(self, report_id: int) -> dict[str, Any]:
-        self.report_ids.append(report_id)
-        raise RuntimeError("飞书测试推送失败")
-
-
 def content_document(url: str, text: str) -> ContentDocument:
     return ContentDocument(
         requested_url=url,
@@ -604,7 +593,6 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
         REPORT_CATEGORY_SETTING_KEYS["贸易政策"],
         "测试贸易政策专属提示词：必须核对政策工具、实施阶段与采购准入影响。",
     )
-    database.set_setting("feishu_auto_push", "true")
     article_id = create_article(
         database,
         slug="medical-gloves",
@@ -642,10 +630,7 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     analysis_manager.execute(run_id, article_ids)
 
     report_client = FakeLLMClient([report_response(article_id)])
-    publisher = FailingReportPublisher()
-    report_manager = DailyReportManager(
-        database, repository, report_client, publisher=publisher
-    )
+    report_manager = DailyReportManager(database, repository, report_client)
     report_id, category_name, articles = report_manager.prepare(
         date(2026, 7, 20), keyword_category_id
     )
@@ -656,7 +641,6 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     report = repository.get_report(report_id)
     assert report is not None
     assert report["status"] == "success"
-    assert publisher.report_ids == [report_id]
     assert report["article_count"] == 1
     assert report["keyword_category_id"] == keyword_category_id
     assert report["keyword_category_name"] == "贸易政策"

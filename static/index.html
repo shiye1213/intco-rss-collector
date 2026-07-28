@@ -239,7 +239,7 @@
           </form>
           <div class="table-wrap">
             <table class="report-table">
-              <thead><tr><th>日报</th><th>日期</th><th>关键词分类</th><th>新闻数</th><th>风险</th><th>状态</th><th>飞书推送</th><th>更新时间</th><th></th></tr></thead>
+              <thead><tr><th>日报</th><th>日期</th><th>关键词分类</th><th>新闻数</th><th>风险</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
               <tbody id="report-rows"></tbody>
             </table>
             <div id="report-empty" class="empty-state hidden">暂无已生成的情报日报</div>
@@ -325,7 +325,6 @@
               <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /></label>
               <label class="switch-row"><span><strong>采集后自动分析</strong></span><input id="ai-auto-analyze" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
               <label class="switch-row"><span><strong>分析后自动生成当天日报</strong></span><input id="ai-auto-report" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
-              <label class="switch-row full"><span><strong>日报生成后自动推送飞书群</strong><small id="feishu-config-state">Webhook 配置读取中；凭据只从 .env 加载，不在页面展示。</small></span><input id="feishu-auto-push" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
               <div class="form-actions full"><button class="button primary" type="submit"><i data-lucide="save"></i><span>保存 AI 设置</span></button></div>
             </form>
           </div>
