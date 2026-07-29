@@ -108,8 +108,8 @@ sequenceDiagram
     else 无关或低于阈值
         Analysis->>DB: 保存审核记录，不写入业务新闻表
     end
-    User->>API: 按日期和一个关键词分类生成日报
-    API->>Report: 读取命中该关键词分类的已审核相关新闻
+    User->>API: 按日期生成综合日报
+    API->>Report: 读取当天全部已审核相关新闻
     Report->>DeepSeek: 生成结构化日报
     Report->>Report: 过滤非法文章 ID、附加来源链接并执行风险下限
     Report->>DB: 保存日报和文章关联
@@ -120,7 +120,7 @@ sequenceDiagram
 | 表 | 用途 |
 |---|---|
 | `rss_sources` | RSS/网页数据源配置、类型、语言、爬虫标记和启用状态 |
-| `keyword_categories` | 关键词分类、排序与启用状态；分类日报按其筛选文章 |
+| `keyword_categories` | 关键词分类、排序与启用状态；用于组织关键词和统计命中效果 |
 | `keywords` | 所属关键词分类、关键词组、查询表达式、主题词、业务信号词、排除词、回溯天数和本地主题校验开关 |
 | `articles` | 新闻标题、链接、发布方、摘要和发布时间 |
 | `article_sources` | 文章的全部 RSS 来源、链接、GUID、语言、国家、分类及发现时间 |
@@ -134,7 +134,7 @@ sequenceDiagram
 | `article_relevance_reviews` | 基于正文的相关性结果、理由、证据与调用审计字段 |
 | `business_articles` | 只保存真相关文章的摘要、分类、影响、风险和建议动作 |
 | `article_analyses` | 旧版兼容表；新流水线不再读取其结果 |
-| `daily_reports` | 按日期和关键词分类分别生成的日报正文、风险和结构化列表 |
+| `daily_reports` | 按日期生成的综合日报正文、风险和结构化列表 |
 | `daily_report_articles` | 日报与其依据文章的多对多关系 |
 | `app_settings` | 调度时间、时区、业务边界、阈值、批量大小和自动化开关 |
 
@@ -160,7 +160,7 @@ sequenceDiagram
 
 ### AI 可信边界
 
-原始 RSS 候选文章始终保留。正文、相关性审核和最终业务新闻分别写入独立表；全文失败时不允许退回标题或 RSS 摘要进行审核。模型输出必须通过 Pydantic 结构校验，相关性还要通过可配置阈值，只有 `business_articles.analysis_status=success` 的记录才能进入日报。每份日报再通过 `article_keywords → keywords.category_id` 限定为一个关键词分类；AI 业务分类只作为条目标签。Prompt 明确忽略新闻正文中的指令，所有判断只能使用输入证据。日报引用的文章 ID 必须属于本次输入，后端依据有效 ID 附加来源链接，风险分数还执行确定性的文章最高风险下限。
+原始 RSS 候选文章始终保留。正文、相关性审核和最终业务新闻分别写入独立表；全文失败时不允许退回标题或 RSS 摘要进行审核。模型输出必须通过 Pydantic 结构校验，相关性还要通过可配置阈值，只有 `business_articles.analysis_status=success` 的记录才能进入日报。每份日报汇总指定日期内全部成功业务新闻；AI 业务分类只作为条目标签。Prompt 明确忽略新闻正文中的指令，所有判断只能使用输入证据。日报引用的文章 ID 必须属于本次输入，后端依据有效 ID 附加来源链接，风险分数还执行确定性的文章最高风险下限。
 
 ### 有界重试与数据维护
 

@@ -39,10 +39,30 @@ def test_report_card_contains_required_sections_and_source_links() -> None:
     content = "\n".join(element.get("content", "") for element in card["elements"])
     assert card["header"]["template"] == "red"
     assert "日报摘要" in content
-    assert "关键进展" in content
+    assert "关键进展" not in content
+    assert "**准入规则更新**\n规则扩大本地化要求" in content
+    assert "业务影响" in content
     assert "关键风险" in content
     assert "建议行动" in content
     assert "[监管原文](https://example.com/source)" in content
+    assert "[查看原文](https://example.com/source)" not in content
+
+
+def test_report_card_uses_shortened_news_titles_for_source_links() -> None:
+    report = sample_report()
+    long_title = "这是一个用于验证日报出处链接自动截断效果的较长新闻标题"
+    report["key_developments"][0]["sources"].append(
+        {"title": long_title, "source_url": "https://example.com/source-2"}
+    )
+
+    card = build_report_card(report)
+    content = "\n".join(
+        element.get("content", "") for element in card["elements"]
+    )
+
+    assert "[监管原文](https://example.com/source)" in content
+    assert f"[{long_title[:24]}…](https://example.com/source-2)" in content
+    assert long_title not in content
 
 
 def test_webhook_sends_interactive_card_and_signature() -> None:

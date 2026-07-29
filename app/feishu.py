@@ -84,14 +84,24 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
         {"tag": "markdown", "content": f"**日报摘要**\n{_text(report.get('executive_summary'))}"},
         {"tag": "markdown", "content": f"**风险依据**\n{_text(report.get('risk_basis'))}"},
     ]
-    for heading, field, formatter in (
-        ("关键进展", "key_developments", _development_text),
-        ("关键风险", "key_risks", _item_text),
-        ("建议行动", "recommended_actions", _item_text),
+    developments = [
+        item
+        for item in (report.get("key_developments") or [])[:5]
+        if isinstance(item, dict)
+    ]
+    if developments:
+        elements.append({"tag": "hr"})
+        elements.extend(
+            {"tag": "markdown", "content": _development_text(item)}
+            for item in developments
+        )
+    for heading, field in (
+        ("关键风险", "key_risks"),
+        ("建议行动", "recommended_actions"),
     ):
         entries = report.get(field) or []
         if entries:
-            lines = [formatter(item) for item in entries[:5] if isinstance(item, dict)]
+            lines = [_item_text(item) for item in entries[:5] if isinstance(item, dict)]
             if lines:
                 elements.append({"tag": "hr"})
                 elements.append({"tag": "markdown", "content": f"**{heading}**\n" + "\n".join(lines)})
@@ -108,7 +118,8 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
 def _development_text(item: dict[str, Any]) -> str:
     title = _text(item.get("title"), 100)
     finding = _text(item.get("finding"), 350)
-    return f"- **{title}**：{finding}{_source_links(item)}"
+    impact = _text(item.get("business_impact"), 350)
+    return f"**{title}**\n{finding}\n业务影响：{impact}{_source_links(item)}"
 
 
 def _item_text(item: dict[str, Any]) -> str:
@@ -117,14 +128,24 @@ def _item_text(item: dict[str, Any]) -> str:
 
 def _source_links(item: dict[str, Any]) -> str:
     sources = item.get("sources") or []
-    links = []
+    valid_sources = []
     for source in sources[:3]:
         if not isinstance(source, dict):
             continue
         url = str(source.get("source_url") or "").strip()
         if url.startswith(("https://", "http://")):
-            links.append(f"[{_text(source.get('title') or source.get('publisher') or '原文', 80)}]({url})")
+            valid_sources.append((source, url))
+    links = [
+        f"[{_short_source_title(source)}]({url})"
+        for source, url in valid_sources
+    ]
     return f"\n  原文：{' · '.join(links)}" if links else ""
+
+
+def _short_source_title(source: dict[str, Any], limit: int = 24) -> str:
+    value = source.get("title") or source.get("publisher") or "原文"
+    title = " ".join(str(value).split()).replace("[", "【").replace("]", "】")
+    return f"{title[:limit]}…" if len(title) > limit else title
 
 
 def _text(value: Any, limit: int = 600) -> str:
