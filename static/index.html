@@ -393,6 +393,10 @@
                       <span><strong>分析后自动生成当天日报</strong><small>当天尚无成功日报时自动生成综合日报。</small></span>
                       <input id="ai-auto-report" type="checkbox" /><span class="switch" aria-hidden="true"></span>
                     </label>
+                    <label class="switch-row settings-toggle-card">
+                      <span><strong>日报生成后自动推送飞书</strong><small>需要在 .env 配置 FEISHU_WEBHOOK_URL；推送失败不会影响日报生成。</small></span>
+                      <input id="ai-auto-feishu-push" type="checkbox" /><span class="switch" aria-hidden="true"></span>
+                    </label>
                   </div>
                 </div>
 

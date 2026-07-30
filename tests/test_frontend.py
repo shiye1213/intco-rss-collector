@@ -79,6 +79,14 @@ def test_reports_can_be_manually_sent_to_feishu() -> None:
     assert 'api(`/api/reports/${id}/feishu`, { method: "POST" })' in javascript
 
 
+def test_ai_settings_support_automatic_feishu_push() -> None:
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="ai-auto-feishu-push"' in html
+    assert "auto_feishu_push" in javascript
+
+
 def test_incremental_collection_setting_is_wired() -> None:
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")

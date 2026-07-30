@@ -996,6 +996,7 @@ async function loadAISettings() {
     $("ai-content-max-chars").value = data.content_max_chars;
     $("ai-auto-analyze").checked = data.auto_analyze;
     $("ai-auto-report").checked = data.auto_report;
+    $("ai-auto-feishu-push").checked = data.auto_feishu_push;
     state.aiBatchSize = data.batch_size;
   } catch (error) { showToast(error.message, true); }
 }
@@ -1012,6 +1013,7 @@ async function saveAISettings(event) {
     content_max_chars: Number($("ai-content-max-chars").value),
     auto_analyze: $("ai-auto-analyze").checked,
     auto_report: $("ai-auto-report").checked,
+    auto_feishu_push: $("ai-auto-feishu-push").checked,
   };
   try {
     const data = await api("/api/ai/settings", { method: "PUT", body: JSON.stringify(payload) });
