@@ -7,6 +7,8 @@ import json
 import os
 import time
 from typing import Any, Callable
+
+from .prompts import CATEGORY_LABELS
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -93,8 +95,8 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         {"tag": "hr"},
-        {"tag": "markdown", "content": f"**日报摘要**\n{_text(report.get('executive_summary'))}"},
-        {"tag": "markdown", "content": f"**风险依据**\n{_text(report.get('risk_basis'))}"},
+        {"tag": "markdown", "content": f"**今日总体总结**\n{_text(report.get('executive_summary'))}"},
+        {"tag": "markdown", "content": f"**整体风险依据**\n{_text(report.get('risk_basis'))}"},
     ]
     developments = [
         item
@@ -105,7 +107,7 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
         elements.append({"tag": "hr"})
         _append_markdown_chunks(
             elements,
-            "业务进展",
+            "逐条新闻分析",
             [_development_text(item) for item in developments],
         )
     for heading, field in (
@@ -137,9 +139,25 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
 
 def _development_text(item: dict[str, Any]) -> str:
     title = _text(item.get("title"), 100)
-    finding = _text(item.get("finding"), 600)
-    impact = _text(item.get("business_impact"), 1_000)
-    return f"**{title}**\n{finding}\n业务影响：{impact}{_source_links(item)}"
+    finding = _text(item.get("finding") or "暂未明确", 600)
+    region = _text(item.get("affected_region") or "暂未明确", 200)
+    products = _text(item.get("products") or "暂未明确", 200)
+    reason = _text(item.get("impact_reason") or "暂未明确", 600)
+    impact = _text(item.get("business_impact") or "暂未明确", 1_000)
+    action = _text(item.get("recommended_action") or "暂未明确", 600)
+    risk_labels = {"low": "低", "medium": "中", "high": "高", "critical": "严重"}
+    risk = risk_labels.get(str(item.get("risk_level") or "low"), "低")
+    category_code = str(item.get("category") or "other")
+    category = _text(CATEGORY_LABELS.get(category_code, category_code), 100)
+    return (
+        f"**{title}**\n"
+        f"新闻类型：{category}　影响地区：{region}\n"
+        f"涉及产品：{products}　影响等级：{risk}（{item.get('risk_score', 0)}）\n"
+        f"核心事实：{finding}\n"
+        f"影响原因：{reason}\n"
+        f"业务影响：{impact}\n"
+        f"建议措施：{action}{_source_links(item)}"
+    )
 
 
 def _item_text(item: dict[str, Any]) -> str:

@@ -68,8 +68,13 @@ def test_prompt_settings_and_cited_report_content_are_wired() -> None:
     assert "report.keyword_category_name" not in javascript
     assert "article.source_url" in javascript
     assert "关键进展</h4>" not in javascript
-    assert 'class="development-list report-aspects"' in javascript
-    assert '<h4>${escapeHtml(item.title' in javascript
+    assert "function reportNewsAnalysis(" in javascript
+    assert "今日总体总结" in javascript
+    assert "逐条新闻分析" in javascript
+    assert "新闻类型：" in javascript
+    assert "影响地区：" in javascript
+    assert "涉及产品：" in javascript
+    assert "建议措施：" in javascript
 
 
 def test_reports_can_be_manually_sent_to_feishu() -> None:

@@ -34,6 +34,7 @@ from .prompts import (
     LEGACY_DEFAULT_REPORT_PROMPT_V8,
     LEGACY_DEFAULT_REPORT_PROMPT_V9,
     LEGACY_DEFAULT_REPORT_PROMPT_V10,
+    LEGACY_DEFAULT_REPORT_PROMPT_V11,
 )
 from .query_builder import build_keyword_query
 
@@ -1916,6 +1917,7 @@ class Database:
                         LEGACY_DEFAULT_REPORT_PROMPT_V8,
                         LEGACY_DEFAULT_REPORT_PROMPT_V9,
                         LEGACY_DEFAULT_REPORT_PROMPT_V10,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V11,
                     ],
                     DEFAULT_REPORT_PROMPT,
                 ),

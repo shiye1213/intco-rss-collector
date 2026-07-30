@@ -262,8 +262,14 @@ class KeyDevelopment(BaseModel):
     article_id: int
     category: CategoryCode
     title: str = Field(max_length=500)
+    affected_region: str = Field(default="暂未明确", max_length=500)
+    products: str = Field(default="暂未明确", max_length=500)
+    risk_level: RiskLevel = "low"
+    risk_score: int = Field(default=0, ge=0, le=100)
     finding: str = Field(max_length=1000)
+    impact_reason: str = Field(default="暂未明确", max_length=1000)
     business_impact: str = Field(max_length=1000)
+    recommended_action: str = Field(default="暂未明确", max_length=1000)
 
 
 class CitedReportItem(BaseModel):
@@ -288,7 +294,7 @@ class DailyReportAssessment(BaseModel):
     risk_level: RiskLevel
     risk_score: int = Field(ge=0, le=100)
     risk_basis: str = Field(max_length=2000)
-    key_developments: list[KeyDevelopment] = Field(default_factory=list, max_length=20)
+    key_developments: list[KeyDevelopment] = Field(default_factory=list, max_length=100)
     key_risks: list[CitedReportItem] = Field(default_factory=list, max_length=12)
     opportunities: list[CitedReportItem] = Field(default_factory=list, max_length=12)
     recommended_actions: list[CitedReportItem] = Field(
@@ -1521,6 +1527,8 @@ class IntelligenceRepository:
                        COALESCE(ba.impact_analysis, '') AS impact_analysis,
                        COALESCE(ba.risk_level, 'low') AS risk_level,
                        COALESCE(ba.risk_score, 0) AS risk_score,
+                       COALESCE(ba.risk_factors, '[]') AS risk_factors,
+                       COALESCE(ba.recommended_actions, '[]') AS recommended_actions,
                        ic.final_url
                 FROM daily_report_articles dra
                 JOIN articles a ON a.id = dra.article_id
@@ -1538,6 +1546,12 @@ class IntelligenceRepository:
         sources_by_id: dict[int, dict[str, Any]] = {}
         for article in articles:
             article["source_url"] = article.get("final_url") or article["url"]
+            article["risk_factors"] = self._decode_json(
+                article.get("risk_factors"), []
+            )
+            article["recommended_actions"] = self._decode_json(
+                article.get("recommended_actions"), []
+            )
             source = {
                 "article_id": int(article["article_id"]),
                 "title": article["title"],
@@ -2237,14 +2251,23 @@ class DailyReportManager:
                 ),
             )
             result = self.client.complete_json(
-                system_prompt, user_prompt, max_tokens=3000
+                system_prompt,
+                user_prompt,
+                max_tokens=max(3000, min(8000, 1800 + len(report_articles) * 320)),
             )
             assessment = DailyReportAssessment.model_validate(result.data)
             valid_article_ids = {int(article["article_id"]) for article in articles}
-            developments = [
-                development
+            developments_by_id = {
+                development.article_id: development
                 for development in assessment.key_developments
                 if development.article_id in valid_article_ids
+            }
+            developments = [
+                self._complete_development(
+                    developments_by_id.get(int(article["article_id"])),
+                    article,
+                )
+                for article in articles
             ]
             cited_updates = {
                 field: self._valid_cited_items(
@@ -2263,6 +2286,7 @@ class DailyReportManager:
                 update={
                     "key_developments": developments,
                     **cited_updates,
+                    "title": f"国际贸易市场情报日报（{report_date.isoformat()}）",
                     "risk_score": risk_score,
                     "risk_level": risk_level_for_score(risk_score),
                 }
@@ -2323,6 +2347,55 @@ class DailyReportManager:
             "recommended_actions": article["recommended_actions"],
             "evidence": article["analysis_evidence"],
         }
+
+    @staticmethod
+    def _complete_development(
+        development: KeyDevelopment | None,
+        article: dict[str, Any],
+    ) -> KeyDevelopment:
+        risk_factors = [
+            str(value).strip()
+            for value in article.get("risk_factors", [])
+            if str(value).strip()
+        ]
+        actions = [
+            str(value).strip()
+            for value in article.get("recommended_actions", [])
+            if str(value).strip()
+        ]
+        defaults = {
+            "article_id": int(article["article_id"]),
+            "category": article.get("category") or "other",
+            "title": str(article.get("title") or "未命名新闻")[:500],
+            "affected_region": "暂未明确",
+            "products": "暂未明确",
+            "risk_level": article.get("risk_level") or "low",
+            "risk_score": int(article.get("risk_score") or 0),
+            "finding": str(article.get("summary") or "暂未明确")[:1000],
+            "impact_reason": "；".join(risk_factors)[:1000] or "暂未明确",
+            "business_impact": str(
+                article.get("impact_analysis") or "暂未明确"
+            )[:1000],
+            "recommended_action": "；".join(actions)[:1000] or "暂未明确",
+        }
+        if development is None:
+            return KeyDevelopment.model_validate(defaults)
+        update = {
+            "risk_level": defaults["risk_level"],
+            "risk_score": defaults["risk_score"],
+        }
+        for field in (
+            "title",
+            "affected_region",
+            "products",
+            "finding",
+            "impact_reason",
+            "business_impact",
+            "recommended_action",
+        ):
+            if str(getattr(development, field, "") or "").strip() in {"", "暂未明确"}:
+                update[field] = defaults[field]
+        return development.model_copy(update=update)
 
     @staticmethod
     def _valid_cited_items(

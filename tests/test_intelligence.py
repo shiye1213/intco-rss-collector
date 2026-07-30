@@ -685,6 +685,11 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     assert report["keyword_category_name"] == ""
     assert report["risk_score"] == 72
     assert report["risk_level"] == "high"
+    assert report["title"] == "国际贸易市场情报日报（2026-07-20）"
+    assert report["key_developments"][0]["risk_level"] == "high"
+    assert report["key_developments"][0]["risk_score"] == 72
+    assert report["key_developments"][0]["impact_reason"] == "需求持续性存在不确定性"
+    assert report["key_developments"][0]["recommended_action"] == "跟踪医院采购计划"
     assert [item["article_id"] for item in report["key_developments"]] == [
         article_id
     ]
@@ -786,6 +791,10 @@ def test_daily_report_combines_articles_from_all_keyword_categories(tmp_path) ->
         policy_article_id,
         tariff_article_id,
     }
+    assert [item["article_id"] for item in report["key_developments"]] == [
+        tariff_article_id,
+        policy_article_id,
+    ]
 
 
 def test_automatic_workflow_generates_one_combined_report(tmp_path) -> None:
@@ -1279,8 +1288,9 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert "负责部门" in report_system
     assert "建议负责部门" in DEFAULT_REPORT_PROMPT
     assert "等待后续官方公告" in DEFAULT_REPORT_PROMPT
-    assert "不使用“关键进展”作为统一标题" in report_system
-    assert '"title": "方面小标题' in report_system
+    assert "key_developments 对应“逐条新闻分析”" in report_system
+    assert '"affected_region":' in report_system
+    assert '"recommended_action":' in report_system
     assert "专属日报要求" not in report_system
     assert '"article_ids": [1]' in report_system
     assert '"category": "分类代码"' in report_system

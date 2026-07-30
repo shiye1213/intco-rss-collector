@@ -6,7 +6,7 @@ from typing import Any
 
 RELEVANCE_PROMPT_VERSION = "intco-relevance-v8"
 BUSINESS_ANALYSIS_PROMPT_VERSION = "intco-business-analysis-v6"
-REPORT_PROMPT_VERSION = "intco-daily-report-v11"
+REPORT_PROMPT_VERSION = "intco-daily-report-v12"
 
 CATEGORY_LABELS = {
     "market_demand": "市场需求",
@@ -202,6 +202,19 @@ DEFAULT_REPORT_PROMPT = """请基于系统提供的指定日期、新闻摘要�
 11. title 必须包含日报日期；risk_level、risk_score 和 risk_basis 必须与输入文章证据一致。所有事实、风险、机会、行动和观察事项都必须引用实际支持结论的文章 ID。新闻标题、发布方、发布时间和原文链接由后端根据有效 ID 自动附加，模型不得生成或改写链接。
 12. 同一事件的重复报道应合并。输入没有明确说明的字段统一写“暂未明确”，不得使用外部知识补全，不得断言输入未写明的英科医疗产地、出口市场、客户、供应商、采购、市场份额或已经采取的行动。"""
 
+LEGACY_DEFAULT_REPORT_PROMPT_V11 = DEFAULT_REPORT_PROMPT
+DEFAULT_REPORT_PROMPT = """请生成一份“总—分”结构的国际贸易市场情报日报：
+1. 标题固定使用“国际贸易市场情报日报（日报日期）”。
+2. 第一部分为“今日总体总结”，使用一段150至250字的文字概括当天新闻、主要风险、业务机会和需要立即处理的事项；随后单独说明整体风险依据。
+3. 第二部分为“逐条新闻分析”。当天每篇输入新闻必须且只能对应一个分析条目，不得遗漏，也不得把多篇新闻合并为一个条目。条目按影响等级从高到低排列。
+4. 每条新闻依次说明：新闻类型、影响地区、涉及产品、影响等级、核心事实、影响原因、业务影响、建议措施和出处。
+5. 影响地区应填写事件、政策、市场或供应链变化直接覆盖的国家、地区或市场；只有输入明确表明影响范围跨多个主要市场时才填写“全球”，无法从输入确认时填写“暂未明确”。
+6. 涉及产品只填写输入明确提及或能够由现有业务分析直接支持的产品；无法确认时填写“暂未明确”。
+7. 核心事实只陈述输入已经确认的内容；影响原因说明风险或机会如何形成；业务影响说明其对公司产品、成本、准入、订单、客户、供应链或竞争格局的传导路径。
+8. 建议措施必须具体、可执行，并尽量写明建议负责部门、建议时点或下一步核实内容；不得只写“持续关注”。
+9. 新闻分析之后依次输出“关键风险”“业务机会”“建议行动”“后续监控”和“全部来源文章”。风险与机会最多各5项；相同或相近的建议行动应合并；后续节点不明确时写“等待后续官方公告”。
+10. 所有结论必须以输入新闻和现有分析结果为依据，不得使用外部知识补全。缺少依据的内容不得编造，缺失信息统一填写“暂未明确”。新闻标题、发布方、发布时间和原文链接由后端根据有效 ID 自动附加。"""
+
 
 def _category_codes() -> str:
     return "\n".join(
@@ -336,8 +349,8 @@ def build_report_prompts(
 8. key_risks、opportunities、recommended_actions 和 watchlist 的每个条目都必须提供至少一个 article_ids；没有来源支持的内容不要输出。系统会根据有效 ID 将文章标题、发布方和 source_url 作为出处附到日报条目中。
 9. 先核验核心事件与企业业务边界的实质关联；仅为背景、顺带提及或误命中的文章不得强行纳入关键结论。
 10. 不得断言输入未写明的英科医疗产地、出口市场、客户、供应商、原料采购、市场份额或已采取行动；区分当前事件与历史背景。
-11. 日报正文不使用“关键进展”作为统一标题。key_developments 按业务方面拆分；每项 title 必须是 4-14 个中文字符的小标题，概括事件对业务的观察角度，不得直接照抄新闻标题。相同方面应合并，标题之间不得重复。
-12. key_developments 中高风险或需要立即处理的事件排在前面；finding 只填写输入能够支持的事件类别、状态、地区、产品和事实，business_impact 说明业务传导。缺失信息写“暂未明确”。
+11. key_developments 对应“逐条新闻分析”。每篇输入文章必须且只能生成一项，article_id 不得重复或遗漏；按 risk_score 从高到低排列。title 使用简化的新闻标题，不再按业务方面合并。
+12. key_developments 的 affected_region 填写事件直接覆盖的国家、地区或市场，products 填写明确涉及的产品；无法确认时写“暂未明确”。finding 填写核心事实，impact_reason 填写影响形成原因，business_impact 填写业务传导，recommended_action 填写可执行措施。
 13. key_risks 和 opportunities 最多各5项；recommended_actions 按紧急、高、中、观察排序并合并重复行动；watchlist 只保存尚未落地或信息不完整且有后续关注价值的事项。
 14. 输入没有明确出现“英科医疗”或“Intco”时，不得称企业为某国生产商、出口商、主要供应商或既有市场参与者。
 
@@ -351,9 +364,15 @@ def build_report_prompts(
   "key_developments": [{{
     "article_id": 1,
     "category": "分类代码",
-    "title": "方面小标题，例如市场需求变化、成本与定价影响、政策与市场准入",
-    "finding": "事件类别、事件状态、影响地区、涉及产品和核心事实；未知字段写暂未明确",
-    "business_impact": "对英科医疗的潜在影响、传导路径和建议关注方向"
+    "title": "不超过30个中文字符的简化新闻标题",
+    "affected_region": "事件直接覆盖的国家、地区或市场；无法确认时写暂未明确",
+    "products": "明确涉及的产品；无法确认时写暂未明确",
+    "risk_level": "low|medium|high|critical",
+    "risk_score": 0,
+    "finding": "核心事实",
+    "impact_reason": "影响形成原因",
+    "business_impact": "对英科医疗的潜在影响和传导路径",
+    "recommended_action": "具体建议措施"
   }}],
   "key_risks": [{{
     "category": "分类代码",

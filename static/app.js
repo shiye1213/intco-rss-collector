@@ -608,6 +608,46 @@ function reportList(title, items, articleById) {
   }).join("")}</ul></section>`;
 }
 
+function reportImpactMarkup(level, score) {
+  const labels = { low: "低", medium: "中", high: "高", critical: "严重" };
+  const stars = Math.max(1, Math.min(5, Math.ceil((Number(score) || 0) / 20)));
+  return `<span class="report-impact-stars" aria-label="${escapeHtml(labels[level] || level)}">${"★".repeat(stars)}${"☆".repeat(5 - stars)}</span><span>（${escapeHtml(labels[level] || level || "低")}）</span>`;
+}
+
+function reportNewsAnalysis(report, articleById) {
+  const developments = new Map(
+    (report.key_developments || [])
+      .filter((item) => item && typeof item === "object")
+      .map((item) => [Number(item.article_id), item]),
+  );
+  const articles = report.articles || [];
+  if (!articles.length) return "";
+  return `<section class="report-block report-news-analysis"><h4>逐条新闻分析</h4><div class="report-news-list">${articles.map((article, index) => {
+    const item = developments.get(Number(article.article_id)) || {};
+    const hasDetailedFormat = Boolean(item.affected_region || item.products || item.impact_reason || item.recommended_action);
+    const title = hasDetailedFormat ? (item.title || article.title) : article.title;
+    const category = item.category || article.category || "other";
+    const level = item.risk_level || article.risk_level || "low";
+    const score = Number(item.risk_score ?? article.risk_score) || 0;
+    const riskFactors = Array.isArray(article.risk_factors) ? article.risk_factors.filter(Boolean).join("；") : "";
+    const actions = Array.isArray(article.recommended_actions) ? article.recommended_actions.filter(Boolean).join("；") : "";
+    return `<article class="report-news-card">
+      <div class="report-news-title"><span>新闻 ${index + 1}</span><h5>${escapeHtml(title || "未命名新闻")}</h5></div>
+      <div class="report-news-fields">
+        <p><strong>新闻类型：</strong>${escapeHtml(categoryLabel(category))}</p>
+        <p><strong>影响地区：</strong>${escapeHtml(item.affected_region || "暂未明确")}</p>
+        <p><strong>涉及产品：</strong>${escapeHtml(item.products || "暂未明确")}</p>
+        <p><strong>影响等级：</strong>${reportImpactMarkup(level, score)}</p>
+      </div>
+      <p><strong>核心事实：</strong>${escapeHtml(item.finding || article.summary || "暂未明确")}</p>
+      <p><strong>影响原因：</strong>${escapeHtml(item.impact_reason || riskFactors || "暂未明确")}</p>
+      <p><strong>业务影响：</strong>${escapeHtml(item.business_impact || article.impact_analysis || "暂未明确")}</p>
+      <p><strong>建议措施：</strong>${escapeHtml(item.recommended_action || actions || "暂未明确")}</p>
+      ${reportSources([article.article_id], articleById, item.sources)}
+    </article>`;
+  }).join("")}</div></section>`;
+}
+
 async function openReportDetail(id) {
   try {
     const report = await api(`/api/reports/${id}`);
@@ -616,11 +656,11 @@ async function openReportDetail(id) {
     const allSourceIds = (report.articles || []).map((article) => article.article_id);
     $("report-detail").innerHTML = `
       <div class="report-meta"><span>${escapeHtml(report.report_date)}</span><span>${report.article_count} 篇新闻</span>${riskMarkup(report.risk_level, report.risk_score)}</div>
-      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p>${reportSources(allSourceIds, articleById, report.sources)}</section>
-      ${report.key_developments?.length ? `<section class="development-list report-aspects">${report.key_developments.map((item) => `<article><div class="development-title"><h4>${escapeHtml(item.title || categoryLabel(item.category || "other"))}</h4><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span></div><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p>${reportSources([item.article_id], articleById, item.sources)}</article>`).join("")}</section>` : ""}
+      <section class="report-lead"><h4>今日总体总结</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>整体风险依据：</strong>${escapeHtml(report.risk_basis)}</p>${reportSources(allSourceIds, articleById, report.sources)}</section>
+      ${reportNewsAnalysis(report, articleById)}
       ${reportList("关键风险", report.key_risks, articleById)}
       ${reportList("业务机会", report.opportunities, articleById)}
-      ${reportList("建议动作", report.recommended_actions, articleById)}
+      ${reportList("建议行动", report.recommended_actions, articleById)}
       ${reportList("后续监控", report.watchlist, articleById)}
       ${report.articles?.length ? `<section class="report-block"><h4>全部来源文章</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer"><span><strong>${escapeHtml(article.title)}</strong><small>${escapeHtml(article.publisher || "-")} · ${formatFullTime(article.published_at)}</small></span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
     $("report-dialog").showModal();

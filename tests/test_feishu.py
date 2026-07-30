@@ -23,7 +23,21 @@ def sample_report() -> dict:
         "risk_score": 72,
         "executive_summary": "采购规则变化可能提高准入成本。",
         "risk_basis": "政策尚处于征求意见阶段。",
-        "key_developments": [{"title": "准入规则更新", "finding": "规则扩大本地化要求", "sources": [{"title": "监管原文", "source_url": "https://example.com/source"}]}],
+        "key_developments": [
+            {
+                "title": "准入规则更新",
+                "category": "政策法规",
+                "affected_region": "美国",
+                "products": "一次性手套",
+                "risk_level": "high",
+                "risk_score": 72,
+                "finding": "规则扩大本地化要求",
+                "impact_reason": "本地化门槛提高",
+                "business_impact": "准入成本可能上升",
+                "recommended_action": "由法规部门核对适用范围",
+                "sources": [{"title": "监管原文", "source_url": "https://example.com/source"}],
+            }
+        ],
         "key_risks": [{"content": "合规成本可能上升", "sources": [{"publisher": "监管机构", "source_url": "https://example.com/risk"}]}],
         "recommended_actions": [{"content": "评估受影响产品", "sources": [{"title": "行动依据", "source_url": "https://example.com/action"}]}],
     }
@@ -38,10 +52,17 @@ def test_report_card_contains_required_sections_and_source_links() -> None:
     card = build_report_card(sample_report())
     content = "\n".join(element.get("content", "") for element in card["elements"])
     assert card["header"]["template"] == "red"
-    assert "日报摘要" in content
-    assert "业务进展" in content
-    assert "**准入规则更新**\n规则扩大本地化要求" in content
-    assert "业务影响" in content
+    assert "今日总体总结" in content
+    assert "整体风险依据" in content
+    assert "逐条新闻分析" in content
+    assert "**准入规则更新**" in content
+    assert "新闻类型：政策法规" in content
+    assert "影响地区：美国" in content
+    assert "涉及产品：一次性手套" in content
+    assert "核心事实：规则扩大本地化要求" in content
+    assert "影响原因：本地化门槛提高" in content
+    assert "业务影响：准入成本可能上升" in content
+    assert "建议措施：由法规部门核对适用范围" in content
     assert "关键风险" in content
     assert "业务机会" not in content
     assert "建议行动" in content
