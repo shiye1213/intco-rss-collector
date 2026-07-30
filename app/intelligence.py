@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -1802,17 +1803,28 @@ class ArticleAnalysisManager:
                 2000,
                 100000,
             )
+            parallelism = self._integer_setting(
+                settings.get("ai_parallelism", "4"), 4, 1, 20
+            )
+            articles: list[dict[str, Any]] = []
             for article_id in article_ids:
-                if self._pause_requested.is_set():
-                    should_continue = False
-                    run_message = "用户已暂停处理；未开始文章保留为待处理"
-                    break
                 article = self.repository.get_article(article_id)
                 if article is None:
                     self.repository.fail_run_item(
                         run_id, article_id, "文章不存在"
                     )
                     continue
+                articles.append(article)
+
+            stop_content = threading.Event()
+            stop_message: list[str] = []
+            stop_message_lock = threading.Lock()
+
+            def read_content(
+                article: dict[str, Any],
+            ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+                if self._pause_requested.is_set() or stop_content.is_set():
+                    return None
                 try:
                     content = self._get_or_read_content(
                         run_id,
@@ -1820,12 +1832,35 @@ class ArticleAnalysisManager:
                         refresh_content=refresh_content,
                     )
                 except _ProviderRateLimited as exc:
-                    should_continue = False
-                    run_message = str(exc)
-                    break
-                if content is None:
-                    continue
+                    with stop_message_lock:
+                        if not stop_message:
+                            stop_message.append(str(exc))
+                    stop_content.set()
+                    return None
+                return (article, content) if content is not None else None
 
+            content_items = [
+                item
+                for item in self._parallel_map(
+                    articles,
+                    read_content,
+                    parallelism=parallelism,
+                    thread_name_prefix="ai-content",
+                )
+                if item is not None
+            ]
+
+            def review_content(
+                item: tuple[dict[str, Any], dict[str, Any]],
+            ) -> tuple[
+                dict[str, Any],
+                dict[str, Any],
+                RelevanceAssessment,
+                int,
+                int,
+            ] | None:
+                article, content = item
+                article_id = int(article["id"])
                 review_row = self.repository.get_review(article_id)
                 review: RelevanceAssessment
                 review_is_current = bool(
@@ -1894,8 +1929,13 @@ class ArticleAnalysisManager:
                             result,
                             content_hash=content["content_hash"],
                         )
-                        prompt_tokens += result.prompt_tokens
-                        completion_tokens += result.completion_tokens
+                        return (
+                            article,
+                            content,
+                            review,
+                            result.prompt_tokens,
+                            result.completion_tokens,
+                        )
                     except Exception as exc:
                         self.repository.fail_relevance(
                             run_id,
@@ -1903,32 +1943,52 @@ class ArticleAnalysisManager:
                             f"相关性审核失败: {type(exc).__name__}: {exc}",
                             content_hash=content["content_hash"],
                         )
-                        continue
-                else:
-                    review = RelevanceAssessment.model_validate(
-                        {
-                            "is_relevant": bool(review_row["is_relevant"]),
-                            "relevance_score": review_row["relevance_score"],
-                            "relevance_reason": review_row["relevance_reason"],
-                            "category": review_row["category"],
-                            "secondary_categories": review_row[
-                                "secondary_categories"
-                            ],
-                            "keyword_categories": review_row[
-                                "keyword_categories"
-                            ],
-                            "evidence": review_row["evidence"],
-                            "confidence": review_row["confidence"],
-                        }
-                    )
-                    self.repository.reuse_relevance(
-                        run_id,
-                        article_id,
-                        is_relevant=review.is_relevant,
-                    )
+                        return None
+                review = RelevanceAssessment.model_validate(
+                    {
+                        "is_relevant": bool(review_row["is_relevant"]),
+                        "relevance_score": review_row["relevance_score"],
+                        "relevance_reason": review_row["relevance_reason"],
+                        "category": review_row["category"],
+                        "secondary_categories": review_row["secondary_categories"],
+                        "keyword_categories": review_row["keyword_categories"],
+                        "evidence": review_row["evidence"],
+                        "confidence": review_row["confidence"],
+                    }
+                )
+                self.repository.reuse_relevance(
+                    run_id,
+                    article_id,
+                    is_relevant=review.is_relevant,
+                )
+                return article, content, review, 0, 0
 
-                if not review.is_relevant:
-                    continue
+            reviewed_items = [
+                item
+                for item in self._parallel_map(
+                    content_items,
+                    review_content,
+                    parallelism=parallelism,
+                    thread_name_prefix="ai-relevance",
+                )
+                if item is not None
+            ]
+            prompt_tokens += sum(item[3] for item in reviewed_items)
+            completion_tokens += sum(item[4] for item in reviewed_items)
+
+            relevant_items = [
+                (article, content, review)
+                for article, content, review, _, _ in reviewed_items
+                if review.is_relevant
+            ]
+
+            def analyze_business(
+                item: tuple[
+                    dict[str, Any], dict[str, Any], RelevanceAssessment
+                ],
+            ) -> tuple[int, int]:
+                article, content, review = item
+                article_id = int(article["id"])
                 try:
                     self.repository.mark_business_processing(
                         run_id,
@@ -1963,15 +2023,28 @@ class ArticleAnalysisManager:
                     self.repository.save_business_analysis(
                         run_id, article_id, analysis, result
                     )
-                    prompt_tokens += result.prompt_tokens
-                    completion_tokens += result.completion_tokens
+                    return result.prompt_tokens, result.completion_tokens
                 except Exception as exc:
                     self.repository.fail_business_analysis(
                         run_id,
                         article_id,
                         f"业务分析失败: {type(exc).__name__}: {exc}",
                     )
-            if should_continue and self._pause_requested.is_set():
+                    return 0, 0
+
+            business_token_usage = self._parallel_map(
+                relevant_items,
+                analyze_business,
+                parallelism=parallelism,
+                thread_name_prefix="ai-business",
+            )
+            prompt_tokens += sum(item[0] for item in business_token_usage)
+            completion_tokens += sum(item[1] for item in business_token_usage)
+
+            if stop_message:
+                should_continue = False
+                run_message = stop_message[0]
+            elif self._pause_requested.is_set():
                 should_continue = False
                 run_message = "用户已暂停处理；未开始文章保留为待处理"
         finally:
@@ -1982,6 +2055,25 @@ class ArticleAnalysisManager:
                 message=run_message,
             )
         return should_continue
+
+    @staticmethod
+    def _parallel_map(
+        items: list[Any],
+        worker,
+        *,
+        parallelism: int,
+        thread_name_prefix: str,
+    ) -> list[Any]:
+        if not items:
+            return []
+        max_workers = min(parallelism, len(items))
+        if max_workers == 1:
+            return [worker(item) for item in items]
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=thread_name_prefix,
+        ) as executor:
+            return list(executor.map(worker, items))
 
     def _get_or_read_content(
         self,

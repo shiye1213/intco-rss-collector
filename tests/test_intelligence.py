@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from threading import Lock
+from time import sleep
 from datetime import date
 from typing import Any
 
@@ -209,6 +211,7 @@ def report_response(article_id: int) -> dict[str, Any]:
 def test_full_text_gate_only_analyzes_and_stores_relevant_articles(tmp_path) -> None:
     database = Database(tmp_path / "intelligence.db")
     database.initialize()
+    database.set_setting("ai_parallelism", "1")
     database.set_setting(
         "ai_relevance_prompt",
         "测试自定义相关性提示词：必须先识别产品，再判断业务影响路径和分类。",
@@ -674,6 +677,7 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
 def test_daily_report_combines_articles_across_keyword_categories(tmp_path) -> None:
     database = Database(tmp_path / "separate-category-reports.db")
     database.initialize()
+    database.set_setting("ai_parallelism", "1")
     policy_article_id = create_article(
         database,
         slug="policy-report",
@@ -707,14 +711,14 @@ def test_daily_report_combines_articles_across_keyword_categories(tmp_path) -> N
                     "secondary_categories": [],
                     "keyword_categories": ["关税调整"],
                 },
-                business_analysis(risk_score=65)
-                | {"category": "trade_tariff", "secondary_categories": []},
                 relevant_review()
                 | {
                     "category": "policy_regulation",
                     "secondary_categories": [],
                     "keyword_categories": ["贸易政策"],
                 },
+                business_analysis(risk_score=65)
+                | {"category": "trade_tariff", "secondary_categories": []},
                 business_analysis(risk_score=55)
                 | {"category": "policy_regulation", "secondary_categories": []},
             ]
@@ -882,6 +886,7 @@ def test_analysis_queue_pauses_after_current_article(tmp_path) -> None:
 
     database = Database(tmp_path / "analysis-pause.db")
     database.initialize()
+    database.set_setting("ai_parallelism", "1")
     article_ids = [
         create_article(
             database,
@@ -1034,6 +1039,7 @@ def test_analysis_queue_stops_after_content_provider_failure(
 ) -> None:
     database = Database(tmp_path / "analysis-rate-limit.db")
     database.initialize()
+    database.set_setting("ai_parallelism", "1")
     article_ids = [
         create_article(
             database,
@@ -1348,3 +1354,93 @@ def test_company_fact_boundary_removes_claims_absent_from_article() -> None:
 def test_full_text_fetch_rejects_private_network_urls() -> None:
     with pytest.raises(ContentFetchError, match="本机.*内网"):
         validate_public_http_url("http://127.0.0.1/private-news")
+
+
+
+def test_analysis_stages_run_in_parallel_with_a_phase_barrier(tmp_path) -> None:
+    class TrackingContentReader:
+        configured = True
+        model = "gpt-test"
+
+        def __init__(self) -> None:
+            self.events: list[str] = []
+            self.lock = Lock()
+            self.active = 0
+            self.maximum_active = 0
+
+        def read(self, article: ArticleReference) -> ContentDocument:
+            with self.lock:
+                self.events.append("content-start")
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            sleep(0.03)
+            with self.lock:
+                self.active -= 1
+                self.events.append("content-end")
+            return content_document(article.urls[0], "医疗手套采购需求增加。" * 30)
+
+    class TrackingLLMClient:
+        configured = True
+        model = "deepseek-test"
+
+        def __init__(self, reader: TrackingContentReader) -> None:
+            self.reader = reader
+            self.lock = Lock()
+            self.active: dict[str, int] = {"relevance": 0, "business": 0}
+            self.maximum_active: dict[str, int] = {"relevance": 0, "business": 0}
+
+        def complete_json(
+            self, system_prompt: str, user_prompt: str, *, max_tokens: int
+        ) -> LLMResult:
+            stage = "relevance" if max_tokens == 900 else "business"
+            with self.lock:
+                self.reader.events.append(f"{stage}-start")
+                self.active[stage] += 1
+                self.maximum_active[stage] = max(
+                    self.maximum_active[stage], self.active[stage]
+                )
+            sleep(0.03)
+            with self.lock:
+                self.active[stage] -= 1
+                self.reader.events.append(f"{stage}-end")
+            data = relevant_review() if stage == "relevance" else business_analysis()
+            return LLMResult(
+                data=data,
+                raw_content=json.dumps(data, ensure_ascii=False),
+                model=self.model,
+                prompt_tokens=10,
+                completion_tokens=5,
+            )
+
+    database = Database(tmp_path / "parallel-stages.db")
+    database.initialize()
+    database.set_setting("ai_parallelism", "2")
+    article_ids = [
+        create_article(
+            database,
+            slug=f"parallel-{index}",
+            title=f"并发测试文章 {index}",
+            summary="候选摘要",
+        )
+        for index in range(4)
+    ]
+    repository = IntelligenceRepository(database)
+    content_reader = TrackingContentReader()
+    client = TrackingLLMClient(content_reader)
+    manager = ArticleAnalysisManager(database, repository, client, content_reader)
+
+    run_id, queued_ids = manager.prepare(limit=20)
+    manager.execute(run_id, queued_ids)
+
+    assert queued_ids == list(reversed(article_ids))
+    assert client.maximum_active["relevance"] == 2
+    assert client.maximum_active["business"] == 2
+    assert content_reader.maximum_active == 2
+    events = content_reader.events
+    assert max(index for index, value in enumerate(events) if value == "content-end") < min(
+        index for index, value in enumerate(events) if value == "relevance-start"
+    )
+    assert max(index for index, value in enumerate(events) if value == "relevance-end") < min(
+        index for index, value in enumerate(events) if value == "business-start"
+    )
+    assert repository.status()["pending"] == 0

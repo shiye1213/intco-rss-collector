@@ -288,68 +288,140 @@
           </div>
         </section>
 
-        <section id="view-settings" class="view">
-          <div class="view-heading"><div><h2>系统设置</h2><p>采集调度与 DeepSeek 分析策略</p></div></div>
-          <div class="settings-section">
-            <div class="subsection-heading"><div><h3>采集调度</h3><p>Asia/Shanghai</p></div></div>
-            <form id="settings-form" class="settings-form collection-settings-form">
-              <label>
-                <span>每日采集时间</span>
-                <input id="schedule-time" type="time" required />
-              </label>
-              <label class="switch-row">
-                <span><strong>增量采集</strong><small>开启后从上次成功采集时间继续；关闭后按关键词回溯天数重新检查</small></span>
-                <input id="incremental-collection" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
-              </label>
-              <label class="switch-row">
-                <span><strong>搜索结果本地复核</strong><small>开启后标题或摘要必须命中主题词；关闭后信任搜索型 RSS，直连源仍会复核</small></span>
-                <input id="search-local-keyword-filter" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
-              </label>
-              <label class="switch-row">
-                <span><strong>启用网页爬虫</strong><small>默认关闭；开启后允许爬虫数据源和 RSS 的网页兜底</small></span>
-                <input id="crawler-enabled" type="checkbox" /><span class="switch" aria-hidden="true"></span>
-              </label>
-              <label class="switch-row">
-                <span><strong>遵守 robots.txt</strong><small>禁止抓取的路径不会尝试绕过</small></span>
-                <input id="crawler-respect-robots" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
-              </label>
-              <label>
-                <span>同域请求间隔（秒）</span>
-                <input id="crawler-min-interval" type="number" min="0" max="60" step="0.5" required />
-              </label>
-              <label>
-                <span>默认冷却时间（分钟）</span>
-                <input id="crawler-cooldown-minutes" type="number" min="5" max="1440" required />
-              </label>
-              <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存采集设置</span></button>
-            </form>
-          </div>
-          <div class="settings-section">
-            <div class="subsection-heading">
-              <div><h3>DeepSeek 分析</h3><p id="ai-settings-status">读取配置中</p></div>
+        <section id="view-settings" class="view settings-view">
+          <div class="view-heading settings-page-heading">
+            <div>
+              <span class="settings-eyebrow">WORKSPACE CONFIGURATION</span>
+              <h2>系统设置</h2>
+              <p>统一管理采集调度、AI 处理策略和数据维护。</p>
             </div>
-            <form id="ai-settings-form" class="ai-settings-form">
-              <label class="full"><span>企业业务边界</span><textarea id="ai-business-profile" rows="9" minlength="50" maxlength="10000" required></textarea></label>
-              <label class="full prompt-setting"><span>相关性审核提示词</span><small>用于控制业务相关性判断与分类；JSON 格式、安全规则和分类代码由系统固定追加。</small><textarea id="ai-relevance-prompt" rows="11" minlength="20" maxlength="20000" required></textarea></label>
-              <label class="full prompt-setting"><span>日报生成提示词</span><small>每天汇总全部合格新闻；“总体概括 + 详细解读”结构、来源文章 ID、短超链接和安全规则由系统固定追加。</small><textarea id="ai-report-prompt" rows="12" minlength="20" maxlength="20000" required></textarea></label>
-              <label><span>相关性阈值</span><input id="ai-threshold" type="number" min="0" max="100" required /></label>
-              <label><span>每批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /></label>
-              <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /></label>
-              <label class="switch-row"><span><strong>采集后自动分析</strong></span><input id="ai-auto-analyze" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
-              <label class="switch-row"><span><strong>分析后自动生成当天日报</strong></span><input id="ai-auto-report" type="checkbox" /><span class="switch" aria-hidden="true"></span></label>
-              <div class="form-actions full"><button class="button primary" type="submit"><i data-lucide="save"></i><span>保存 AI 设置</span></button></div>
-            </form>
+            <div class="settings-page-note"><i data-lucide="info"></i><span>修改后点击对应卡片的保存按钮</span></div>
           </div>
-          <div class="settings-section danger-zone">
-            <div class="subsection-heading">
-              <div><h3>数据清理</h3><p>执行前自动备份数据库；采集、AI 分析或日报运行时禁止清理</p></div>
-            </div>
-            <form id="cleanup-form" class="cleanup-form">
-              <label><span>清理范围</span><select id="cleanup-scope"><option value="failed_records">错误数据</option><option value="history">指定日期前的历史数据</option><option value="all_collected">全部采集数据与运行日志</option></select></label>
-              <label id="cleanup-before-label" class="hidden"><span>清理此日期之前</span><input id="cleanup-before" type="date" /></label>
-              <div class="cleanup-actions"><button id="preview-cleanup" class="button secondary" type="button"><i data-lucide="scan-search"></i><span>预览影响</span></button><button id="execute-cleanup" class="button danger-action" type="submit"><i data-lucide="trash-2"></i><span>备份并清理</span></button></div>
-            </form>
-            <div id="cleanup-preview" class="cleanup-preview muted">尚未预览</div>
+
+          <div class="settings-stack">
+            <section class="settings-section settings-card">
+              <div class="settings-card-header">
+                <div class="settings-card-icon"><i data-lucide="calendar-clock"></i></div>
+                <div class="settings-card-title">
+                  <span class="settings-card-kicker">01 · 数据采集</span>
+                  <h3>采集调度</h3>
+                  <p>控制每日任务、增量窗口和网页兜底抓取策略。</p>
+                </div>
+                <span class="settings-card-meta">Asia/Shanghai</span>
+              </div>
+              <form id="settings-form" class="settings-form collection-settings-form">
+                <div class="settings-fields collection-settings-grid">
+                  <label class="settings-field-primary">
+                    <span>每日采集时间</span>
+                    <input id="schedule-time" type="time" required />
+                    <small>按北京时间触发每日采集任务。</small>
+                  </label>
+                  <label class="switch-row settings-toggle-card">
+                    <span><strong>增量采集</strong><small>从上次成功采集时间继续；关闭后按关键词回溯天数重新检查。</small></span>
+                    <input id="incremental-collection" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="switch-row settings-toggle-card">
+                    <span><strong>搜索结果本地复核</strong><small>标题或摘要必须命中主题词；直连源仍会复核。</small></span>
+                    <input id="search-local-keyword-filter" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="switch-row settings-toggle-card">
+                    <span><strong>启用网页爬虫</strong><small>允许爬虫数据源和 RSS 的网页兜底，默认关闭。</small></span>
+                    <input id="crawler-enabled" type="checkbox" /><span class="switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="switch-row settings-toggle-card">
+                    <span><strong>遵守 robots.txt</strong><small>禁止抓取的路径不会尝试绕过。</small></span>
+                    <input id="crawler-respect-robots" type="checkbox" checked /><span class="switch" aria-hidden="true"></span>
+                  </label>
+                  <label>
+                    <span>同域请求间隔（秒）</span>
+                    <input id="crawler-min-interval" type="number" min="0" max="60" step="0.5" required />
+                    <small>避免连续请求同一站点。</small>
+                  </label>
+                  <label>
+                    <span>默认冷却时间（分钟）</span>
+                    <input id="crawler-cooldown-minutes" type="number" min="5" max="1440" required />
+                    <small>触发限流后的默认等待时间。</small>
+                  </label>
+                </div>
+                <div class="settings-card-footer">
+                  <span class="settings-footer-hint">采集设置只影响后续任务，不会修改已有文章。</span>
+                  <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存采集设置</span></button>
+                </div>
+              </form>
+            </section>
+
+            <section class="settings-section settings-card">
+              <div class="settings-card-header">
+                <div class="settings-card-icon settings-card-icon-ai"><i data-lucide="brain-circuit"></i></div>
+                <div class="settings-card-title">
+                  <span class="settings-card-kicker">02 · 智能分析</span>
+                  <h3>DeepSeek 分析</h3>
+                  <p>定义企业边界、模型提示词、运行参数和自动化策略。</p>
+                </div>
+                <span id="ai-settings-status" class="settings-card-status">读取配置中</span>
+              </div>
+              <form id="ai-settings-form" class="ai-settings-form">
+                <div class="settings-subgroup">
+                  <div class="settings-subgroup-heading"><span>业务边界</span><small>模型只能依据新闻正文判断是否与企业业务相关。</small></div>
+                  <label class="settings-field-wide"><span>企业业务边界</span><textarea id="ai-business-profile" rows="8" minlength="50" maxlength="10000" required></textarea></label>
+                </div>
+
+                <div class="settings-subgroup">
+                  <div class="settings-subgroup-heading"><span>提示词策略</span><small>可编辑业务要求；JSON 结构、安全规则和分类代码由系统固定追加。</small></div>
+                  <label class="settings-field-wide prompt-setting"><span>相关性审核提示词</span><textarea id="ai-relevance-prompt" rows="9" minlength="20" maxlength="20000" required></textarea></label>
+                  <label class="settings-field-wide prompt-setting"><span>日报生成提示词</span><textarea id="ai-report-prompt" rows="9" minlength="20" maxlength="20000" required></textarea></label>
+                </div>
+
+                <div class="settings-subgroup">
+                  <div class="settings-subgroup-heading"><span>运行参数</span><small>并行数只控制同一阶段的同时处理量，抓取、审核、业务分析仍按阶段顺序执行。</small></div>
+                  <div class="settings-fields ai-runtime-grid">
+                    <label><span>相关性阈值</span><input id="ai-threshold" type="number" min="0" max="100" required /><small>低于阈值的文章不会进入业务分析。</small></label>
+                    <label><span>每批文章数</span><input id="ai-batch-size" type="number" min="1" max="100" required /><small>每个 AI 运行日志批次的文章上限。</small></label>
+                    <label><span>阶段内并行数</span><input id="ai-parallelism" type="number" min="1" max="20" required /><small>每阶段同时处理的文章数，范围 1～20。</small></label>
+                    <label><span>单篇送审正文字符上限</span><input id="ai-content-max-chars" type="number" min="2000" max="100000" step="1000" required /><small>超出部分只在发送模型时截断。</small></label>
+                  </div>
+                </div>
+
+                <div class="settings-subgroup settings-automation-group">
+                  <div class="settings-subgroup-heading"><span>自动化策略</span><small>自动日报依赖自动分析开启；手动任务仍可随时触发。</small></div>
+                  <div class="settings-automation-grid">
+                    <label class="switch-row settings-toggle-card">
+                      <span><strong>采集后自动分析</strong><small>采集完成后自动处理本次新增待办。</small></span>
+                      <input id="ai-auto-analyze" type="checkbox" /><span class="switch" aria-hidden="true"></span>
+                    </label>
+                    <label class="switch-row settings-toggle-card">
+                      <span><strong>分析后自动生成当天日报</strong><small>当天尚无成功日报时自动生成综合日报。</small></span>
+                      <input id="ai-auto-report" type="checkbox" /><span class="switch" aria-hidden="true"></span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="settings-card-footer">
+                  <span class="settings-footer-hint">模型配置修改后会用于下一次 AI 任务。</span>
+                  <button class="button primary" type="submit"><i data-lucide="save"></i><span>保存 AI 设置</span></button>
+                </div>
+              </form>
+            </section>
+
+            <section class="settings-section settings-card danger-zone">
+              <div class="settings-card-header">
+                <div class="settings-card-icon settings-card-icon-danger"><i data-lucide="database-zap"></i></div>
+                <div class="settings-card-title">
+                  <span class="settings-card-kicker">03 · 数据维护</span>
+                  <h3>数据清理</h3>
+                  <p>执行前自动备份数据库；采集、AI 分析或日报运行时禁止清理。</p>
+                </div>
+                <span class="settings-card-meta danger-meta">不可逆操作</span>
+              </div>
+              <form id="cleanup-form" class="cleanup-form">
+                <div class="settings-fields cleanup-fields">
+                  <label><span>清理范围</span><select id="cleanup-scope"><option value="failed_records">错误数据</option><option value="history">指定日期前的历史数据</option><option value="all_collected">全部采集数据与运行日志</option></select></label>
+                  <label id="cleanup-before-label" class="hidden"><span>清理此日期之前</span><input id="cleanup-before" type="date" /></label>
+                </div>
+                <div class="cleanup-actions"><button id="preview-cleanup" class="button secondary" type="button"><i data-lucide="scan-search"></i><span>预览影响</span></button><button id="execute-cleanup" class="button danger-action" type="submit"><i data-lucide="trash-2"></i><span>备份并清理</span></button></div>
+              </form>
+              <div id="cleanup-preview" class="cleanup-preview muted">尚未预览</div>
+            </section>
           </div>
         </section>
       </main>

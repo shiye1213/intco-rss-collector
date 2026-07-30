@@ -992,6 +992,7 @@ async function loadAISettings() {
     $("ai-report-prompt").value = data.report_prompt;
     $("ai-threshold").value = data.relevance_threshold;
     $("ai-batch-size").value = data.batch_size;
+    $("ai-parallelism").value = data.parallelism;
     $("ai-content-max-chars").value = data.content_max_chars;
     $("ai-auto-analyze").checked = data.auto_analyze;
     $("ai-auto-report").checked = data.auto_report;
@@ -1007,6 +1008,7 @@ async function saveAISettings(event) {
     report_prompt: $("ai-report-prompt").value.trim(),
     relevance_threshold: Number($("ai-threshold").value),
     batch_size: Number($("ai-batch-size").value),
+    parallelism: Number($("ai-parallelism").value),
     content_max_chars: Number($("ai-content-max-chars").value),
     auto_analyze: $("ai-auto-analyze").checked,
     auto_report: $("ai-auto-report").checked,

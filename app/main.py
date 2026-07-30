@@ -238,6 +238,7 @@ class AISettingsPayload(BaseModel):
     )
     relevance_threshold: int = Field(default=70, ge=0, le=100)
     batch_size: int = Field(default=20, ge=1, le=100)
+    parallelism: int = Field(default=4, ge=1, le=20)
     content_max_chars: int = Field(default=30000, ge=2000, le=100000)
     auto_analyze: bool = False
     auto_report: bool = False
@@ -572,6 +573,7 @@ def create_app(
                 "relevance_threshold": int(
                     settings.get("ai_relevance_threshold", "70")
                 ),
+                "parallelism": int(settings.get("ai_parallelism", "4")),
                 "auto_analyze": settings.get("ai_auto_analyze", "false") == "true",
                 "auto_report": settings.get("ai_auto_report", "false") == "true",
             }
@@ -761,6 +763,7 @@ def create_app(
             ),
             "relevance_threshold": int(settings.get("ai_relevance_threshold", "70")),
             "batch_size": int(settings.get("ai_batch_size", "20")),
+            "parallelism": int(settings.get("ai_parallelism", "4")),
             "content_max_chars": int(
                 settings.get("ai_content_max_chars", "30000")
             ),
@@ -777,6 +780,7 @@ def create_app(
             "ai_relevance_threshold", str(payload.relevance_threshold)
         )
         database.set_setting("ai_batch_size", str(payload.batch_size))
+        database.set_setting("ai_parallelism", str(payload.parallelism))
         database.set_setting(
             "ai_content_max_chars", str(payload.content_max_chars)
         )
