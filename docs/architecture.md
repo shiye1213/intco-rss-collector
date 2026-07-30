@@ -108,7 +108,7 @@ sequenceDiagram
     else 无关或低于阈值
         Analysis->>DB: 保存审核记录，不写入业务新闻表
     end
-    User->>API: 按日期生成日报
+    User->>API: 按日期生成综合日报
     API->>Report: 读取当天全部已审核相关新闻
     Report->>DeepSeek: 生成结构化日报
     Report->>Report: 过滤非法文章 ID、附加来源链接并执行风险下限
@@ -134,7 +134,7 @@ sequenceDiagram
 | `article_relevance_reviews` | 基于正文的相关性结果、理由、证据与调用审计字段 |
 | `business_articles` | 只保存真相关文章的摘要、分类、影响、风险和建议动作 |
 | `article_analyses` | 旧版兼容表；新流水线不再读取其结果 |
-| `daily_reports` | 按日期汇总生成的日报正文、风险和结构化列表 |
+| `daily_reports` | 按日期生成的综合日报正文、风险和结构化列表 |
 | `daily_report_articles` | 日报与其依据文章的多对多关系 |
 | `app_settings` | 调度时间、时区、业务边界、阈值、批量大小和自动化开关 |
 
@@ -160,7 +160,7 @@ sequenceDiagram
 
 ### AI 可信边界
 
-原始 RSS 候选文章始终保留。正文、相关性审核和最终业务新闻分别写入独立表；全文失败时不允许退回标题或 RSS 摘要进行审核。模型输出必须通过 Pydantic 结构校验，相关性还要通过可配置阈值，只有 `business_articles.analysis_status=success` 的记录才能进入日报。每份日报按自然日汇总全部合格新闻，正文统一为总体概括和事件化详细解读。Prompt 明确忽略新闻正文中的指令，所有判断只能使用输入证据。每条详细解读引用的文章 ID 必须属于本次输入，后端依据有效 ID 附加来源链接并以“来源 N”短超链接展示，风险分数还执行确定性的文章最高风险下限。
+原始 RSS 候选文章始终保留。正文、相关性审核和最终业务新闻分别写入独立表；全文失败时不允许退回标题或 RSS 摘要进行审核。模型输出必须通过 Pydantic 结构校验，相关性还要通过可配置阈值，只有 `business_articles.analysis_status=success` 的记录才能进入日报。每份日报汇总指定日期内全部成功业务新闻；AI 业务分类只作为条目标签。Prompt 明确忽略新闻正文中的指令，所有判断只能使用输入证据。日报引用的文章 ID 必须属于本次输入，后端依据有效 ID 附加来源链接，风险分数还执行确定性的文章最高风险下限。
 
 ### 有界重试与数据维护
 

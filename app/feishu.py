@@ -89,21 +89,30 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         {"tag": "hr"},
-        {
-            "tag": "markdown",
-            "content": f"**总体概括**\n{_text(report.get('overview'), 1200)}",
-        },
+        {"tag": "markdown", "content": f"**日报摘要**\n{_text(report.get('executive_summary'))}"},
+        {"tag": "markdown", "content": f"**风险依据**\n{_text(report.get('risk_basis'))}"},
     ]
-    details = report.get("details") or []
-    lines = [_detail_text(item) for item in details[:8] if isinstance(item, dict)]
-    if lines:
+    developments = [
+        item
+        for item in (report.get("key_developments") or [])[:5]
+        if isinstance(item, dict)
+    ]
+    if developments:
         elements.append({"tag": "hr"})
-        elements.append(
-            {
-                "tag": "markdown",
-                "content": "**详细解读**\n" + "\n\n".join(lines),
-            }
+        elements.extend(
+            {"tag": "markdown", "content": _development_text(item)}
+            for item in developments
         )
+    for heading, field in (
+        ("关键风险", "key_risks"),
+        ("建议行动", "recommended_actions"),
+    ):
+        entries = report.get(field) or []
+        if entries:
+            lines = [_item_text(item) for item in entries[:5] if isinstance(item, dict)]
+            if lines:
+                elements.append({"tag": "hr"})
+                elements.append({"tag": "markdown", "content": f"**{heading}**\n" + "\n".join(lines)})
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -114,22 +123,37 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _detail_text(item: dict[str, Any]) -> str:
+def _development_text(item: dict[str, Any]) -> str:
     title = _text(item.get("title"), 100)
-    content = _text(item.get("content"), 700)
-    return f"- **{title}**\n  {content}{_source_links(item)}"
+    finding = _text(item.get("finding"), 350)
+    impact = _text(item.get("business_impact"), 350)
+    return f"**{title}**\n{finding}\n业务影响：{impact}{_source_links(item)}"
+
+
+def _item_text(item: dict[str, Any]) -> str:
+    return f"- {_text(item.get('content'), 400)}{_source_links(item)}"
 
 
 def _source_links(item: dict[str, Any]) -> str:
     sources = item.get("sources") or []
-    links = []
+    valid_sources = []
     for source in sources[:3]:
         if not isinstance(source, dict):
             continue
         url = str(source.get("source_url") or "").strip()
         if url.startswith(("https://", "http://")):
-            links.append(f"[来源 {len(links) + 1}]({url})")
+            valid_sources.append((source, url))
+    links = [
+        f"[{_short_source_title(source)}]({url})"
+        for source, url in valid_sources
+    ]
     return f"\n  原文：{' · '.join(links)}" if links else ""
+
+
+def _short_source_title(source: dict[str, Any], limit: int = 24) -> str:
+    value = source.get("title") or source.get("publisher") or "原文"
+    title = " ".join(str(value).split()).replace("[", "【").replace("]", "】")
+    return f"{title[:limit]}…" if len(title) > limit else title
 
 
 def _text(value: Any, limit: int = 600) -> str:

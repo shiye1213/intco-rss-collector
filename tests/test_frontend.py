@@ -55,21 +55,21 @@ def test_prompt_settings_and_cited_report_content_are_wired() -> None:
     assert 'report_prompt: $("ai-report-prompt").value.trim()' in javascript
     assert "category_report_prompts:" not in javascript
     assert "function reportSources(" in javascript
-    assert "function reportDetails(" in javascript
-    assert "来源 ${index + 1}" in javascript
-    assert "<h4>总体概括</h4>" in javascript
-    assert "<h4>详细解读</h4>" in javascript
-    assert "<h4>管理层摘要</h4>" not in javascript
-    assert 'reportList("建议动作"' not in javascript
-    assert 'reportList("后续监控"' not in javascript
-    assert "全部来源文章" not in javascript
+    assert "function simplifiedReportSourceTitle(" in javascript
+    assert "title.slice(0, limit)" in javascript
+    assert '${escapeHtml(linkText)}</a>' in javascript
+    assert 'title="${escapeHtml(linkTitle)}"' in javascript
+    assert "全部来源文章" in javascript
     assert "item.secondary_categories" in javascript
-    assert "按新闻发布日期汇总当天全部合格业务新闻" in html
+    assert "按新闻发布日期生成综合日报" in html
     assert 'id="report-category"' not in html
-    assert "fillReportKeywordCategoryOptions()" not in javascript
-    assert "keyword_category_id: keywordCategoryId" not in javascript
+    assert "fillReportKeywordCategoryOptions" not in javascript
+    assert "keyword_category_id" not in javascript
     assert "report.keyword_category_name" not in javascript
     assert "article.source_url" in javascript
+    assert "关键进展</h4>" not in javascript
+    assert 'class="development-list report-aspects"' in javascript
+    assert '<h4>${escapeHtml(item.title' in javascript
 
 
 def test_reports_can_be_manually_sent_to_feishu() -> None:

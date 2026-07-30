@@ -258,15 +258,23 @@ def enforce_company_fact_boundary(
     raise ValueError("review 或 analysis 至少提供一个")
 
 
-class ReportDetail(BaseModel):
-    title: str = Field(min_length=1, max_length=500)
-    content: str = Field(min_length=1, max_length=4000)
+class KeyDevelopment(BaseModel):
+    article_id: int
+    category: CategoryCode
+    title: str = Field(max_length=500)
+    finding: str = Field(max_length=1000)
+    business_impact: str = Field(max_length=1000)
+
+
+class CitedReportItem(BaseModel):
+    category: CategoryCode
+    content: str = Field(min_length=1, max_length=1000)
     article_ids: list[int] = Field(default_factory=list, max_length=8)
 
-    @field_validator("title", "content")
+    @field_validator("content")
     @classmethod
-    def normalize_text(cls, value: str) -> str:
-        return " ".join(value.split())
+    def normalize_content(cls, value: str) -> str:
+        return " ".join(value.split())[:1000]
 
     @field_validator("article_ids")
     @classmethod
@@ -276,10 +284,39 @@ class ReportDetail(BaseModel):
 
 class DailyReportAssessment(BaseModel):
     title: str = Field(max_length=300)
-    overview: str = Field(max_length=8000)
+    executive_summary: str = Field(max_length=4000)
     risk_level: RiskLevel
     risk_score: int = Field(ge=0, le=100)
-    details: list[ReportDetail] = Field(default_factory=list, max_length=20)
+    risk_basis: str = Field(max_length=2000)
+    key_developments: list[KeyDevelopment] = Field(default_factory=list, max_length=20)
+    key_risks: list[CitedReportItem] = Field(default_factory=list, max_length=12)
+    opportunities: list[CitedReportItem] = Field(default_factory=list, max_length=12)
+    recommended_actions: list[CitedReportItem] = Field(
+        default_factory=list, max_length=12
+    )
+    watchlist: list[CitedReportItem] = Field(default_factory=list, max_length=12)
+
+    @field_validator(
+        "key_risks",
+        "opportunities",
+        "recommended_actions",
+        "watchlist",
+        mode="before",
+    )
+    @classmethod
+    def normalize_cited_items(cls, values: Any) -> Any:
+        if not isinstance(values, list):
+            return values
+        return [
+            {
+                "category": "other",
+                "content": value,
+                "article_ids": [],
+            }
+            if isinstance(value, str)
+            else value
+            for value in values[:12]
+        ]
 
 
 class IntelligenceAlreadyRunningError(RuntimeError):
@@ -306,7 +343,6 @@ class IntelligenceRepository:
     )
     REPORT_JSON_FIELDS = (
         "categories",
-        "details",
         "key_developments",
         "key_risks",
         "opportunities",
@@ -1356,15 +1392,16 @@ class IntelligenceRepository:
                     GROUP BY ak.article_id
                 )
                 SELECT ba.*, a.title, a.url, a.publisher, a.published_at,
-                       ic.final_url, km.matched_keyword_names
+                       ic.final_url,
+                       COALESCE(km.matched_keyword_names, '') AS matched_keyword_names
                 FROM business_articles ba
                 JOIN articles a ON a.id = ba.article_id
                 JOIN article_contents ic ON ic.article_id = ba.article_id
                 LEFT JOIN keyword_matches km ON km.article_id = ba.article_id
                 WHERE {' AND '.join(filters)}
                 ORDER BY ba.risk_score DESC, a.published_at DESC
-                """,  # noqa: S608
-                parameters,
+                """,
+                (window_start, window_end),
             ).fetchall()
         items = [dict(row) for row in rows]
         for item in items:
@@ -1419,7 +1456,9 @@ class IntelligenceRepository:
                 """
                 UPDATE daily_reports
                 SET status = 'success', risk_level = ?, risk_score = ?,
-                    title = ?, overview = ?, details = ?, model = ?,
+                    title = ?, executive_summary = ?, risk_basis = ?,
+                    key_developments = ?, key_risks = ?, opportunities = ?,
+                    recommended_actions = ?, watchlist = ?, model = ?,
                     raw_response = ?, prompt_tokens = ?, completion_tokens = ?,
                     updated_at = ?, error_message = ''
                 WHERE id = ?
@@ -1428,8 +1467,13 @@ class IntelligenceRepository:
                     assessment.risk_level,
                     assessment.risk_score,
                     assessment.title,
-                    assessment.overview,
-                    json.dumps(data["details"], ensure_ascii=False),
+                    assessment.executive_summary,
+                    assessment.risk_basis,
+                    json.dumps(data["key_developments"], ensure_ascii=False),
+                    json.dumps(data["key_risks"], ensure_ascii=False),
+                    json.dumps(data["opportunities"], ensure_ascii=False),
+                    json.dumps(data["recommended_actions"], ensure_ascii=False),
+                    json.dumps(data["watchlist"], ensure_ascii=False),
                     result.model,
                     result.raw_content[:100000],
                     result.prompt_tokens,
@@ -1460,7 +1504,6 @@ class IntelligenceRepository:
         for report in reports:
             for field in self.REPORT_JSON_FIELDS:
                 report[field] = self._decode_json(report[field], [])
-            self._normalize_report_shape(report)
         return reports
 
     def get_report(self, report_id: int) -> dict[str, Any] | None:
@@ -1491,7 +1534,6 @@ class IntelligenceRepository:
         report = dict(row)
         for field in self.REPORT_JSON_FIELDS:
             report[field] = self._decode_json(report[field], [])
-        self._normalize_report_shape(report)
         articles = [dict(article) for article in article_rows]
         sources_by_id: dict[int, dict[str, Any]] = {}
         for article in articles:
@@ -1505,97 +1547,30 @@ class IntelligenceRepository:
             sources_by_id[int(article["article_id"])] = source
         report["articles"] = articles
         report["sources"] = list(sources_by_id.values())
-        for item in report["details"]:
-            item["sources"] = [
-                sources_by_id[article_id]
-                for article_id in self._article_ids(item.get("article_ids"))
-                if article_id in sources_by_id
-            ]
-        return report
-
-    @classmethod
-    def _normalize_report_shape(cls, report: dict[str, Any]) -> None:
-        if not str(report.get("overview") or "").strip():
-            report["overview"] = str(
-                report.get("executive_summary") or report.get("risk_basis") or ""
-            ).strip()
-        details = [
-            item
-            for item in report.get("details", [])
-            if isinstance(item, dict)
-            and str(item.get("title") or "").strip()
-            and str(item.get("content") or "").strip()
-        ]
-        if not details:
-            details = cls._legacy_report_details(report)
-        report["details"] = details
-
-    @classmethod
-    def _legacy_report_details(cls, report: dict[str, Any]) -> list[dict[str, Any]]:
-        details: list[dict[str, Any]] = []
-        for item in report.get("key_developments", []):
-            if not isinstance(item, dict):
+        for development in report["key_developments"]:
+            if not isinstance(development, dict):
                 continue
-            content = "\n".join(
-                value
-                for value in (
-                    str(item.get("finding") or "").strip(),
-                    str(item.get("business_impact") or "").strip(),
-                )
-                if value
-            )
-            if not content:
-                continue
-            details.append(
-                {
-                    "title": str(item.get("title") or "").strip()
-                    or cls._legacy_detail_title(content),
-                    "content": content,
-                    "article_ids": cls._article_ids([item.get("article_id")]),
-                }
-            )
+            source = sources_by_id.get(int(development.get("article_id") or 0))
+            development["sources"] = [source] if source else []
         for field in (
             "key_risks",
             "opportunities",
             "recommended_actions",
             "watchlist",
         ):
-            for item in report.get(field, []):
-                if isinstance(item, dict):
-                    content = str(item.get("content") or "").strip()
-                    article_ids = cls._article_ids(item.get("article_ids"))
-                else:
-                    content = str(item or "").strip()
-                    article_ids = []
-                if not content:
+            for item in report[field]:
+                if not isinstance(item, dict):
                     continue
-                details.append(
-                    {
-                        "title": cls._legacy_detail_title(content),
-                        "content": content,
-                        "article_ids": article_ids,
-                    }
-                )
-        return details
-
-    @staticmethod
-    def _legacy_detail_title(content: str) -> str:
-        first_sentence = re.split(r"[。！？!?；;\n]", content, maxsplit=1)[0].strip()
-        return first_sentence[:24] or "详细解读"
-
-    @staticmethod
-    def _article_ids(values: Any) -> list[int]:
-        if not isinstance(values, list):
-            return []
-        result: list[int] = []
-        for value in values:
-            try:
-                article_id = int(value)
-            except (TypeError, ValueError):
-                continue
-            if article_id > 0 and article_id not in result:
-                result.append(article_id)
-        return result
+                item["sources"] = [
+                    sources_by_id[article_id]
+                    for article_id in dict.fromkeys(
+                        int(value)
+                        for value in item.get("article_ids", [])
+                        if str(value).isdigit()
+                    )
+                    if article_id in sources_by_id
+                ]
+        return report
 
     def has_successful_report(self, report_date: date) -> bool:
         with self.database.connect() as connection:
@@ -2231,12 +2206,10 @@ class DailyReportManager:
                 raise IntelligenceAlreadyRunningError(
                     f"日报 #{self._running_report_id} 正在生成"
                 )
-            articles = self.repository.relevant_articles_for_report(
-                report_date
-            )
+            articles = self.repository.relevant_articles_for_report(report_date)
             if not articles:
                 raise ValueError(
-                    "所选日期没有完成全文审核与业务分析的相关新闻"
+                    "所选日期下没有完成全文审核与业务分析的相关新闻"
                 )
             report_id = self.repository.create_report(
                 report_date=report_date,
@@ -2268,14 +2241,28 @@ class DailyReportManager:
             )
             assessment = DailyReportAssessment.model_validate(result.data)
             valid_article_ids = {int(article["article_id"]) for article in articles}
-            details = self._valid_report_details(
-                assessment.details, valid_article_ids
-            )
+            developments = [
+                development
+                for development in assessment.key_developments
+                if development.article_id in valid_article_ids
+            ]
+            cited_updates = {
+                field: self._valid_cited_items(
+                    getattr(assessment, field), valid_article_ids
+                )
+                for field in (
+                    "key_risks",
+                    "opportunities",
+                    "recommended_actions",
+                    "watchlist",
+                )
+            }
             article_floor = max(int(article["risk_score"]) for article in articles)
             risk_score = max(assessment.risk_score, article_floor)
             assessment = assessment.model_copy(
                 update={
-                    "details": details,
+                    "key_developments": developments,
+                    **cited_updates,
                     "risk_score": risk_score,
                     "risk_level": risk_level_for_score(risk_score),
                 }
@@ -2334,10 +2321,10 @@ class DailyReportManager:
         }
 
     @staticmethod
-    def _valid_report_details(
-        items: list[ReportDetail], valid_article_ids: set[int]
-    ) -> list[ReportDetail]:
-        result: list[ReportDetail] = []
+    def _valid_cited_items(
+        items: list[CitedReportItem], valid_article_ids: set[int]
+    ) -> list[CitedReportItem]:
+        result: list[CitedReportItem] = []
         for item in items:
             article_ids = [
                 article_id

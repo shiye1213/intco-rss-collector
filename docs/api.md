@@ -227,7 +227,7 @@
 {
   "business_profile": "英科医疗业务边界……",
   "relevance_prompt": "相关性审核的可编辑业务要求……",
-  "report_prompt": "按自然日汇总全部合格新闻的日报生成要求……",
+  "report_prompt": "全部分类共用的日报生成要求……",
   "relevance_threshold": 70,
   "batch_size": 20,
   "parallelism": 4,
@@ -261,7 +261,7 @@
 
 ### `POST /api/reports`
 
-按新闻发布日期生成后台日报任务：
+按新闻发布日期生成后台综合日报任务：
 
 ```json
 {
@@ -269,7 +269,7 @@
 }
 ```
 
-一份日报汇总该日期内全部通过相关性审核且业务分析成功的文章，不再接收关键词分类参数。所选日期没有合格新闻时返回 `422`。
+一份日报汇总所选日期内全部通过相关性审核且业务分析成功的文章，不再按关键词分类过滤或拆分。所选日期没有合格新闻时返回 `422`。
 
 ### `GET /api/reports?limit=50`
 
@@ -277,7 +277,7 @@
 
 ### `GET /api/reports/{report_id}`
 
-返回日报结构化内容和经校验的 `sources`。正文由 `overview` 总体概括和 `details` 详细解读组成；每条解读包含 `title`、`content`、`article_ids` 与 `sources`。后端会剔除不属于本次日报输入的来源 ID；页面和飞书把有效 `source_url` 显示为简短的“来源 N”超链接，不展示完整文章标题或裸 URL。旧日报字段只保留在数据库兼容层，读取历史记录时自动映射为新结构。
+返回日报结构化内容和全部依据文章。顶层包含经校验的 `sources`；兼容旧数据库时可能仍返回空的历史分类字段。`key_developments` 中每个业务方面包含小标题、`category`、`article_id` 与 `sources`；风险、机会、建议动作和监控清单中的每一项包含 `category`、`content`、`article_ids` 与 `sources`。这里的 `category` 是 AI 业务影响标签，不决定日报收录范围。后端会剔除不属于本次日报输入的来源 ID，再附加文章标题、发布方和 `source_url`。
 
 ## 错误约定
 

@@ -385,11 +385,12 @@ tbody tr:hover { background: #f9fbfb; }
 .cited-report-list li { padding: 9px 0; border-top: 1px solid #edf1f3; }
 .cited-report-list li:first-child { border-top: 0; padding-top: 0; }
 .report-item-content, .development-title { display: flex; align-items: flex-start; gap: 8px; }
-.report-item-content .tag, .development-title .tag { flex: 0 0 auto; margin-top: 1px; }
-.development-list article { padding: 11px 0; border-top: 1px solid #edf1f3; }
+.report-item-content .tag, .development-title .tag { flex: 0 0 auto; margin-top: 2px; }
+.report-aspects { padding: 18px 0 4px; border-top: 1px solid #e7ecef; }
+.development-list article { padding: 14px 0; border-top: 1px solid #edf1f3; }
 .development-list article:first-child { border-top: 0; padding-top: 0; }
-.development-title strong { font-size: 13px; }
-.development-list p { margin: 5px 0 0; color: #4c5963; font-size: 13px; line-height: 1.55; }
+.development-title h4 { flex: 1 1 auto; margin: 0; color: #26343e; font-size: 14px; line-height: 1.45; }
+.development-list p { margin: 6px 0 0; color: #4c5963; font-size: 13px; line-height: 1.55; }
 .development-list .business-impact { color: #17665e; }
 .report-detail-list article { padding: 13px 0; border-top: 1px solid #edf1f3; }
 .report-detail-list article:first-child { padding-top: 0; border-top: 0; }
