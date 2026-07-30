@@ -6,7 +6,7 @@ from typing import Any
 
 RELEVANCE_PROMPT_VERSION = "intco-relevance-v8"
 BUSINESS_ANALYSIS_PROMPT_VERSION = "intco-business-analysis-v6"
-REPORT_PROMPT_VERSION = "intco-daily-report-v12"
+REPORT_PROMPT_VERSION = "intco-daily-report-v13"
 
 CATEGORY_LABELS = {
     "market_demand": "市场需求",
@@ -215,6 +215,14 @@ DEFAULT_REPORT_PROMPT = """请生成一份“总—分”结构的国际贸易�
 9. 新闻分析之后依次输出“关键风险”“业务机会”“建议行动”“后续监控”和“全部来源文章”。风险与机会最多各5项；相同或相近的建议行动应合并；后续节点不明确时写“等待后续官方公告”。
 10. 所有结论必须以输入新闻和现有分析结果为依据，不得使用外部知识补全。缺少依据的内容不得编造，缺失信息统一填写“暂未明确”。新闻标题、发布方、发布时间和原文链接由后端根据有效 ID 自动附加。"""
 
+LEGACY_DEFAULT_REPORT_PROMPT_V12 = DEFAULT_REPORT_PROMPT
+DEFAULT_REPORT_PROMPT = DEFAULT_REPORT_PROMPT.replace(
+    "5. 影响地区应填写事件、政策、市场或供应链变化直接覆盖的国家、地区或市场；只有输入明确表明影响范围跨多个主要市场时才填写“全球”，无法从输入确认时填写“暂未明确”。\n"
+    "6. 涉及产品只填写输入明确提及或能够由现有业务分析直接支持的产品；无法确认时填写“暂未明确”。",
+    "5. 影响地区应填写事件、政策、市场或供应链变化直接覆盖的国家、地区或市场；优先核对输入中的 region_candidates。候选非空且与核心事实不冲突时必须使用，不得仍填写“暂未明确”；只有明确覆盖多个主要市场时才填写“全球”。\n"
+    "6. 涉及产品只填写输入明确提及或能够由现有业务分析直接支持的产品；优先核对 product_candidates。候选非空且与核心事实不冲突时必须使用，不得仍填写“暂未明确”。",
+)
+
 
 def _category_codes() -> str:
     return "\n".join(
@@ -350,7 +358,7 @@ def build_report_prompts(
 9. 先核验核心事件与企业业务边界的实质关联；仅为背景、顺带提及或误命中的文章不得强行纳入关键结论。
 10. 不得断言输入未写明的英科医疗产地、出口市场、客户、供应商、原料采购、市场份额或已采取行动；区分当前事件与历史背景。
 11. key_developments 对应“逐条新闻分析”。每篇输入文章必须且只能生成一项，article_id 不得重复或遗漏；按 risk_score 从高到低排列。title 使用简化的新闻标题，不再按业务方面合并。
-12. key_developments 的 affected_region 填写事件直接覆盖的国家、地区或市场，products 填写明确涉及的产品；无法确认时写“暂未明确”。finding 填写核心事实，impact_reason 填写影响形成原因，business_impact 填写业务传导，recommended_action 填写可执行措施。
+12. key_developments 的 affected_region 和 products 必须先核对该文章的 region_candidates 与 product_candidates；候选非空且不与核心事实冲突时必须采用，不得仍写“暂未明确”。候选为空时再依据摘要、证据和影响分析判断，确实无法确认才写“暂未明确”。finding 填写核心事实，impact_reason 填写影响形成原因，business_impact 填写业务传导，recommended_action 填写可执行措施。
 13. key_risks 和 opportunities 最多各5项；recommended_actions 按紧急、高、中、观察排序并合并重复行动；watchlist 只保存尚未落地或信息不完整且有后续关注价值的事项。
 14. 输入没有明确出现“英科医疗”或“Intco”时，不得称企业为某国生产商、出口商、主要供应商或既有市场参与者。
 
@@ -365,8 +373,8 @@ def build_report_prompts(
     "article_id": 1,
     "category": "分类代码",
     "title": "不超过30个中文字符的简化新闻标题",
-    "affected_region": "事件直接覆盖的国家、地区或市场；无法确认时写暂未明确",
-    "products": "明确涉及的产品；无法确认时写暂未明确",
+    "affected_region": "优先使用 region_candidates 中有事实支持的地区；无候选且无法确认时写暂未明确",
+    "products": "优先使用 product_candidates 中有事实支持的产品；无候选且无法确认时写暂未明确",
     "risk_level": "low|medium|high|critical",
     "risk_score": 0,
     "finding": "核心事实",

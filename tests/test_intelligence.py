@@ -23,6 +23,7 @@ from app.intelligence import (
     IntelligenceRepository,
     RelevanceAssessment,
     enforce_company_fact_boundary,
+    extract_report_dimensions,
 )
 from app.llm import LLMResult
 from app.prompts import (
@@ -185,6 +186,36 @@ def business_analysis(*, risk_score: int = 72) -> dict[str, Any]:
         "recommended_actions": ["跟踪医院采购计划"],
         "evidence": ["医院将增加一次性丁腈手套采购量"],
     }
+
+
+def test_extract_report_dimensions_uses_explicit_evidence_not_source_country() -> None:
+    regions, products = extract_report_dimensions(
+        {
+            "title": "医疗用品政策更新",
+            "summary": "",
+            "analysis_evidence": [],
+            "full_text": (
+                "The European Union updated import requirements for nitrile gloves "
+                "and PVC gloves used by hospitals."
+            ),
+            "country": "CA",
+        }
+    )
+
+    assert regions == ["欧盟"]
+    assert products == ["丁腈手套", "PVC手套"]
+    assert extract_report_dimensions(
+        {
+            "title": "US tariffs on medical gloves increase next month",
+        }
+    ) == (["美国"], ["一次性手套"])
+    assert extract_report_dimensions(
+        {
+            "title": "行业政策更新",
+            "full_text": "The authority published a new consultation document.",
+            "country": "CA",
+        }
+    ) == ([], [])
 
 
 def report_response(article_id: int) -> dict[str, Any]:
@@ -690,6 +721,9 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     assert report["key_developments"][0]["risk_score"] == 72
     assert report["key_developments"][0]["impact_reason"] == "需求持续性存在不确定性"
     assert report["key_developments"][0]["recommended_action"] == "跟踪医院采购计划"
+    assert set(report["key_developments"][0]["products"].split("、")) == {
+        "丁腈手套", "一次性手套"
+    }
     assert [item["article_id"] for item in report["key_developments"]] == [
         article_id
     ]
@@ -706,6 +740,8 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     assert "本次日报的关键词分类" not in report_client.calls[0][0]
     assert '"keyword_category"' not in report_client.calls[0][1]
     assert '"source_url"' in report_client.calls[0][1]
+    assert '"region_candidates":[]' in report_client.calls[0][1]
+    assert '"product_candidates":["丁腈手套","一次性手套"]' in report_client.calls[0][1]
     assert report["sources"][0]["source_url"] == (
         "https://example.com/medical-gloves"
     )
@@ -758,7 +794,7 @@ def test_daily_report_combines_articles_from_all_keyword_categories(tmp_path) ->
             [
                 content_document(
                     "https://example.com/tariff-report",
-                    "医疗手套进口关税发生调整。" * 30,
+                    "美国医疗手套进口关税发生调整。" * 30,
                 ),
                 content_document(
                     "https://example.com/policy-report",
@@ -795,6 +831,11 @@ def test_daily_report_combines_articles_from_all_keyword_categories(tmp_path) ->
         tariff_article_id,
         policy_article_id,
     ]
+    tariff_development = report["key_developments"][0]
+    assert tariff_development["affected_region"] == "美国"
+    assert set(tariff_development["products"].split("、")) == {
+        "丁腈手套", "一次性手套"
+    }
 
 
 def test_automatic_workflow_generates_one_combined_report(tmp_path) -> None:
@@ -1290,6 +1331,8 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert "等待后续官方公告" in DEFAULT_REPORT_PROMPT
     assert "key_developments 对应“逐条新闻分析”" in report_system
     assert '"affected_region":' in report_system
+    assert "region_candidates 与 product_candidates" in report_system
+    assert "product_candidates" in DEFAULT_REPORT_PROMPT
     assert '"recommended_action":' in report_system
     assert "专属日报要求" not in report_system
     assert '"article_ids": [1]' in report_system

@@ -77,6 +77,119 @@ def _clean_string_list(values: list[str], *, limit: int = 8) -> list[str]:
             result.append(cleaned)
     return result
 
+_REPORT_REGION_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("全球", (r"全球", r"全世界", r"\bglobal(?:ly)?\b", r"\bworldwide\b")),
+    ("欧盟", (r"欧盟", r"\bEuropean Union\b", r"\bEU(?:'s)?\b")),
+    ("欧洲", (r"欧洲", r"\bEurope(?:an)?\b")),
+    ("美国", (r"美国", r"\bUnited States\b", r"\bU\.S\.(?:A\.)?\b", r"(?-i:\bUS(?:A)?\b)", r"\bAmerican\b")),
+    ("中国", (r"中国", r"\bChina\b", r"\bChinese\b")),
+    ("德国", (r"德国", r"\bGerman(?:y)?\b")),
+    ("法国", (r"法国", r"\bFrance\b", r"\bFrench\b")),
+    ("意大利", (r"意大利", r"\bItal(?:y|ian)\b")),
+    ("西班牙", (r"西班牙", r"\bSpain\b", r"\bSpanish\b")),
+    ("荷兰", (r"荷兰", r"\bNetherlands\b", r"\bDutch\b")),
+    ("波兰", (r"波兰", r"\bPoland\b", r"\bPolish\b")),
+    ("新加坡", (r"新加坡", r"\bSingapore(?:an)?\b")),
+    ("菲律宾", (r"菲律宾", r"\bPhilippines?\b", r"\bFilipino\b")),
+    ("中国台湾地区", (r"台湾", r"\bTaiwan(?:ese)?\b")),
+    ("中国香港地区", (r"香港", r"\bHong Kong\b")),
+    ("马来西亚", (r"马来西亚", r"\bMalaysia(?:n)?\b")),
+    ("泰国", (r"泰国", r"\bThailand\b", r"\bThai\b")),
+    ("越南", (r"越南", r"\bVietnam(?:ese)?\b")),
+    ("印度尼西亚", (r"印度尼西亚", r"印尼", r"\bIndonesia(?:n)?\b")),
+    ("印度", (r"印度", r"\bIndia(?:n)?\b")),
+    ("日本", (r"日本", r"\bJapan(?:ese)?\b")),
+    ("韩国", (r"韩国", r"\bSouth Korea(?:n)?\b", r"\bKorea(?:n)?\b")),
+    ("英国", (r"英国", r"\bUnited Kingdom\b", r"(?-i:\bUK\b)", r"\bBritain\b", r"\bBritish\b")),
+    ("加拿大", (r"加拿大", r"\b(?:Canada|Canadian)\b")),
+    ("墨西哥", (r"墨西哥", r"\b(?:Mexico|Mexican)\b")),
+    ("巴西", (r"巴西", r"\bBrazil(?:ian)?\b")),
+    ("澳大利亚", (r"澳大利亚", r"澳洲", r"\bAustralia(?:n)?\b")),
+    ("俄罗斯", (r"俄罗斯", r"\bRussia(?:n)?\b")),
+    ("乌克兰", (r"乌克兰", r"\b(?:Ukraine|Ukrainian)\b")),
+    ("土耳其", (r"土耳其", r"\bT(?:u|ü)rkiye\b", r"\b(?:Turkey|Turkish)\b")),
+    ("沙特阿拉伯", (r"沙特", r"\bSaudi Arabia(?:n)?\b")),
+    ("阿联酋", (r"阿联酋", r"\bUnited Arab Emirates\b", r"\bUAE\b")),
+    ("南非", (r"南非", r"\bSouth Africa(?:n)?\b")),
+    ("东盟", (r"东盟", r"\bASEAN\b")),
+    ("亚太地区", (r"亚太", r"\bAsia[- ]Pacific\b", r"\bAPAC\b")),
+    ("中东", (r"中东", r"\bMiddle East(?:ern)?\b")),
+    ("拉丁美洲", (r"拉丁美洲", r"拉美", r"\bLatin America(?:n)?\b")),
+    ("非洲", (r"非洲", r"\bAfrica(?:n)?\b")),
+)
+
+_REPORT_PRODUCT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("丁腈手套", (r"丁腈手套", r"\bnitrile (?:exam(?:ination)? |medical |disposable )?gloves?\b")),
+    ("PVC手套", (r"PVC手套", r"聚氯乙烯手套", r"\bPVC gloves?\b", r"\bvinyl gloves?\b")),
+    ("PE手套", (r"PE手套", r"聚乙烯手套", r"\bpolyethylene gloves?\b", r"\bPE gloves?\b")),
+    ("乳胶手套", (r"乳胶手套", r"\blatex gloves?\b")),
+    ("医用检查手套", (r"医用检查手套", r"检查手套", r"\bmedical exam(?:ination)? gloves?\b")),
+    ("外科手套", (r"外科手套", r"手术手套", r"\bsurgical gloves?\b")),
+    ("一次性手套", (r"一次性(?:丁腈|PVC|PE|乳胶)?手套", r"医用手套", r"医疗手套", r"\bdisposable gloves?\b", r"\bmedical gloves?\b")),
+    ("手套", (r"手套", r"\bgloves?\b")),
+    ("口罩", (r"口罩", r"\bface masks?\b", r"\bmedical masks?\b", r"\brespirators?\b")),
+    ("隔离衣", (r"隔离衣", r"\bisolation gowns?\b")),
+    ("防护服", (r"防护服", r"\bprotective clothing\b", r"\bPPE suits?\b")),
+    ("丁腈胶乳（NBR）", (r"丁腈胶乳", r"\bnitrile butadiene rubber\b", r"\bNBR\b")),
+    ("PVC原料", (r"PVC原料", r"聚氯乙烯原料", r"\bPVC resin\b")),
+    ("PE原料", (r"PE原料", r"聚乙烯原料", r"\bpolyethylene resin\b")),
+    ("轮椅", (r"轮椅", r"\bwheelchairs?\b")),
+    ("代步车", (r"代步车", r"\bmobility scooters?\b")),
+    ("助行器", (r"助行器", r"\bwalkers?\b", r"\bwalking aids?\b")),
+    ("冷热敷产品", (r"冷热敷", r"\bhot and cold packs?\b", r"\bcold packs?\b")),
+    ("急救产品", (r"急救产品", r"急救包", r"\bfirst[- ]aid (?:products?|kits?)\b")),
+)
+
+
+def _dimension_matches(
+    text: str, patterns: tuple[tuple[str, tuple[str, ...]], ...]
+) -> list[str]:
+    return [
+        label
+        for label, aliases in patterns
+        if any(re.search(alias, text, re.IGNORECASE) for alias in aliases)
+    ]
+
+
+def _dimension_text(article: dict[str, Any], *, include_full_text: bool) -> str:
+    values: list[str] = []
+    for field in (
+        "title",
+        "summary",
+        "impact_analysis",
+        "matched_keyword_names",
+    ):
+        value = str(article.get(field) or "").strip()
+        if value:
+            values.append(value)
+    for field in ("risk_factors", "analysis_evidence", "evidence"):
+        value = article.get(field) or []
+        if isinstance(value, list):
+            values.extend(str(item) for item in value if str(item).strip())
+    if include_full_text:
+        values.append(str(article.get("full_text") or "")[:50_000])
+    return "\n".join(values)
+
+
+def extract_report_dimensions(article: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Extract explicit impact-region and product candidates without guessing."""
+    primary_text = _dimension_text(article, include_full_text=False)
+    regions = _dimension_matches(primary_text, _REPORT_REGION_PATTERNS)
+    products = _dimension_matches(primary_text, _REPORT_PRODUCT_PATTERNS)
+    if (not regions or not products) and article.get("full_text"):
+        full_text = _dimension_text(article, include_full_text=True)
+        if not regions:
+            regions = _dimension_matches(full_text, _REPORT_REGION_PATTERNS)
+        if not products:
+            products = _dimension_matches(full_text, _REPORT_PRODUCT_PATTERNS)
+    if "全球" in regions:
+        regions = ["全球"]
+    elif "欧盟" in regions and "欧洲" in regions:
+        regions.remove("欧洲")
+    if len(products) > 1 and "手套" in products:
+        products.remove("手套")
+    return regions[:5], products[:5]
+
 
 def risk_level_for_score(score: int) -> RiskLevel:
     if score >= 85:
@@ -1398,7 +1511,7 @@ class IntelligenceRepository:
                     GROUP BY ak.article_id
                 )
                 SELECT ba.*, a.title, a.url, a.publisher, a.published_at,
-                       ic.final_url,
+                       ic.final_url, ic.full_text,
                        COALESCE(km.matched_keyword_names, '') AS matched_keyword_names
                 FROM business_articles ba
                 JOIN articles a ON a.id = ba.article_id
@@ -2267,7 +2380,7 @@ class DailyReportManager:
                     developments_by_id.get(int(article["article_id"])),
                     article,
                 )
-                for article in articles
+                for article in report_articles
             ]
             cited_updates = {
                 field: self._valid_cited_items(
@@ -2322,6 +2435,7 @@ class DailyReportManager:
 
     @staticmethod
     def _report_article(article: dict[str, Any]) -> dict[str, Any]:
+        region_candidates, product_candidates = extract_report_dimensions(article)
         return {
             "article_id": article["article_id"],
             "title": article["title"],
@@ -2335,6 +2449,8 @@ class DailyReportManager:
                 ).split(",")
                 if name.strip()
             ],
+            "region_candidates": region_candidates,
+            "product_candidates": product_candidates,
             "category": article["category"],
             "summary": article["summary"],
             "impact_direction": article["impact_direction"],
@@ -2367,8 +2483,10 @@ class DailyReportManager:
             "article_id": int(article["article_id"]),
             "category": article.get("category") or "other",
             "title": str(article.get("title") or "未命名新闻")[:500],
-            "affected_region": "暂未明确",
-            "products": "暂未明确",
+            "affected_region": "、".join(
+                article.get("region_candidates", [])
+            )[:500] or "暂未明确",
+            "products": "、".join(article.get("product_candidates", []))[:500] or "暂未明确",
             "risk_level": article.get("risk_level") or "low",
             "risk_score": int(article.get("risk_score") or 0),
             "finding": str(article.get("summary") or "暂未明确")[:1000],

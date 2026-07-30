@@ -27,7 +27,7 @@ from app.prompts import (
     LEGACY_DEFAULT_BUSINESS_PROFILE_V4,
     LEGACY_DEFAULT_RELEVANCE_PROMPT_V4,
     LEGACY_DEFAULT_REPORT_PROMPT_V4,
-    LEGACY_DEFAULT_REPORT_PROMPT_V11,
+    LEGACY_DEFAULT_REPORT_PROMPT_V12,
 )
 from app.query_builder import (
     build_keyword_query,
@@ -849,7 +849,7 @@ def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
             [
                 ("ai_business_profile", LEGACY_DEFAULT_BUSINESS_PROFILE_V4),
                 ("ai_relevance_prompt", LEGACY_DEFAULT_RELEVANCE_PROMPT_V4),
-                ("ai_report_prompt", LEGACY_DEFAULT_REPORT_PROMPT_V11),
+                ("ai_report_prompt", LEGACY_DEFAULT_REPORT_PROMPT_V12),
             ],
         )
 
