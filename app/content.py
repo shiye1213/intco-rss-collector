@@ -33,6 +33,7 @@ class ArticleReference:
     title: str
     publisher: str
     urls: tuple[str, ...]
+    published_at: str = ""
 
 
 @dataclass(frozen=True)

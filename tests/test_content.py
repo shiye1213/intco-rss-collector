@@ -90,6 +90,7 @@ def article_reference() -> ArticleReference:
         title="Malaysia expands medical glove production",
         publisher="Industry News",
         urls=("https://news.example/article",),
+        published_at="2026-07-20T02:00:00Z",
     )
 
 
@@ -132,7 +133,6 @@ def test_openai_reader_uses_hosted_web_search_and_returns_full_text() -> None:
         api_key="test-key",
         base_url="https://www.cctq.ai/v1",
         model="gpt-5.4-mini",
-        min_text_chars=100,
         opener=opener,
     )
 
@@ -153,6 +153,31 @@ def test_openai_reader_uses_hosted_web_search_and_returns_full_text() -> None:
     assert payload["include"] == ["web_search_call.action.sources"]
     assert payload["store"] is False
     assert "Malaysia expands medical glove production" in payload["input"]
+    assert "2026-07-20T02:00:00Z" in payload["input"]
+
+
+def test_openai_reader_accepts_short_article_body() -> None:
+    full_text = "公司公告：该产品今日完成注册。"
+    reader = OpenAIWebContentReader(
+        api_key="test-key",
+        opener=FakeOpener(
+            FakeResponse(
+                web_response(
+                    {
+                        "success": True,
+                        "final_url": "https://publisher.example/short-notice",
+                        "full_text": full_text,
+                        "failure_reason": "",
+                    }
+                )
+            )
+        ),
+    )
+
+    document = reader.read(article_reference())
+
+    assert document.full_text == full_text
+    assert document.content_chars == len(full_text)
 
 
 def test_openai_reader_rejects_text_without_server_web_evidence() -> None:

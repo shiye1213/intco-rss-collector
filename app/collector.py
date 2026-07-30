@@ -5,11 +5,13 @@ import html
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.parse import (
     parse_qsl,
     quote_plus,
@@ -19,6 +21,7 @@ from urllib.parse import (
     urlunsplit,
 )
 from urllib.request import Request, urlopen
+from urllib.robotparser import RobotFileParser
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
@@ -28,8 +31,11 @@ from .query_builder import build_keyword_query, localize_keyword_for_source
 
 
 USER_AGENT = "INTCO-RSS-Collector/1.0 (+internal market intelligence)"
+ROBOTS_USER_AGENT = "INTCO-RSS-Collector"
 TRACKING_PARAMETERS = {"gclid", "fbclid", "mc_cid", "mc_eid"}
 MAX_CRAWL_ARTICLES = 30
+DEFAULT_CRAWLER_MIN_INTERVAL_SECONDS = 3.0
+DEFAULT_CRAWLER_COOLDOWN_MINUTES = 60
 _ARTICLE_JSON_LD_TYPES = {"article", "blogposting", "newsarticle", "report"}
 _ARTICLE_PATH_HINTS = {
     "article",
@@ -84,6 +90,202 @@ _NON_HTML_SUFFIXES = {
 
 class CollectionAlreadyRunningError(RuntimeError):
     pass
+
+
+class CrawlerAccessError(RuntimeError):
+    failure_kind = "crawler_error"
+    cooldown_seconds: int | None = None
+    should_record = True
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        cooldown_seconds: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        if cooldown_seconds is not None:
+            self.cooldown_seconds = max(1, cooldown_seconds)
+
+
+class CrawlerRobotsDeniedError(CrawlerAccessError):
+    failure_kind = "robots_denied"
+    cooldown_seconds = 24 * 60 * 60
+
+
+class CrawlerRateLimitedError(CrawlerAccessError):
+    failure_kind = "rate_limited"
+
+
+class CrawlerBlockedError(CrawlerAccessError):
+    failure_kind = "access_blocked"
+    cooldown_seconds = 24 * 60 * 60
+
+
+class CrawlerTemporaryUnavailableError(CrawlerAccessError):
+    failure_kind = "temporarily_unavailable"
+    cooldown_seconds = 15 * 60
+
+
+class CrawlerExtractionError(CrawlerAccessError):
+    failure_kind = "extraction_failed"
+
+
+class CrawlerCooldownError(CrawlerAccessError):
+    failure_kind = "cooldown"
+    should_record = False
+
+
+class CrawlerDisabledError(CrawlerAccessError):
+    failure_kind = "disabled"
+    should_record = False
+
+
+@dataclass(frozen=True)
+class SourceLoadResult:
+    items: list[FeedItem]
+    used_crawler: bool
+
+
+def _origin(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("爬虫地址必须是有效的 HTTP 或 HTTPS URL")
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _retry_after_seconds(error: HTTPError) -> int | None:
+    value = (error.headers.get("Retry-After") if error.headers else "") or ""
+    value = value.strip()
+    if value.isdigit():
+        return max(1, int(value))
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max(1, int((retry_at.astimezone(UTC) - datetime.now(UTC)).total_seconds()))
+
+
+def looks_like_bot_challenge(data: bytes) -> bool:
+    prefix = data[:65536].lower()
+    return any(
+        marker in prefix
+        for marker in (
+            b"cf-chl-",
+            b"/cdn-cgi/challenge-platform/",
+            b"verify you are human",
+            b"captcha",
+            b"access denied",
+        )
+    )
+
+
+class PoliteCrawlerFetcher:
+    def __init__(
+        self,
+        fetcher: Callable[[str, float], bytes],
+        *,
+        min_interval_seconds: float = DEFAULT_CRAWLER_MIN_INTERVAL_SECONDS,
+        respect_robots: bool = True,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.fetcher = fetcher
+        self.min_interval_seconds = max(0.0, min_interval_seconds)
+        self.respect_robots = respect_robots
+        self.clock = clock
+        self.sleeper = sleeper
+        self._next_request_at: dict[str, float] = {}
+        self._robots: dict[
+            str, tuple[RobotFileParser | None, float]
+        ] = {}
+        self._lock = threading.Lock()
+
+    def configure(
+        self,
+        *,
+        min_interval_seconds: float,
+        respect_robots: bool,
+    ) -> None:
+        self.min_interval_seconds = max(0.0, min(60.0, min_interval_seconds))
+        self.respect_robots = respect_robots
+
+    def _pace(self, url: str) -> None:
+        origin = _origin(url)
+        with self._lock:
+            now = self.clock()
+            scheduled_at = max(now, self._next_request_at.get(origin, now))
+            self._next_request_at[origin] = (
+                scheduled_at + self.min_interval_seconds
+            )
+        delay = scheduled_at - now
+        if delay > 0:
+            self.sleeper(delay)
+
+    def _robots_policy(
+        self, url: str, timeout: float
+    ) -> RobotFileParser | None:
+        origin = _origin(url)
+        cached = self._robots.get(origin)
+        if cached is not None and cached[1] > self.clock():
+            return cached[0]
+        robots_url = f"{origin}/robots.txt"
+        policy = RobotFileParser()
+        policy.set_url(robots_url)
+        try:
+            self._pace(robots_url)
+            data = self.fetcher(robots_url, timeout)
+        except HTTPError as exc:
+            if exc.code in {401, 403}:
+                policy.disallow_all = True
+                self._robots[origin] = (policy, self.clock() + 3600)
+                return policy
+            self._robots[origin] = (None, self.clock() + 3600)
+            return None
+        except Exception:
+            # robots.txt 暂时不可达时允许本轮访问，但仍保留限速。
+            self._robots[origin] = (None, self.clock() + 300)
+            return None
+        policy.parse(decode_html_document(data).splitlines())
+        self._robots[origin] = (policy, self.clock() + 3600)
+        return policy
+
+    def ensure_allowed(self, url: str, timeout: float) -> None:
+        if self.respect_robots:
+            policy = self._robots_policy(url, timeout)
+            if policy is not None and not policy.can_fetch(
+                ROBOTS_USER_AGENT, url
+            ):
+                raise CrawlerRobotsDeniedError(
+                    f"robots.txt 不允许抓取：{urlsplit(url).path or '/'}"
+                )
+
+    def __call__(self, url: str, timeout: float) -> bytes:
+        self.ensure_allowed(url, timeout)
+        self._pace(url)
+        try:
+            data = self.fetcher(url, timeout)
+        except HTTPError as exc:
+            if exc.code == 429:
+                retry_after = _retry_after_seconds(exc)
+                raise CrawlerRateLimitedError(
+                    "站点返回 HTTP 429，爬虫已进入冷却",
+                    cooldown_seconds=retry_after,
+                ) from exc
+            if exc.code in {401, 403}:
+                raise CrawlerBlockedError(
+                    f"站点返回 HTTP {exc.code}，可能存在访问限制"
+                ) from exc
+            if 500 <= exc.code <= 599:
+                raise CrawlerTemporaryUnavailableError(
+                    f"站点返回 HTTP {exc.code}，稍后重试"
+                ) from exc
+            raise
+        if looks_like_bot_challenge(data):
+            raise CrawlerBlockedError("页面返回验证码或反爬验证")
+        return data
 
 
 class _TextExtractor(HTMLParser):
@@ -621,11 +823,18 @@ def crawl_web_page(
         ranked_links.append((-score, position, url))
 
     failures: list[str] = []
+    policy_failure: CrawlerAccessError | None = None
     for _score, _position, url in sorted(ranked_links)[: max_articles * 2]:
         if len(items) >= max_articles:
             break
         try:
             item = extract_crawled_article(fetcher(url, timeout), url, publisher)
+        except (CrawlerRateLimitedError, CrawlerBlockedError) as exc:
+            raise exc
+        except CrawlerAccessError as exc:
+            policy_failure = policy_failure or exc
+            failures.append(f"{url}: {type(exc).__name__}")
+            continue
         except Exception as exc:
             failures.append(f"{url}: {type(exc).__name__}")
             continue
@@ -633,8 +842,12 @@ def crawl_web_page(
             add_item(item)
 
     if not items:
+        if policy_failure is not None:
+            raise policy_failure
         detail = f"，其中 {len(failures)} 个详情页下载失败" if failures else ""
-        raise ValueError(f"网页爬虫未提取到带发布日期的文章{detail}")
+        raise CrawlerExtractionError(
+            f"网页爬虫未提取到带发布日期的文章{detail}"
+        )
     return items
 
 
@@ -732,46 +945,165 @@ class Collector:
         database: Database,
         feed_fetcher: Callable[[str, float], bytes] = fetch_feed,
         timeout: float = 30,
+        *,
+        crawler_clock: Callable[[], float] = time.monotonic,
+        crawler_sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self.database = database
         self.feed_fetcher = feed_fetcher
         self.timeout = timeout
+        self._live_crawler_pacing = feed_fetcher is fetch_feed
+        self.crawler_fetcher = PoliteCrawlerFetcher(
+            feed_fetcher,
+            min_interval_seconds=(
+                DEFAULT_CRAWLER_MIN_INTERVAL_SECONDS
+                if self._live_crawler_pacing
+                else 0.0
+            ),
+            clock=crawler_clock,
+            sleeper=crawler_sleeper,
+        )
+        self.crawler_cooldown_seconds = (
+            DEFAULT_CRAWLER_COOLDOWN_MINUTES * 60
+        )
+        self.crawler_enabled = False
+
+    @staticmethod
+    def _source_in_cooldown(
+        source: dict[str, object], at: datetime
+    ) -> bool:
+        cooldown_until = parse_datetime(
+            str(source.get("crawler_cooldown_until") or "")
+        )
+        return cooldown_until is not None and cooldown_until > at
+
+    def _ensure_crawler_available(
+        self, source: dict[str, object], at: datetime
+    ) -> None:
+        if not self._source_in_cooldown(source, at):
+            return
+        cooldown_until = str(source.get("crawler_cooldown_until") or "")
+        kind = str(source.get("crawler_failure_kind") or "受限")
+        raise CrawlerCooldownError(
+            f"爬虫来源处于冷却期（{kind}），恢复时间：{cooldown_until}"
+        )
+
+    @staticmethod
+    def _record_crawler_success(
+        connection: Any, source: dict[str, object], at: datetime
+    ) -> None:
+        timestamp = iso_utc(at)
+        connection.execute(
+            """
+            UPDATE rss_sources
+            SET crawler_failure_kind = '', crawler_failure_count = 0,
+                crawler_cooldown_until = NULL, crawler_last_error = '',
+                crawler_last_success_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (timestamp, timestamp, source["id"]),
+        )
+        source.update(
+            {
+                "crawler_failure_kind": "",
+                "crawler_failure_count": 0,
+                "crawler_cooldown_until": None,
+                "crawler_last_error": "",
+                "crawler_last_success_at": timestamp,
+            }
+        )
+
+    def _record_crawler_failure(
+        self,
+        connection: Any,
+        source: dict[str, object],
+        error: CrawlerAccessError,
+        at: datetime,
+    ) -> None:
+        if not error.should_record:
+            return
+        cooldown_seconds = (
+            error.cooldown_seconds or self.crawler_cooldown_seconds
+        )
+        cooldown_until = at + timedelta(seconds=cooldown_seconds)
+        cooldown_until_iso = iso_utc(cooldown_until)
+        connection.execute(
+            """
+            UPDATE rss_sources
+            SET crawler_failure_kind = ?,
+                crawler_failure_count = crawler_failure_count + 1,
+                crawler_cooldown_until = ?, crawler_last_error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                error.failure_kind,
+                cooldown_until_iso,
+                str(error)[:2000],
+                iso_utc(at),
+                source["id"],
+            ),
+        )
+        source.update(
+            {
+                "crawler_failure_kind": error.failure_kind,
+                "crawler_failure_count": int(
+                    source.get("crawler_failure_count") or 0
+                )
+                + 1,
+                "crawler_cooldown_until": cooldown_until_iso,
+                "crawler_last_error": str(error)[:2000],
+            }
+        )
+
+    def _crawl_source(
+        self,
+        source: dict[str, object],
+        url: str,
+        data: bytes | None,
+        at: datetime,
+    ) -> SourceLoadResult:
+        if not self.crawler_enabled:
+            raise CrawlerDisabledError(
+                "网页爬虫总开关已关闭，未执行网页兜底"
+            )
+        self._ensure_crawler_available(source, at)
+        if data is None:
+            page_data = self.crawler_fetcher(url, self.timeout)
+        else:
+            # RSS 探测已拿到 HTML 时不重复请求页面，但在把内容交给
+            # 爬虫解析前仍检查 robots.txt。
+            self.crawler_fetcher.ensure_allowed(url, self.timeout)
+            page_data = data
+        return SourceLoadResult(
+            crawl_web_page(
+                url,
+                page_data,
+                self.crawler_fetcher,
+                self.timeout,
+                publisher=str(source.get("name", "")),
+            ),
+            True,
+        )
 
     def _load_source_items(
         self,
         source: dict[str, object],
         url: str,
-    ) -> list[FeedItem]:
-        data = self.feed_fetcher(url, self.timeout)
+        at: datetime,
+    ) -> SourceLoadResult:
         if source["mode"] == "crawler":
-            return crawl_web_page(
-                url,
-                data,
-                self.feed_fetcher,
-                self.timeout,
-                publisher=str(source.get("name", "")),
-            )
+            return self._crawl_source(source, url, None, at)
+        data = self.feed_fetcher(url, self.timeout)
         try:
             items = parse_feed(data)
         except ElementTree.ParseError:
             if not looks_like_html(data):
                 raise
-            return crawl_web_page(
-                url,
-                data,
-                self.feed_fetcher,
-                self.timeout,
-                publisher=str(source.get("name", "")),
-            )
+            return self._crawl_source(source, url, data, at)
         if not items and looks_like_html(data):
-            return crawl_web_page(
-                url,
-                data,
-                self.feed_fetcher,
-                self.timeout,
-                publisher=str(source.get("name", "")),
-            )
-        return items
+            return self._crawl_source(source, url, data, at)
+        return SourceLoadResult(items, False)
 
     def collect(self, run_id: int, run_started_at: datetime) -> None:
         sources = self.database.get_sources(active_only=True)
@@ -783,6 +1115,38 @@ class Collector:
         )
         search_local_keyword_filter = (
             settings.get("search_local_keyword_filter", "true") == "true"
+        )
+        self.crawler_enabled = (
+            settings.get("crawler_enabled", "false") == "true"
+        )
+        try:
+            crawler_min_interval = float(
+                settings.get(
+                    "crawler_min_interval_seconds",
+                    str(DEFAULT_CRAWLER_MIN_INTERVAL_SECONDS),
+                )
+            )
+        except (TypeError, ValueError):
+            crawler_min_interval = DEFAULT_CRAWLER_MIN_INTERVAL_SECONDS
+        try:
+            crawler_cooldown_minutes = int(
+                settings.get(
+                    "crawler_cooldown_minutes",
+                    str(DEFAULT_CRAWLER_COOLDOWN_MINUTES),
+                )
+            )
+        except (TypeError, ValueError):
+            crawler_cooldown_minutes = DEFAULT_CRAWLER_COOLDOWN_MINUTES
+        self.crawler_cooldown_seconds = (
+            max(5, min(1440, crawler_cooldown_minutes)) * 60
+        )
+        self.crawler_fetcher.configure(
+            min_interval_seconds=(
+                crawler_min_interval if self._live_crawler_pacing else 0.0
+            ),
+            respect_robots=(
+                settings.get("crawler_respect_robots", "true") == "true"
+            ),
         )
         end_iso = iso_utc(run_started_at)
 
@@ -827,9 +1191,20 @@ class Collector:
                 if source["mode"] in {"direct", "crawler"}:
                     url = build_feed_url(source, source_keywords[0])
                     try:
-                        feed_items = self._load_source_items(source, url)
+                        loaded = self._load_source_items(
+                            source, url, run_started_at
+                        )
+                        feed_items = loaded.items
+                        if loaded.used_crawler:
+                            self._record_crawler_success(
+                                connection, source, run_started_at
+                            )
                         totals["items_seen"] += len(feed_items)
                     except Exception as exc:
+                        if isinstance(exc, CrawlerAccessError):
+                            self._record_crawler_failure(
+                                connection, source, exc, run_started_at
+                            )
                         for keyword in source_keywords:
                             first_window = start_of_local_lookback(
                                 run_started_at,
@@ -897,7 +1272,14 @@ class Collector:
                         )
                         url = build_feed_url(source, runtime_keyword)
                         try:
-                            feed_items = self._load_source_items(source, url)
+                            loaded = self._load_source_items(
+                                source, url, run_started_at
+                            )
+                            feed_items = loaded.items
+                            if loaded.used_crawler:
+                                self._record_crawler_success(
+                                    connection, source, run_started_at
+                                )
                             totals["items_seen"] += len(feed_items)
                             self._process_pair(
                                 connection,
@@ -917,6 +1299,10 @@ class Collector:
                                 ),
                             )
                         except Exception as exc:
+                            if isinstance(exc, CrawlerAccessError):
+                                self._record_crawler_failure(
+                                    connection, source, exc, run_started_at
+                                )
                             self._insert_detail(
                                 connection,
                                 run_id,

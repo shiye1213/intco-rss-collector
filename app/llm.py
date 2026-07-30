@@ -162,7 +162,6 @@ class OpenAIWebContentReader:
         model: str | None = None,
         timeout: float | None = None,
         max_output_tokens: int | None = None,
-        min_text_chars: int = 200,
         opener=None,
     ) -> None:
         self._api_key = (
@@ -198,7 +197,6 @@ class OpenAIWebContentReader:
             )
         except (TypeError, ValueError):
             self.max_output_tokens = 32_000
-        self.min_text_chars = max(100, min_text_chars)
         self._open = opener or urlopen
 
     @property
@@ -267,6 +265,7 @@ class OpenAIWebContentReader:
             "article": {
                 "title": article.title,
                 "publisher": article.publisher,
+                "published_at": article.published_at,
                 "candidate_urls": list(urls),
             },
             "required_output": {
@@ -279,6 +278,10 @@ class OpenAIWebContentReader:
         instructions = (
             "You are a news article reader. You must use web search and open the "
             "given candidate URL or the publisher's matching canonical page. "
+            "If a candidate is a Google News RSS or redirect URL without an article "
+            "body, search for the exact title, publisher, and publication date, then "
+            "open the matching canonical publisher page. Continue past similar but "
+            "different stories and never substitute another article. "
             "Return only information actually read from that page. Never reconstruct "
             "an article from its title, snippet, or background knowledge. Remove "
             "navigation, ads, related-story lists, and footer text. Set success=true "
@@ -379,9 +382,9 @@ class OpenAIWebContentReader:
                 retryable=True,
             )
         full_text = self._normalize_text(str(result.get("full_text") or ""))
-        if len(full_text) < self.min_text_chars:
+        if not full_text:
             raise ContentFetchError(
-                f"CCTQ/OpenAI 返回正文过短，仅 {len(full_text)} 字符",
+                "CCTQ/OpenAI 未返回新闻正文",
                 failure_kind="openai_incomplete_content",
                 retryable=True,
             )

@@ -23,12 +23,9 @@ from .llm import JSONLLMClient, LLMResult
 from .prompts import (
     BUSINESS_ANALYSIS_PROMPT_VERSION,
     CATEGORY_LABELS,
-    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
-    KEYWORD_CATEGORY_BUSINESS_CODES,
     RELEVANCE_PROMPT_VERSION,
-    REPORT_CATEGORY_SETTING_KEYS,
     REPORT_PROMPT_VERSION,
     build_business_analysis_prompts,
     build_relevance_prompts,
@@ -260,23 +257,15 @@ def enforce_company_fact_boundary(
     raise ValueError("review 或 analysis 至少提供一个")
 
 
-class KeyDevelopment(BaseModel):
-    article_id: int
-    category: CategoryCode
-    title: str = Field(max_length=500)
-    finding: str = Field(max_length=1000)
-    business_impact: str = Field(max_length=1000)
-
-
-class CitedReportItem(BaseModel):
-    category: CategoryCode
-    content: str = Field(min_length=1, max_length=1000)
+class ReportDetail(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=4000)
     article_ids: list[int] = Field(default_factory=list, max_length=8)
 
-    @field_validator("content")
+    @field_validator("title", "content")
     @classmethod
-    def normalize_content(cls, value: str) -> str:
-        return " ".join(value.split())[:1000]
+    def normalize_text(cls, value: str) -> str:
+        return " ".join(value.split())
 
     @field_validator("article_ids")
     @classmethod
@@ -286,39 +275,10 @@ class CitedReportItem(BaseModel):
 
 class DailyReportAssessment(BaseModel):
     title: str = Field(max_length=300)
-    executive_summary: str = Field(max_length=4000)
+    overview: str = Field(max_length=8000)
     risk_level: RiskLevel
     risk_score: int = Field(ge=0, le=100)
-    risk_basis: str = Field(max_length=2000)
-    key_developments: list[KeyDevelopment] = Field(default_factory=list, max_length=20)
-    key_risks: list[CitedReportItem] = Field(default_factory=list, max_length=12)
-    opportunities: list[CitedReportItem] = Field(default_factory=list, max_length=12)
-    recommended_actions: list[CitedReportItem] = Field(
-        default_factory=list, max_length=12
-    )
-    watchlist: list[CitedReportItem] = Field(default_factory=list, max_length=12)
-
-    @field_validator(
-        "key_risks",
-        "opportunities",
-        "recommended_actions",
-        "watchlist",
-        mode="before",
-    )
-    @classmethod
-    def normalize_cited_items(cls, values: Any) -> Any:
-        if not isinstance(values, list):
-            return values
-        return [
-            {
-                "category": "other",
-                "content": value,
-                "article_ids": [],
-            }
-            if isinstance(value, str)
-            else value
-            for value in values[:12]
-        ]
+    details: list[ReportDetail] = Field(default_factory=list, max_length=20)
 
 
 class IntelligenceAlreadyRunningError(RuntimeError):
@@ -345,6 +305,7 @@ class IntelligenceRepository:
     )
     REPORT_JSON_FIELDS = (
         "categories",
+        "details",
         "key_developments",
         "key_risks",
         "opportunities",
@@ -1371,7 +1332,7 @@ class IntelligenceRepository:
         return {"total": total, "items": items}
 
     def relevant_articles_for_report(
-        self, report_date: date, keyword_category_id: int
+        self, report_date: date
     ) -> list[dict[str, Any]]:
         window_start, window_end = local_date_window(report_date)
         filters = [
@@ -1381,33 +1342,24 @@ class IntelligenceRepository:
             "a.published_at >= ?",
             "a.published_at < ?",
         ]
-        parameters: list[Any] = [
-            keyword_category_id,
-            window_start,
-            window_end,
-        ]
+        parameters: list[Any] = [window_start, window_end]
         with self.database.connect() as connection:
             rows = connection.execute(
                 f"""
-                WITH category_matches AS (
+                WITH keyword_matches AS (
                     SELECT
                         ak.article_id,
                         GROUP_CONCAT(DISTINCT k.name) AS matched_keyword_names
                     FROM article_keywords ak
                     JOIN keywords k ON k.id = ak.keyword_id
-                    WHERE k.category_id = ?
                     GROUP BY ak.article_id
                 )
                 SELECT ba.*, a.title, a.url, a.publisher, a.published_at,
-                       ic.final_url, cm.matched_keyword_names,
-                       rr.keyword_categories AS reviewed_keyword_categories,
-                       rr.prompt_version AS relevance_prompt_version
+                       ic.final_url, km.matched_keyword_names
                 FROM business_articles ba
                 JOIN articles a ON a.id = ba.article_id
                 JOIN article_contents ic ON ic.article_id = ba.article_id
-                JOIN article_relevance_reviews rr
-                  ON rr.article_id = ba.article_id
-                JOIN category_matches cm ON cm.article_id = ba.article_id
+                LEFT JOIN keyword_matches km ON km.article_id = ba.article_id
                 WHERE {' AND '.join(filters)}
                 ORDER BY ba.risk_score DESC, a.published_at DESC
                 """,  # noqa: S608
@@ -1417,37 +1369,12 @@ class IntelligenceRepository:
         for item in items:
             for field in self.BUSINESS_JSON_FIELDS:
                 item[field] = self._decode_json(item[field], [])
-            item["reviewed_keyword_categories"] = self._decode_json(
-                item["reviewed_keyword_categories"], []
-            )
-        category = self.database.get_keyword_category(keyword_category_id)
-        category_name = str(category["name"]) if category else ""
-        required_codes = KEYWORD_CATEGORY_BUSINESS_CODES.get(category_name)
-        if not required_codes:
-            return items
-        return [
-            item
-            for item in items
-            if (
-                category_name in item["reviewed_keyword_categories"]
-                if item["relevance_prompt_version"]
-                in {"intco-relevance-v7", RELEVANCE_PROMPT_VERSION}
-                else bool(
-                    required_codes
-                    & {
-                        str(item["category"]),
-                        *(str(value) for value in item["secondary_categories"]),
-                    }
-                )
-            )
-        ]
+        return items
 
     def create_report(
         self,
         *,
         report_date: date,
-        keyword_category_id: int,
-        keyword_category_name: str,
         article_ids: list[int],
         model: str,
     ) -> int:
@@ -1456,15 +1383,12 @@ class IntelligenceRepository:
             cursor = connection.execute(
                 """
                 INSERT INTO daily_reports
-                    (report_date, categories, keyword_category_id,
-                     keyword_category_name, status, article_count, model,
+                    (report_date, categories, status, article_count, model,
                      prompt_version, created_at, updated_at)
-                VALUES (?, '[]', ?, ?, 'running', ?, ?, ?, ?, ?)
+                VALUES (?, '[]', 'running', ?, ?, ?, ?, ?)
                 """,
                 (
                     report_date.isoformat(),
-                    keyword_category_id,
-                    keyword_category_name,
                     len(article_ids),
                     model,
                     REPORT_PROMPT_VERSION,
@@ -1494,9 +1418,7 @@ class IntelligenceRepository:
                 """
                 UPDATE daily_reports
                 SET status = 'success', risk_level = ?, risk_score = ?,
-                    title = ?, executive_summary = ?, risk_basis = ?,
-                    key_developments = ?, key_risks = ?, opportunities = ?,
-                    recommended_actions = ?, watchlist = ?, model = ?,
+                    title = ?, overview = ?, details = ?, model = ?,
                     raw_response = ?, prompt_tokens = ?, completion_tokens = ?,
                     updated_at = ?, error_message = ''
                 WHERE id = ?
@@ -1505,13 +1427,8 @@ class IntelligenceRepository:
                     assessment.risk_level,
                     assessment.risk_score,
                     assessment.title,
-                    assessment.executive_summary,
-                    assessment.risk_basis,
-                    json.dumps(data["key_developments"], ensure_ascii=False),
-                    json.dumps(data["key_risks"], ensure_ascii=False),
-                    json.dumps(data["opportunities"], ensure_ascii=False),
-                    json.dumps(data["recommended_actions"], ensure_ascii=False),
-                    json.dumps(data["watchlist"], ensure_ascii=False),
+                    assessment.overview,
+                    json.dumps(data["details"], ensure_ascii=False),
                     result.model,
                     result.raw_content[:100000],
                     result.prompt_tokens,
@@ -1542,6 +1459,7 @@ class IntelligenceRepository:
         for report in reports:
             for field in self.REPORT_JSON_FIELDS:
                 report[field] = self._decode_json(report[field], [])
+            self._normalize_report_shape(report)
         return reports
 
     def get_report(self, report_id: int) -> dict[str, Any] | None:
@@ -1572,6 +1490,7 @@ class IntelligenceRepository:
         report = dict(row)
         for field in self.REPORT_JSON_FIELDS:
             report[field] = self._decode_json(report[field], [])
+        self._normalize_report_shape(report)
         articles = [dict(article) for article in article_rows]
         sources_by_id: dict[int, dict[str, Any]] = {}
         for article in articles:
@@ -1585,44 +1504,109 @@ class IntelligenceRepository:
             sources_by_id[int(article["article_id"])] = source
         report["articles"] = articles
         report["sources"] = list(sources_by_id.values())
-        for development in report["key_developments"]:
-            if not isinstance(development, dict):
+        for item in report["details"]:
+            item["sources"] = [
+                sources_by_id[article_id]
+                for article_id in self._article_ids(item.get("article_ids"))
+                if article_id in sources_by_id
+            ]
+        return report
+
+    @classmethod
+    def _normalize_report_shape(cls, report: dict[str, Any]) -> None:
+        if not str(report.get("overview") or "").strip():
+            report["overview"] = str(
+                report.get("executive_summary") or report.get("risk_basis") or ""
+            ).strip()
+        details = [
+            item
+            for item in report.get("details", [])
+            if isinstance(item, dict)
+            and str(item.get("title") or "").strip()
+            and str(item.get("content") or "").strip()
+        ]
+        if not details:
+            details = cls._legacy_report_details(report)
+        report["details"] = details
+
+    @classmethod
+    def _legacy_report_details(cls, report: dict[str, Any]) -> list[dict[str, Any]]:
+        details: list[dict[str, Any]] = []
+        for item in report.get("key_developments", []):
+            if not isinstance(item, dict):
                 continue
-            source = sources_by_id.get(int(development.get("article_id") or 0))
-            development["sources"] = [source] if source else []
+            content = "\n".join(
+                value
+                for value in (
+                    str(item.get("finding") or "").strip(),
+                    str(item.get("business_impact") or "").strip(),
+                )
+                if value
+            )
+            if not content:
+                continue
+            details.append(
+                {
+                    "title": str(item.get("title") or "").strip()
+                    or cls._legacy_detail_title(content),
+                    "content": content,
+                    "article_ids": cls._article_ids([item.get("article_id")]),
+                }
+            )
         for field in (
             "key_risks",
             "opportunities",
             "recommended_actions",
             "watchlist",
         ):
-            for item in report[field]:
-                if not isinstance(item, dict):
+            for item in report.get(field, []):
+                if isinstance(item, dict):
+                    content = str(item.get("content") or "").strip()
+                    article_ids = cls._article_ids(item.get("article_ids"))
+                else:
+                    content = str(item or "").strip()
+                    article_ids = []
+                if not content:
                     continue
-                item["sources"] = [
-                    sources_by_id[article_id]
-                    for article_id in dict.fromkeys(
-                        int(value)
-                        for value in item.get("article_ids", [])
-                        if str(value).isdigit()
-                    )
-                    if article_id in sources_by_id
-                ]
-        return report
+                details.append(
+                    {
+                        "title": cls._legacy_detail_title(content),
+                        "content": content,
+                        "article_ids": article_ids,
+                    }
+                )
+        return details
 
-    def has_successful_report(
-        self, report_date: date, keyword_category_id: int
-    ) -> bool:
+    @staticmethod
+    def _legacy_detail_title(content: str) -> str:
+        first_sentence = re.split(r"[。！？!?；;\n]", content, maxsplit=1)[0].strip()
+        return first_sentence[:24] or "详细解读"
+
+    @staticmethod
+    def _article_ids(values: Any) -> list[int]:
+        if not isinstance(values, list):
+            return []
+        result: list[int] = []
+        for value in values:
+            try:
+                article_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if article_id > 0 and article_id not in result:
+                result.append(article_id)
+        return result
+
+    def has_successful_report(self, report_date: date) -> bool:
         with self.database.connect() as connection:
             row = connection.execute(
                 """
                 SELECT 1 FROM daily_reports
                 WHERE report_date = ?
-                  AND keyword_category_id = ?
+                  AND keyword_category_id IS NULL
                   AND status = 'success'
                 LIMIT 1
                 """,
-                (report_date.isoformat(), keyword_category_id),
+                (report_date.isoformat(),),
             ).fetchone()
         return row is not None
 
@@ -2017,13 +2001,22 @@ class ArticleAnalysisManager:
             run_id, article_id, requested_url
         )
         try:
-            document = self.content_reader.read(
-                ArticleReference(
-                    title=str(article.get("title") or ""),
-                    publisher=str(article.get("publisher") or ""),
-                    urls=tuple(urls),
-                )
+            reference = ArticleReference(
+                title=str(article.get("title") or ""),
+                publisher=str(article.get("publisher") or ""),
+                urls=tuple(urls),
+                published_at=str(article.get("published_at") or ""),
             )
+            try:
+                document = self.content_reader.read(reference)
+            except ContentFetchError as exc:
+                if (
+                    exc.retryable
+                    and exc.failure_kind == "openai_web_unavailable"
+                ):
+                    document = self.content_reader.read(reference)
+                else:
+                    raise
             self.repository.save_content(run_id, article_id, document)
             return self.repository.get_content(article_id)
         except Exception as exc:
@@ -2137,97 +2130,60 @@ class DailyReportManager:
             return self._running_report_id
 
     def prepare(
-        self, report_date: date, keyword_category_id: int
-    ) -> tuple[int, str, list[dict[str, Any]]]:
+        self, report_date: date
+    ) -> tuple[int, list[dict[str, Any]]]:
         if not self.client.configured:
             raise ValueError("尚未配置 DEEPSEEK_API_KEY")
-        keyword_category = self.database.get_keyword_category(
-            keyword_category_id
-        )
-        if keyword_category is None:
-            raise ValueError("未知或已停用的关键词分类")
-        keyword_category_name = str(keyword_category["name"])
         with self._state_lock:
             if self._running_report_id is not None:
                 raise IntelligenceAlreadyRunningError(
                     f"日报 #{self._running_report_id} 正在生成"
                 )
             articles = self.repository.relevant_articles_for_report(
-                report_date, keyword_category_id
+                report_date
             )
             if not articles:
                 raise ValueError(
-                    f"“{keyword_category_name}”分类在所选日期下"
-                    "没有完成全文审核与业务分析的相关新闻"
+                    "所选日期没有完成全文审核与业务分析的相关新闻"
                 )
             report_id = self.repository.create_report(
                 report_date=report_date,
-                keyword_category_id=keyword_category_id,
-                keyword_category_name=keyword_category_name,
                 article_ids=[int(article["article_id"]) for article in articles],
                 model=self.client.model,
             )
             self._running_report_id = report_id
-        return report_id, keyword_category_name, articles
+        return report_id, articles
 
     def execute(
         self,
         report_id: int,
         report_date: date,
-        keyword_category_name: str,
         articles: list[dict[str, Any]],
     ) -> None:
         try:
             settings = self.database.get_settings()
             report_articles = [self._report_article(article) for article in articles]
-            category_prompt_setting = REPORT_CATEGORY_SETTING_KEYS.get(
-                keyword_category_name
-            )
-            default_category_prompt = DEFAULT_REPORT_CATEGORY_PROMPTS.get(
-                keyword_category_name, ""
-            )
-            category_report_prompt = (
-                settings.get(category_prompt_setting, default_category_prompt)
-                if category_prompt_setting
-                else default_category_prompt
-            )
             system_prompt, user_prompt = build_report_prompts(
                 report_date=report_date.isoformat(),
-                keyword_category_name=keyword_category_name,
                 articles=report_articles,
                 business_profile=settings.get("ai_business_profile", ""),
                 report_prompt=settings.get(
                     "ai_report_prompt", DEFAULT_REPORT_PROMPT
                 ),
-                category_report_prompt=category_report_prompt,
             )
             result = self.client.complete_json(
                 system_prompt, user_prompt, max_tokens=3000
             )
             assessment = DailyReportAssessment.model_validate(result.data)
             valid_article_ids = {int(article["article_id"]) for article in articles}
-            developments = [
-                development
-                for development in assessment.key_developments
-                if development.article_id in valid_article_ids
-            ]
-            cited_updates = {
-                field: self._valid_cited_items(
-                    getattr(assessment, field), valid_article_ids
-                )
-                for field in (
-                    "key_risks",
-                    "opportunities",
-                    "recommended_actions",
-                    "watchlist",
-                )
-            }
+            details = self._valid_report_details(
+                assessment.details, valid_article_ids
+            )
             article_floor = max(int(article["risk_score"]) for article in articles)
             risk_score = max(assessment.risk_score, article_floor)
             assessment = assessment.model_copy(
                 update={
-                    "key_developments": developments,
-                    **cited_updates,
+                    "details": details,
                     "risk_score": risk_score,
                     "risk_level": risk_level_for_score(risk_score),
                 }
@@ -2286,10 +2242,10 @@ class DailyReportManager:
         }
 
     @staticmethod
-    def _valid_cited_items(
-        items: list[CitedReportItem], valid_article_ids: set[int]
-    ) -> list[CitedReportItem]:
-        result: list[CitedReportItem] = []
+    def _valid_report_details(
+        items: list[ReportDetail], valid_article_ids: set[int]
+    ) -> list[ReportDetail]:
+        result: list[ReportDetail] = []
         for item in items:
             article_ids = [
                 article_id
@@ -2344,18 +2300,10 @@ class AutomaticIntelligenceWorkflow:
             return
         timezone = ZoneInfo(settings.get("timezone", "Asia/Shanghai"))
         report_date = datetime.now(timezone).date()
-        for keyword_category in self.database.get_keyword_categories():
-            category_id = int(keyword_category["id"])
-            if self.repository.has_successful_report(report_date, category_id):
-                continue
-            try:
-                report_id, category_name, articles = self.report_manager.prepare(
-                    report_date, category_id
-                )
-                self.report_manager.execute(
-                    report_id, report_date, category_name, articles
-                )
-            except IntelligenceAlreadyRunningError:
-                return
-            except ValueError:
-                continue
+        if self.repository.has_successful_report(report_date):
+            return
+        try:
+            report_id, articles = self.report_manager.prepare(report_date)
+            self.report_manager.execute(report_id, report_date, articles)
+        except (IntelligenceAlreadyRunningError, ValueError):
+            return

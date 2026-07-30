@@ -25,10 +25,8 @@ from app.intelligence import (
 from app.llm import LLMResult
 from app.prompts import (
     DEFAULT_BUSINESS_PROFILE,
-    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
-    REPORT_CATEGORY_SETTING_KEYS,
     build_business_analysis_prompts,
     build_relevance_prompts,
     build_report_prompts,
@@ -190,56 +188,18 @@ def business_analysis(*, risk_score: int = 72) -> dict[str, Any]:
 def report_response(article_id: int) -> dict[str, Any]:
     return {
         "title": "2026-07-20 医疗耗材情报日报",
-        "executive_summary": "一次性手套需求出现积极变化。",
+        "overview": "一次性手套需求出现积极变化。",
         "risk_level": "low",
         "risk_score": 20,
-        "risk_basis": "模型认为整体风险有限。",
-        "key_developments": [
+        "details": [
             {
-                "article_id": article_id,
-                "category": "market_demand",
                 "title": "医院手套采购增加",
-                "finding": "采购需求增加。",
-                "business_impact": "可能带来订单机会。",
+                "content": "采购需求增加，可能带来订单机会，但持续性仍需确认。",
+                "article_ids": [article_id],
             },
             {
-                "article_id": 999999,
-                "category": "other",
                 "title": "不存在的文章",
-                "finding": "应被过滤。",
-                "business_impact": "无。",
-            },
-        ],
-        "key_risks": [
-            {
-                "category": "market_demand",
-                "content": "需求持续性仍需确认",
-                "article_ids": [article_id],
-            }
-        ],
-        "opportunities": [
-            {
-                "category": "customer_channel",
-                "content": "医院渠道订单",
-                "article_ids": [article_id],
-            }
-        ],
-        "recommended_actions": [
-            {
-                "category": "customer_channel",
-                "content": "核实重点客户采购节奏",
-                "article_ids": [article_id],
-            }
-        ],
-        "watchlist": [
-            {
-                "category": "market_demand",
-                "content": "采购量变化",
-                "article_ids": [article_id],
-            },
-            {
-                "category": "other",
-                "content": "无效来源应被过滤",
+                "content": "无效来源应被过滤。",
                 "article_ids": [999999],
             },
         ],
@@ -361,9 +321,9 @@ def test_model_web_read_failure_stops_before_relevance_review(tmp_path) -> None:
     client = FakeLLMClient([])
     content_fetcher = FakeContentFetcher(
         [
-                ContentFetchError(
-                    "大模型返回正文过短",
-                    failure_kind="llm_incomplete_content",
+            ContentFetchError(
+                "大模型未返回正文",
+                failure_kind="openai_incomplete_content",
                 retryable=False,
             )
         ]
@@ -380,7 +340,7 @@ def test_model_web_read_failure_stops_before_relevance_review(tmp_path) -> None:
     content = repository.get_content(article_id)
     assert content["status"] == "failed"
     assert content["attempt_count"] == 1
-    assert content["failure_kind"] == "llm_incomplete_content"
+    assert content["failure_kind"] == "openai_incomplete_content"
     assert content["next_retry_at"] is None
     assert content["is_terminal"] == 1
     assert repository.list_reviews()["total"] == 0
@@ -498,6 +458,54 @@ def test_transient_content_failure_has_bounded_backoff_and_manual_actions(
     assert repository.candidate_article_ids(limit=20) == []
 
 
+def test_analysis_retries_transient_article_lookup_once_in_same_run(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "transient-article-lookup.db")
+    database.initialize()
+    article_id = create_article(
+        database,
+        slug="transient-article-lookup",
+        title="基金行业短讯",
+        summary="候选摘要",
+    )
+    content_fetcher = FakeContentFetcher(
+        [
+            ContentFetchError(
+                "The provided Google News RSS URL did not expose the article body",
+                failure_kind="openai_web_unavailable",
+                retryable=True,
+            ),
+            content_document(
+                "https://www.chnfund.com/article/real-story",
+                "基金行业发布一则简短公告。",
+            ),
+        ]
+    )
+    repository = IntelligenceRepository(database)
+    manager = ArticleAnalysisManager(
+        database,
+        repository,
+        FakeLLMClient([irrelevant_review()]),
+        content_fetcher,
+    )
+
+    run_id, article_ids = manager.prepare(limit=1)
+    manager.execute(run_id, article_ids)
+
+    content = repository.get_content(article_id)
+    assert content is not None
+    assert content["status"] == "success"
+    assert content["attempt_count"] == 0
+    assert content_fetcher.calls == [
+        "https://example.com/transient-article-lookup",
+        "https://example.com/transient-article-lookup",
+    ]
+    run = repository.get_analysis_run(run_id)
+    assert run is not None
+    assert run["status"] == "success"
+
+
 def test_new_article_is_not_blocked_by_content_failure_backoff(tmp_path) -> None:
     database = Database(tmp_path / "new-before-retry.db")
     database.initialize()
@@ -587,11 +595,7 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
     database.initialize()
     database.set_setting(
         "ai_report_prompt",
-        "测试自定义日报提示词：必须按分类组织，并为每项结论提供文章来源。",
-    )
-    database.set_setting(
-        REPORT_CATEGORY_SETTING_KEYS["贸易政策"],
-        "测试贸易政策专属提示词：必须核对政策工具、实施阶段与采购准入影响。",
+        "测试自定义日报提示词：按天汇总全部新闻，并为每项结论提供文章来源。",
     )
     article_id = create_article(
         database,
@@ -599,9 +603,7 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
         title="医院手套采购增加",
         summary="候选摘要",
     )
-    keyword_category_id = assign_article_to_keyword_category(
-        database, article_id
-    )
+    assign_article_to_keyword_category(database, article_id)
     analysis_client = FakeLLMClient(
         [
             relevant_review()
@@ -631,47 +633,45 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
 
     report_client = FakeLLMClient([report_response(article_id)])
     report_manager = DailyReportManager(database, repository, report_client)
-    report_id, category_name, articles = report_manager.prepare(
-        date(2026, 7, 20), keyword_category_id
-    )
-    report_manager.execute(
-        report_id, date(2026, 7, 20), category_name, articles
-    )
+    report_id, articles = report_manager.prepare(date(2026, 7, 20))
+    report_manager.execute(report_id, date(2026, 7, 20), articles)
 
     report = repository.get_report(report_id)
     assert report is not None
     assert report["status"] == "success"
     assert report["article_count"] == 1
-    assert report["keyword_category_id"] == keyword_category_id
-    assert report["keyword_category_name"] == "贸易政策"
+    assert report["keyword_category_id"] is None
+    assert report["keyword_category_name"] == ""
     assert report["risk_score"] == 72
     assert report["risk_level"] == "high"
-    assert [item["article_id"] for item in report["key_developments"]] == [
-        article_id
+    assert report["overview"] == "一次性手套需求出现积极变化。"
+    assert [item["article_ids"] for item in report["details"]] == [
+        [article_id]
     ]
-    assert report["key_developments"][0]["category"] == "market_demand"
-    assert report["key_risks"][0]["category"] == "market_demand"
-    assert report["key_risks"][0]["content"] == "需求持续性仍需确认"
-    assert report["key_risks"][0]["article_ids"] == [article_id]
-    assert report["key_risks"][0]["sources"][0]["source_url"] == (
+    assert [item["title"] for item in report["details"]] == [
+        "医院手套采购增加"
+    ]
+    assert report["details"][0]["content"] == (
+        "采购需求增加，可能带来订单机会，但持续性仍需确认。"
+    )
+    assert report["details"][0]["sources"][0]["source_url"] == (
         "https://example.com/medical-gloves"
     )
-    assert [item["content"] for item in report["watchlist"]] == ["采购量变化"]
+    assert report["details"][0]["sources"][0]["article_id"] == (
+        article_id
+    )
     assert report["articles"][0]["article_id"] == article_id
     assert "测试自定义日报提示词" in report_client.calls[0][0]
-    assert "测试贸易政策专属提示词" in report_client.calls[0][0]
-    assert "本次日报的关键词分类：贸易政策" in report_client.calls[0][0]
-    assert '"keyword_category":"贸易政策"' in report_client.calls[0][1]
+    assert "全部已经完成全文读取" in report_client.calls[0][0]
+    assert '"keyword_category"' not in report_client.calls[0][1]
     assert '"source_url"' in report_client.calls[0][1]
     assert report["sources"][0]["source_url"] == (
         "https://example.com/medical-gloves"
     )
-    assert repository.has_successful_report(
-        date(2026, 7, 20), keyword_category_id
-    )
+    assert repository.has_successful_report(date(2026, 7, 20))
 
 
-def test_daily_reports_keep_keyword_categories_separate(tmp_path) -> None:
+def test_daily_report_combines_articles_across_keyword_categories(tmp_path) -> None:
     database = Database(tmp_path / "separate-category-reports.db")
     database.initialize()
     policy_article_id = create_article(
@@ -686,13 +686,13 @@ def test_daily_reports_keep_keyword_categories_separate(tmp_path) -> None:
         title="医疗手套关税调整",
         summary="关税候选",
     )
-    policy_category_id = assign_article_to_keyword_category(
+    assign_article_to_keyword_category(
         database, policy_article_id, "贸易政策"
     )
     assign_article_to_keyword_category(
         database, tariff_article_id, "贸易政策"
     )
-    tariff_category_id = assign_article_to_keyword_category(
+    assign_article_to_keyword_category(
         database, tariff_article_id, "关税调整"
     )
     repository = IntelligenceRepository(database)
@@ -734,57 +734,32 @@ def test_daily_reports_keep_keyword_categories_separate(tmp_path) -> None:
     )
     run_id, article_ids = analysis_manager.prepare(limit=20)
     analysis_manager.execute(run_id, article_ids)
+    report_client = FakeLLMClient([report_response(policy_article_id)])
     report_manager = DailyReportManager(
         database,
         repository,
-        FakeLLMClient(
-            [
-                report_response(policy_article_id),
-                report_response(tariff_article_id),
-            ]
-        ),
+        report_client,
     )
-    policy_report_id, policy_name, policy_articles = report_manager.prepare(
-        date(2026, 7, 20), policy_category_id
-    )
-    assert [item["article_id"] for item in policy_articles] == [
-        policy_article_id
+    report_id, articles = report_manager.prepare(date(2026, 7, 20))
+    assert [item["article_id"] for item in articles] == [
+        tariff_article_id,
+        policy_article_id,
     ]
-    report_manager.execute(
-        policy_report_id,
-        date(2026, 7, 20),
-        policy_name,
-        policy_articles,
-    )
+    report_manager.execute(report_id, date(2026, 7, 20), articles)
 
-    tariff_report_id, tariff_name, tariff_articles = report_manager.prepare(
-        date(2026, 7, 20), tariff_category_id
-    )
-    assert [item["article_id"] for item in tariff_articles] == [
-        tariff_article_id
-    ]
-    report_manager.execute(
-        tariff_report_id,
-        date(2026, 7, 20),
-        tariff_name,
-        tariff_articles,
-    )
-
-    policy_report = repository.get_report(policy_report_id)
-    tariff_report = repository.get_report(tariff_report_id)
-    assert policy_report is not None
-    assert tariff_report is not None
-    assert policy_report["keyword_category_name"] == "贸易政策"
-    assert tariff_report["keyword_category_name"] == "关税调整"
-    assert [item["article_id"] for item in policy_report["articles"]] == [
-        policy_article_id
-    ]
-    assert [item["article_id"] for item in tariff_report["articles"]] == [
-        tariff_article_id
-    ]
+    report = repository.get_report(report_id)
+    assert report is not None
+    assert report["keyword_category_id"] is None
+    assert report["keyword_category_name"] == ""
+    assert {item["article_id"] for item in report["articles"]} == {
+        policy_article_id,
+        tariff_article_id,
+    }
+    assert f'"article_id":{policy_article_id}' in report_client.calls[0][1]
+    assert f'"article_id":{tariff_article_id}' in report_client.calls[0][1]
 
 
-def test_automatic_workflow_generates_each_keyword_category_separately(
+def test_automatic_workflow_generates_one_report_for_the_day(
     tmp_path,
 ) -> None:
     database = Database(tmp_path / "automatic-category-reports.db")
@@ -807,29 +782,24 @@ def test_automatic_workflow_generates_each_keyword_category_separately(
 
     class FakeReportManager:
         def __init__(self) -> None:
-            self.executed: list[tuple[int, str]] = []
+            self.executed: list[tuple[int, date]] = []
 
         def prepare(
-            self, report_date: date, category_id: int
-        ) -> tuple[int, str, list[dict[str, Any]]]:
-            category = database.get_keyword_category(category_id)
-            assert category is not None
-            return category_id, str(category["name"]), [{"article_id": category_id}]
+            self, report_date: date
+        ) -> tuple[int, list[dict[str, Any]]]:
+            return 1, [{"article_id": 1}]
 
         def execute(
             self,
             report_id: int,
             report_date: date,
-            category_name: str,
             articles: list[dict[str, Any]],
         ) -> None:
             assert articles == [{"article_id": report_id}]
-            self.executed.append((report_id, category_name))
+            self.executed.append((report_id, report_date))
 
     class FakeRepository:
-        def has_successful_report(
-            self, report_date: date, category_id: int
-        ) -> bool:
+        def has_successful_report(self, report_date: date) -> bool:
             return False
 
     report_manager = FakeReportManager()
@@ -841,11 +811,7 @@ def test_automatic_workflow_generates_each_keyword_category_separately(
     )
     workflow.after_collection()
 
-    assert [name for _, name in report_manager.executed] == [
-        "贸易政策",
-        "关税调整",
-        "行业法规",
-    ]
+    assert report_manager.executed == [(1, date.today())]
 
 
 def test_analysis_queue_can_process_one_collection_run(tmp_path) -> None:
@@ -1221,7 +1187,6 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
 
     report_system, report_user = build_report_prompts(
         report_date="2026-07-20",
-        keyword_category_name="贸易政策",
         articles=[
             {
                 "article_id": 1,
@@ -1230,7 +1195,7 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
             }
         ],
         business_profile=DEFAULT_BUSINESS_PROFILE,
-        report_prompt="自定义日报要求：建议必须明确责任对象与监控指标。",
+        report_prompt="自定义日报要求：详细解读应优先说明事实与业务影响。",
     )
 
     assert "自定义审核要求" in relevance_system
@@ -1247,14 +1212,14 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert "可能传导" in analysis_system
     assert '"relevance_review"' in analysis_user
     assert "自定义日报要求" in report_system
-    assert DEFAULT_REPORT_CATEGORY_PROMPTS["贸易政策"] in report_system
     assert '"article_ids": [1]' in report_system
-    assert '"category": "分类代码"' in report_system
-    assert "关键词分类：贸易政策" in report_system
-    assert "来源链接由系统" in DEFAULT_REPORT_PROMPT
-    assert "不得强行写入关键结论" in DEFAULT_REPORT_PROMPT
+    assert '"details": [' in report_system
+    assert '"category": "分类代码"' not in report_system
+    assert "按自然日汇总" in DEFAULT_REPORT_PROMPT
+    assert "来源 1" in report_system
+    assert "完整标题" in report_system
     assert "历史背景" in report_system
-    assert '"keyword_category":"贸易政策"' in report_user
+    assert '"keyword_category"' not in report_user
     assert '"source_url":"https://example.com/news"' in report_user
     assert '"articles"' in report_user
     assert "直接传导路径" in DEFAULT_BUSINESS_PROFILE
@@ -1265,22 +1230,9 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert len(DEFAULT_REPORT_PROMPT) >= 20
 
 
-@pytest.mark.parametrize(
-    ("category_name", "expected_phrase", "excluded_phrase"),
-    [
-        ("贸易政策", "非关税贸易措施", "原税率与新税率"),
-        ("关税调整", "原税率与新税率", "510(k)"),
-        ("行业法规", "510(k)", "原税率与新税率"),
-    ],
-)
-def test_report_prompt_uses_only_current_category_requirements(
-    category_name: str,
-    expected_phrase: str,
-    excluded_phrase: str,
-) -> None:
+def test_report_prompt_uses_one_daily_scope_without_category_requirements() -> None:
     system_prompt, _ = build_report_prompts(
         report_date="2026-07-20",
-        keyword_category_name=category_name,
         articles=[
             {
                 "article_id": 1,
@@ -1291,8 +1243,63 @@ def test_report_prompt_uses_only_current_category_requirements(
         business_profile=DEFAULT_BUSINESS_PROFILE,
     )
 
-    assert expected_phrase in system_prompt
-    assert excluded_phrase not in system_prompt
+    assert "所有输入文章属于同一天" in system_prompt
+    assert "不得按关键词分类拆成多份日报" in system_prompt
+    assert "专属日报要求" not in system_prompt
+    assert "总体概括和详细解读" in system_prompt
+    assert '"executive_summary"' not in system_prompt
+    assert '"key_developments"' not in system_prompt
+
+
+def test_legacy_report_is_exposed_through_new_report_shape(tmp_path) -> None:
+    database = Database(tmp_path / "legacy-report-shape.db")
+    database.initialize()
+    repository = IntelligenceRepository(database)
+    article_id = create_article(
+        database,
+        slug="legacy-report-source",
+        title="历史日报来源文章",
+        summary="历史摘要",
+    )
+    report_id = repository.create_report(
+        report_date=date(2026, 7, 20),
+        article_ids=[article_id],
+        model="legacy-model",
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            UPDATE daily_reports
+            SET status = 'success', title = ?, executive_summary = ?,
+                key_developments = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-07-20 英科医疗情报日报",
+                "历史日报总体摘要。",
+                json.dumps(
+                    [
+                        {
+                            "article_id": article_id,
+                            "category": "market_demand",
+                            "title": "历史事件",
+                            "finding": "历史事实。",
+                            "business_impact": "历史业务影响。",
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                report_id,
+            ),
+        )
+
+    report = repository.get_report(report_id)
+
+    assert report is not None
+    assert report["overview"] == "历史日报总体摘要。"
+    assert report["details"][0]["title"] == "历史事件"
+    assert report["details"][0]["content"] == "历史事实。\n历史业务影响。"
+    assert report["details"][0]["sources"][0]["article_id"] == article_id
 
 
 def test_irrelevant_review_is_normalized_to_other_without_secondaries() -> None:

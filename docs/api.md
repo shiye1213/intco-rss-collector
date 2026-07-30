@@ -51,7 +51,7 @@
 
 ### `GET /api/sources`
 
-返回全部未归档数据源。`mode` 可以是 `search`、`direct` 或 `crawler`。
+返回全部未归档数据源。`mode` 可以是 `search`、`direct` 或 `crawler`。每个来源还包含 `crawler_failure_kind`、`crawler_failure_count`、`crawler_cooldown_until`、`crawler_last_error`、`crawler_last_success_at` 和计算后的 `crawler_in_cooldown`，用于展示反爬与恢复状态。
 
 ### `POST /api/sources`
 
@@ -66,7 +66,7 @@
 }
 ```
 
-`mode=search` 时 `url_template` 必须包含 `{query}`；`mode=direct` 时填写固定 Feed 地址；`mode=crawler` 时填写固定新闻列表页地址，不能包含 `{query}`。直连或搜索源返回 HTML 而不是 XML 时，采集器也会自动使用网页爬虫兜底。
+`mode=search` 时 `url_template` 必须包含 `{query}`；`mode=direct` 时填写固定 Feed 地址；`mode=crawler` 时填写固定新闻列表页地址，不能包含 `{query}`。启用爬虫总开关后，直连或搜索源返回 HTML 而不是 XML 时，采集器才会自动使用网页爬虫兜底。
 
 无 RSS 站点示例：
 
@@ -81,7 +81,7 @@
 }
 ```
 
-网页爬虫仅跟踪同站 HTTP/HTTPS 链接，按链接特征优先读取文章页，单个数据源每次最多提取 30 篇带发布日期的文章。发布日期依次从 JSON-LD、页面元数据、`time` 元素和日期型 URL 中识别。
+网页爬虫总开关默认关闭。开启后，爬虫仅跟踪同站 HTTP/HTTPS 链接，按链接特征优先读取文章页，单个数据源每次最多提取 30 篇带发布日期的文章。发布日期依次从 JSON-LD、页面元数据、`time` 元素和日期型 URL 中识别。爬虫默认遵守 `robots.txt`，同域请求间隔 3 秒；HTTP 429 优先采用 `Retry-After`，HTTP 403、5xx、验证码和持续解析失败会触发来源冷却。冷却期间不会发出爬虫请求，也不会推进该来源游标。
 
 ### `PUT /api/sources/{source_id}`
 
@@ -142,17 +142,23 @@
 
 ### `GET /api/settings`
 
-返回每日采集时间和时区。
+返回每日采集时间、时区、增量和本地复核开关，以及爬虫总开关、robots.txt、限速和冷却配置。爬虫总开关默认关闭。
 
 ### `PUT /api/settings`
 
 ```json
 {
-  "schedule_time": "08:00"
+  "schedule_time": "08:00",
+  "incremental_collection": true,
+  "search_local_keyword_filter": true,
+  "crawler_enabled": false,
+  "crawler_respect_robots": true,
+  "crawler_min_interval_seconds": 3,
+  "crawler_cooldown_minutes": 60
 }
 ```
 
-时间格式必须为 `HH:MM`，当前时区固定为 `Asia/Shanghai`。
+时间格式必须为 `HH:MM`，当前时区固定为 `Asia/Shanghai`。`crawler_enabled=false` 时仍正常读取 RSS，但显式爬虫源和 HTML 网页兜底不会发起爬虫请求。同域间隔范围为 0–60 秒，默认冷却时间范围为 5–1440 分钟。生产环境不建议关闭 robots.txt。
 
 ## AI 情报
 
@@ -221,12 +227,7 @@
 {
   "business_profile": "英科医疗业务边界……",
   "relevance_prompt": "相关性审核的可编辑业务要求……",
-  "report_prompt": "全部分类共用的日报生成要求……",
-  "category_report_prompts": {
-    "贸易政策": "贸易政策日报专属要求……",
-    "关税调整": "关税调整日报专属要求……",
-    "行业法规": "行业法规日报专属要求……"
-  },
+  "report_prompt": "按自然日汇总全部合格新闻的日报生成要求……",
   "relevance_threshold": 70,
   "batch_size": 20,
   "content_max_chars": 30000,
@@ -235,7 +236,7 @@
 }
 ```
 
-企业业务边界、相关性提示词、通用日报提示词和三类专属日报提示词均可在系统设置中查看和修改。生成日报时只把通用要求和当前关键词分类对应的专属要求发送给模型，不注入其他分类的分析框架。系统仍会固定追加业务分类代码、单一关键词分类边界、JSON 输出结构、来源 ID/链接校验和防 Prompt 注入规则。自动开关默认关闭。`auto_report=true` 只有在 `auto_analyze=true` 时才会执行，并为当天每个有合格文章的活跃关键词分类分别生成日报。
+企业业务边界、相关性提示词和统一日报提示词均可在系统设置中查看和修改。系统会固定追加业务分类代码、JSON 输出结构、来源 ID/链接校验和防 Prompt 注入规则。自动开关默认关闭；`auto_report=true` 只有在 `auto_analyze=true` 时才会执行，并为当天生成一份综合日报。
 
 ## 数据维护
 
@@ -259,16 +260,15 @@
 
 ### `POST /api/reports`
 
-按新闻发布日期和一个关键词分类生成后台日报任务：
+按新闻发布日期生成后台日报任务：
 
 ```json
 {
-  "report_date": "2026-07-20",
-  "keyword_category_id": 1
+  "report_date": "2026-07-20"
 }
 ```
 
-`keyword_category_id` 来自 `GET /api/keyword-categories`。一份日报只汇总命中该关键词分类、通过相关性审核且业务分析成功的文章；例如“贸易政策”和“关税调整”会生成两份独立日报。所选范围没有合格新闻时返回 `422`。
+一份日报汇总该日期内全部通过相关性审核且业务分析成功的文章，不再接收关键词分类参数。所选日期没有合格新闻时返回 `422`。
 
 ### `GET /api/reports?limit=50`
 
@@ -276,7 +276,7 @@
 
 ### `GET /api/reports/{report_id}`
 
-返回日报结构化内容和全部依据文章。顶层包含 `keyword_category_id`、`keyword_category_name` 和经校验的 `sources`。关键进展包含 `category`、`article_id` 与 `sources`；风险、机会、建议动作和监控清单中的每一项包含 `category`、`content`、`article_ids` 与 `sources`。这里的 `category` 是 AI 业务影响标签，不决定日报收录范围。后端会剔除不属于本次日报输入的来源 ID，再附加文章标题、发布方和 `source_url`。
+返回日报结构化内容和经校验的 `sources`。正文由 `overview` 总体概括和 `details` 详细解读组成；每条解读包含 `title`、`content`、`article_ids` 与 `sources`。后端会剔除不属于本次日报输入的来源 ID；页面和飞书把有效 `source_url` 显示为简短的“来源 N”超链接，不展示完整文章标题或裸 URL。旧日报字段只保留在数据库兼容层，读取历史记录时自动映射为新结构。
 
 ## 错误约定
 

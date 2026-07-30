@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from email.message import Message
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from app.collector import (
     Collector,
+    CrawlerRateLimitedError,
+    CrawlerRobotsDeniedError,
+    PoliteCrawlerFetcher,
     build_feed_url,
     canonicalize_url,
     extract_crawled_article,
@@ -17,13 +22,11 @@ from app.collector import (
 from app.database import DEFAULT_KEYWORDS, DEFAULT_SOURCES, Database
 from app.prompts import (
     DEFAULT_BUSINESS_PROFILE,
-    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
     LEGACY_DEFAULT_BUSINESS_PROFILE_V4,
     LEGACY_DEFAULT_RELEVANCE_PROMPT_V4,
     LEGACY_DEFAULT_REPORT_PROMPT_V4,
-    REPORT_CATEGORY_SETTING_KEYS,
 )
 from app.query_builder import (
     build_keyword_query,
@@ -196,6 +199,63 @@ def test_extract_crawled_article_reads_json_ld() -> None:
     assert item.categories == ("Procurement",)
 
 
+def test_polite_crawler_respects_robots_txt() -> None:
+    calls: list[str] = []
+
+    def fetcher(url: str, _timeout: float) -> bytes:
+        calls.append(url)
+        if url.endswith("/robots.txt"):
+            return b"User-agent: *\nDisallow: /private\n"
+        return b"<html></html>"
+
+    crawler = PoliteCrawlerFetcher(
+        fetcher, min_interval_seconds=0, respect_robots=True
+    )
+
+    with pytest.raises(CrawlerRobotsDeniedError):
+        crawler("https://example.com/private/news", 10)
+    assert calls == ["https://example.com/robots.txt"]
+
+
+def test_polite_crawler_spaces_requests_per_origin() -> None:
+    current = [100.0]
+    delays: list[float] = []
+
+    def sleep(delay: float) -> None:
+        delays.append(delay)
+        current[0] += delay
+
+    crawler = PoliteCrawlerFetcher(
+        lambda _url, _timeout: b"<html></html>",
+        min_interval_seconds=2,
+        respect_robots=False,
+        clock=lambda: current[0],
+        sleeper=sleep,
+    )
+
+    crawler("https://example.com/news/1", 10)
+    crawler("https://example.com/news/2", 10)
+    crawler("https://other.example/news/1", 10)
+
+    assert delays == [2]
+
+
+def test_polite_crawler_uses_retry_after_for_429() -> None:
+    headers = Message()
+    headers["Retry-After"] = "120"
+
+    def fetcher(url: str, _timeout: float) -> bytes:
+        if url.endswith("/robots.txt"):
+            return b"User-agent: *\nAllow: /\n"
+        raise HTTPError(url, 429, "Too Many Requests", headers, None)
+
+    crawler = PoliteCrawlerFetcher(fetcher, min_interval_seconds=0)
+
+    with pytest.raises(CrawlerRateLimitedError) as captured:
+        crawler("https://example.com/news", 10)
+    assert captured.value.cooldown_seconds == 120
+
+
 @pytest.mark.parametrize("mode", ["crawler", "direct"])
 def test_web_crawler_mode_and_html_fallback_collect_articles(
     tmp_path,
@@ -203,6 +263,7 @@ def test_web_crawler_mode_and_html_fallback_collect_articles(
 ) -> None:
     database = Database(tmp_path / f"{mode}-source.db")
     database.initialize()
+    database.set_setting("crawler_enabled", "true")
     with database.connect() as connection:
         connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
         connection.execute("UPDATE keywords SET active = 0, archived = 1")
@@ -257,6 +318,122 @@ def test_web_crawler_mode_and_html_fallback_collect_articles(
     article = database.list_articles()["items"][0]
     assert article["url"].endswith("/nitrile-gloves-tariff")
     assert article["publisher"] == "Example Policy News"
+    source = database.get_sources(active_only=True)[0]
+    assert source["crawler_failure_count"] == 0
+    assert source["crawler_last_success_at"] is not None
+
+
+def test_web_crawler_is_disabled_by_default_without_network_request(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "crawler-disabled.db")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": "Disabled crawler",
+            "url_template": "https://example.com/news/",
+            "mode": "crawler",
+            "language": "en-US",
+            "country": "US",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Crawler keyword",
+            "match_terms": ["nitrile gloves"],
+            "lookback_days": 30,
+            "active": True,
+        }
+    )
+    calls: list[str] = []
+    collector = Collector(
+        database,
+        feed_fetcher=lambda url, _timeout: calls.append(url) or b"",
+    )
+    started = datetime(2026, 7, 29, 4, 0, tzinfo=UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-06-29T00:00:00Z"
+    )
+
+    collector.collect(run_id, started)
+
+    assert database.get_settings()["crawler_enabled"] == "false"
+    assert calls == []
+    run = database.get_run(run_id)
+    assert run["status"] == "failed"
+    detail = run["details"][0]
+    assert "网页爬虫总开关已关闭" in detail["error_message"]
+
+
+def test_crawler_rate_limit_persists_cooldown_without_advancing_cursor(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "crawler-rate-limit.db")
+    database.initialize()
+    database.set_setting("crawler_enabled", "true")
+    with database.connect() as connection:
+        connection.execute("UPDATE rss_sources SET active = 0, archived = 1")
+        connection.execute("UPDATE keywords SET active = 0, archived = 1")
+    database.create_source(
+        {
+            "name": "Rate limited crawler",
+            "url_template": "https://example.com/news/",
+            "mode": "crawler",
+            "language": "en-US",
+            "country": "US",
+            "active": True,
+        }
+    )
+    database.create_keyword(
+        {
+            "name": "Crawler keyword",
+            "match_terms": ["nitrile gloves"],
+            "lookback_days": 30,
+            "active": True,
+        }
+    )
+    headers = Message()
+    headers["Retry-After"] = "300"
+    calls: list[str] = []
+
+    def rate_limited_fetcher(url: str, _timeout: float) -> bytes:
+        calls.append(url)
+        if url.endswith("/robots.txt"):
+            return b"User-agent: *\nAllow: /\n"
+        raise HTTPError(url, 429, "Too Many Requests", headers, None)
+
+    collector = Collector(database, feed_fetcher=rate_limited_fetcher)
+    started = datetime.now(UTC)
+    run_id = database.create_run(
+        "manual", started.isoformat(), "2026-06-29T00:00:00Z"
+    )
+    collector.collect(run_id, started)
+
+    source = database.get_sources(active_only=True)[0]
+    assert database.get_run(run_id)["status"] == "failed"
+    assert source["crawler_failure_kind"] == "rate_limited"
+    assert source["crawler_failure_count"] == 1
+    assert source["crawler_in_cooldown"] is True
+    with database.connect() as connection:
+        cursor_count = connection.execute(
+            "SELECT COUNT(*) FROM collection_cursors"
+        ).fetchone()[0]
+    assert cursor_count == 0
+
+    calls.clear()
+    second_started = started + timedelta(minutes=1)
+    second_run_id = database.create_run(
+        "manual",
+        second_started.isoformat(),
+        "2026-06-29T00:00:00Z",
+    )
+    collector.collect(second_run_id, second_started)
+    assert calls == []
+    assert database.get_run(second_run_id)["status"] == "failed"
 
 
 def test_build_search_url_and_canonicalize_tracking_parameters() -> None:
@@ -411,6 +588,60 @@ def test_core_and_recall_keyword_strategies_cover_each_report_category() -> None
         )
     assert all(item["active"] for item in focused.values())
     assert all(item["lookback_days"] == 90 for item in focused.values())
+
+
+def test_default_keywords_cover_the_business_portfolio_without_generic_tariff_noise() -> None:
+    strategies = {item["name"]: item for item in DEFAULT_KEYWORDS}
+
+    assert {
+        "英科医疗公司动态",
+        "康复护理产品（中文）",
+        "康复护理产品（英文）",
+        "理疗与护理产品（中文）",
+        "理疗与护理产品（英文）",
+        "公共卫生与防护需求（中文）",
+        "公共卫生与防护需求（英文）",
+    } <= set(strategies)
+    assert all(
+        strategies[name]["active"]
+        for name in (
+            "英科医疗公司动态",
+            "康复护理产品（中文）",
+            "康复护理产品（英文）",
+            "理疗与护理产品（中文）",
+            "理疗与护理产品（英文）",
+            "公共卫生与防护需求（中文）",
+            "公共卫生与防护需求（英文）",
+            "手套原材料关税（中文）",
+            "手套原材料关税（英文）",
+        )
+    )
+    assert all(
+        not strategies[name]["active"]
+        for name in (
+            "医疗手套贸易与法规",
+            "医疗手套关税（中文）",
+            "医疗手套关税（英文）",
+            "美国关税法律工具（中文）",
+            "美国关税法律工具（英文）",
+            "贸易救济案件（中文）",
+            "贸易救济案件（英文）",
+            "通用关税政策（中文）",
+            "通用关税政策（英文）",
+        )
+    )
+    assert "关税" in strategies["医疗手套关税调整精准版（中文）"][
+        "context_terms"
+    ]
+    assert "tariff" in strategies["医疗手套关税调整精准版（英文）"][
+        "context_terms"
+    ]
+    assert "平均售价" in strategies["医疗手套供需与价格（中文）"][
+        "context_terms"
+    ]
+    assert "average selling price" in strategies[
+        "医疗手套供需与价格（英文）"
+    ]["context_terms"]
 
 
 def test_initialize_upgrades_the_original_generic_tariff_defaults(tmp_path) -> None:
@@ -644,14 +875,15 @@ def test_initialize_migrates_relevance_categories_and_seeds_prompt_settings(
         "secondary_categories",
         "keyword_categories",
     } <= review_columns
-    assert {"keyword_category_id", "keyword_category_name"} <= report_columns
+    assert {
+        "keyword_category_id",
+        "keyword_category_name",
+        "overview",
+        "details",
+    } <= report_columns
     assert settings["ai_relevance_prompt"] == DEFAULT_RELEVANCE_PROMPT
     assert settings["ai_business_profile"] == DEFAULT_BUSINESS_PROFILE
     assert settings["ai_report_prompt"] == DEFAULT_REPORT_PROMPT
-    assert {
-        category_name: settings[REPORT_CATEGORY_SETTING_KEYS[category_name]]
-        for category_name in DEFAULT_REPORT_CATEGORY_PROMPTS
-    } == DEFAULT_REPORT_CATEGORY_PROMPTS
 
 
 def test_keyword_hit_stats_count_distinct_relevant_articles_by_category(
@@ -1352,7 +1584,10 @@ def test_initialize_migrates_existing_article_metadata(tmp_path) -> None:
     with database.connect() as connection:
         source = connection.execute(
             """
-            SELECT country, site_domain, crawler_enabled
+            SELECT country, site_domain, crawler_enabled,
+                   crawler_failure_kind, crawler_failure_count,
+                   crawler_cooldown_until, crawler_last_error,
+                   crawler_last_success_at
             FROM rss_sources
             WHERE id = 1
             """
@@ -1367,6 +1602,11 @@ def test_initialize_migrates_existing_article_metadata(tmp_path) -> None:
         "country": "US",
         "site_domain": "",
         "crawler_enabled": 0,
+        "crawler_failure_kind": "",
+        "crawler_failure_count": 0,
+        "crawler_cooldown_until": None,
+        "crawler_last_error": "",
+        "crawler_last_success_at": None,
     }
     assert article["publisher_normalized"] == "Example News"
     assert dict(provenance) == {"language": "en-US", "country": "US"}

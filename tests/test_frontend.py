@@ -47,24 +47,28 @@ def test_prompt_settings_and_cited_report_content_are_wired() -> None:
 
     assert 'id="ai-relevance-prompt"' in html
     assert 'id="ai-report-prompt"' in html
-    assert 'id="ai-report-prompt-trade-policy"' in html
-    assert 'id="ai-report-prompt-tariff-adjustment"' in html
-    assert 'id="ai-report-prompt-industry-regulation"' in html
+    assert 'id="ai-report-prompt-trade-policy"' not in html
+    assert 'id="ai-report-prompt-tariff-adjustment"' not in html
+    assert 'id="ai-report-prompt-industry-regulation"' not in html
     assert "相关性审核提示词" in html
     assert 'relevance_prompt: $("ai-relevance-prompt").value.trim()' in javascript
     assert 'report_prompt: $("ai-report-prompt").value.trim()' in javascript
-    assert "category_report_prompts:" in javascript
-    assert '"贸易政策": $("ai-report-prompt-trade-policy").value.trim()' in javascript
-    assert '"关税调整": $("ai-report-prompt-tariff-adjustment").value.trim()' in javascript
-    assert '"行业法规": $("ai-report-prompt-industry-regulation").value.trim()' in javascript
+    assert "category_report_prompts:" not in javascript
     assert "function reportSources(" in javascript
-    assert "全部来源文章" in javascript
+    assert "function reportDetails(" in javascript
+    assert "来源 ${index + 1}" in javascript
+    assert "<h4>总体概括</h4>" in javascript
+    assert "<h4>详细解读</h4>" in javascript
+    assert "<h4>管理层摘要</h4>" not in javascript
+    assert 'reportList("建议动作"' not in javascript
+    assert 'reportList("后续监控"' not in javascript
+    assert "全部来源文章" not in javascript
     assert "item.secondary_categories" in javascript
-    assert "按新闻发布日期与关键词分类分别生成" in html
-    assert "请选择关键词分类" in html
-    assert "fillReportKeywordCategoryOptions()" in javascript
-    assert "keyword_category_id: keywordCategoryId" in javascript
-    assert "report.keyword_category_name" in javascript
+    assert "按新闻发布日期汇总当天全部合格业务新闻" in html
+    assert 'id="report-category"' not in html
+    assert "fillReportKeywordCategoryOptions()" not in javascript
+    assert "keyword_category_id: keywordCategoryId" not in javascript
+    assert "report.keyword_category_name" not in javascript
     assert "article.source_url" in javascript
 
 
@@ -103,12 +107,23 @@ def test_web_crawler_source_mode_is_wired() -> None:
 
     assert '<option value="crawler">网页爬虫（无 RSS）</option>' in html
     assert 'id="source-url-hint"' in html
-    assert "RSS 优先，无 RSS 时使用网页爬虫" in html
-    assert "网页爬虫兜底已启用" in html
-    assert "RSS 不可用时，采集任务自动切换到同站网页爬虫" in html
+    assert "网页爬虫兜底由系统设置控制" in html
+    assert "网页爬虫兜底默认关闭" in html
+    assert "开启总开关后，RSS 不可用时才会切换" in html
     assert "采集 / 兜底策略" in html
     assert 'crawler: "网页爬虫"' in javascript
     assert 'mode === "crawler" ? "新闻列表页地址"' in javascript
     assert "function sourceFallbackMarkup(mode)" in javascript
     assert "RSS 优先 · 自动兜底" in javascript
     assert "直接网页爬虫" in javascript
+    assert "反爬状态" in html
+    assert "遵守 robots.txt" in html
+    assert 'id="crawler-enabled" type="checkbox"' in html
+    assert 'id="crawler-respect-robots"' in html
+    assert 'id="crawler-min-interval"' in html
+    assert 'id="crawler-cooldown-minutes"' in html
+    assert "function sourceCrawlerHealthMarkup(item)" in javascript
+    assert "crawler_in_cooldown" in javascript
+    assert 'crawler_enabled: $("crawler-enabled").checked' in javascript
+    assert "function syncCrawlerSettingsAvailability()" in javascript
+    assert 'crawler_respect_robots: $("crawler-respect-robots").checked' in javascript

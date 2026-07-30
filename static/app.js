@@ -22,6 +22,7 @@ const state = {
   pollInFlight: false,
   cleanupPreview: null,
   toastTimer: null,
+  crawlerEnabled: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -194,7 +195,6 @@ async function loadCatalogs() {
   state.keywordCategories = categoryData.items;
   state.keywordHitStats = hitStatsData;
   fillFilters();
-  fillReportKeywordCategoryOptions();
   renderSources();
   renderKeywords();
 }
@@ -272,17 +272,6 @@ function fillCategoryOptions() {
     .map(([code, label]) => `<option value="${escapeHtml(code)}">${escapeHtml(label)}</option>`)
     .join("")}`;
   select.value = current;
-}
-
-function fillReportKeywordCategoryOptions() {
-  const select = $("report-category");
-  const current = select.value;
-  select.innerHTML = `<option value="">请选择关键词分类</option>${state.keywordCategories
-    .map((category) => `<option value="${Number(category.id)}">${escapeHtml(category.name)}</option>`)
-    .join("")}`;
-  if (state.keywordCategories.some((category) => String(category.id) === current)) {
-    select.value = current;
-  }
 }
 
 async function loadAIStatus() {
@@ -558,19 +547,13 @@ async function clearPendingArticles() {
 async function loadReports() {
   try {
     const data = await api("/api/reports?limit=100");
-    $("report-rows").innerHTML = data.items.map((report) => {
-      const keywordCategory = report.keyword_category_name
-        || ((report.categories || []).length
-          ? report.categories.map(categoryLabel).join("、")
-          : "历史综合日报");
-      return `<tr>
+    $("report-rows").innerHTML = data.items.map((report) => `<tr>
         <td><strong>${escapeHtml(report.title || `日报 #${report.id}`)}</strong><span class="cell-subtitle">#${report.id} · ${escapeHtml(report.model)}</span></td>
-        <td>${escapeHtml(report.report_date)}</td><td>${escapeHtml(keywordCategory)}</td><td>${report.article_count}</td>
+        <td>${escapeHtml(report.report_date)}</td><td>${report.article_count}</td>
         <td>${riskMarkup(report.risk_level, report.risk_score)}</td><td>${statusLabel(report.status)}</td>
         <td>${formatFullTime(report.updated_at)}</td>
         <td><div class="report-actions"><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button><button class="icon-button report-feishu-button" data-id="${report.id}" type="button" title="推送到飞书" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="send"></i></button></div></td>
-      </tr>`;
-    }).join("");
+      </tr>`).join("");
     $("report-empty").classList.toggle("hidden", data.items.length > 0);
     refreshIcons();
   } catch (error) { showToast(error.message, true); }
@@ -585,21 +568,15 @@ async function sendReportToFeishu(id) {
 
 async function generateReport(event) {
   event.preventDefault();
-  const keywordCategoryId = Number($("report-category").value);
-  if (!keywordCategoryId) {
-    showToast("请选择一个关键词分类", true);
-    return;
-  }
   try {
     const data = await api("/api/reports", {
       method: "POST",
       body: JSON.stringify({
         report_date: $("report-date").value,
-        keyword_category_id: keywordCategoryId,
       }),
     });
     state.wasReportRunning = true;
-    showToast(`${data.keyword_category_name}日报 #${data.report_id} 已开始生成，共 ${data.article_count} 篇新闻`);
+    showToast(`日报 #${data.report_id} 已开始生成，共 ${data.article_count} 篇新闻`);
     await Promise.all([loadAIStatus(), loadReports()]);
   } catch (error) { showToast(error.message, true); }
 }
@@ -611,38 +588,28 @@ function reportSources(articleIds, articleById, attachedSources = []) {
       .map((articleId) => articleById.get(articleId))
       .filter(Boolean);
   if (!sources.length) return "";
-  return `<div class="report-sources"><span>出处</span>${sources.map((article) => `<a href="${escapeHtml(article.source_url || article.final_url || article.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.publisher || "原文")} · ${escapeHtml(article.title)}</a>`).join("")}</div>`;
+  return `<div class="report-sources"><span>出处</span>${sources.map((article, index) => `<a href="${escapeHtml(article.source_url || article.final_url || article.url)}" target="_blank" rel="noopener noreferrer">来源 ${index + 1}</a>`).join("")}</div>`;
 }
 
-function reportList(title, items, articleById) {
+function reportDetails(items, articleById) {
   if (!items?.length) return "";
-  return `<section class="report-block"><h4>${escapeHtml(title)}</h4><ul class="cited-report-list">${items.map((item) => {
-    const normalized = typeof item === "string"
-      ? { category: "other", content: item, article_ids: [] }
-      : item;
-    return `<li><div class="report-item-content"><span class="tag">${escapeHtml(categoryLabel(normalized.category || "other"))}</span><span>${escapeHtml(normalized.content || "")}</span></div>${reportSources(normalized.article_ids, articleById, normalized.sources)}</li>`;
-  }).join("")}</ul></section>`;
+  return `<section class="report-block"><h4>详细解读</h4><div class="report-detail-list">${items.map((item) => `<article>
+    <h5>${escapeHtml(item.title || "详细解读")}</h5>
+    <p>${escapeHtml(item.content || "")}</p>
+    ${reportSources(item.article_ids, articleById, item.sources)}
+  </article>`).join("")}</div></section>`;
 }
 
 async function openReportDetail(id) {
   try {
     const report = await api(`/api/reports/${id}`);
     $("report-dialog-title").textContent = report.title || `情报日报 #${report.id}`;
-    const categoryScope = report.keyword_category_name
-      || (report.categories?.length
-        ? report.categories.map(categoryLabel).join("、")
-        : "历史综合日报");
     const articleById = new Map((report.articles || []).map((article) => [Number(article.article_id), article]));
     const allSourceIds = (report.articles || []).map((article) => article.article_id);
     $("report-detail").innerHTML = `
-      <div class="report-meta"><span>${escapeHtml(report.report_date)}</span><span>${escapeHtml(categoryScope)}</span><span>${report.article_count} 篇新闻</span>${riskMarkup(report.risk_level, report.risk_score)}</div>
-      <section class="report-lead"><h4>管理层摘要</h4><p>${escapeHtml(report.executive_summary)}</p><p class="risk-basis"><strong>风险依据：</strong>${escapeHtml(report.risk_basis)}</p>${reportSources(allSourceIds, articleById, report.sources)}</section>
-      ${report.key_developments?.length ? `<section class="report-block"><h4>关键进展</h4><div class="development-list">${report.key_developments.map((item) => `<article><div class="development-title"><span class="tag">${escapeHtml(categoryLabel(item.category || "other"))}</span><strong>${escapeHtml(item.title)}</strong></div><p>${escapeHtml(item.finding)}</p><p class="business-impact">${escapeHtml(item.business_impact)}</p>${reportSources([item.article_id], articleById, item.sources)}</article>`).join("")}</div></section>` : ""}
-      ${reportList("关键风险", report.key_risks, articleById)}
-      ${reportList("业务机会", report.opportunities, articleById)}
-      ${reportList("建议动作", report.recommended_actions, articleById)}
-      ${reportList("后续监控", report.watchlist, articleById)}
-      ${report.articles?.length ? `<section class="report-block"><h4>全部来源文章</h4><div class="report-article-list">${report.articles.map((article) => `<a href="${escapeHtml(article.final_url || article.url)}" target="_blank" rel="noopener noreferrer"><span><strong>${escapeHtml(article.title)}</strong><small>${escapeHtml(article.publisher || "-")} · ${formatFullTime(article.published_at)}</small></span>${riskMarkup(article.risk_level, article.risk_score)}</a>`).join("")}</div></section>` : ""}`;
+      <div class="report-meta"><span>${escapeHtml(report.report_date)}</span><span>${report.article_count} 篇新闻</span>${riskMarkup(report.risk_level, report.risk_score)}</div>
+      <section class="report-lead"><h4>总体概括</h4><p>${escapeHtml(report.overview || "")}</p>${report.details?.length ? "" : reportSources(allSourceIds, articleById, report.sources)}</section>
+      ${reportDetails(report.details, articleById)}`;
     $("report-dialog").showModal();
   } catch (error) { showToast(error.message, true); }
 }
@@ -702,10 +669,39 @@ function sourceModeLabel(mode) {
 }
 
 function sourceFallbackMarkup(mode) {
+  if (!state.crawlerEnabled) {
+    const detail = mode === "crawler"
+      ? "开启系统总开关后采集"
+      : "仍会正常读取 RSS";
+    return `<span class="source-strategy"><strong>网页爬虫已关闭</strong><small>${detail}</small></span>`;
+  }
   if (mode === "crawler") {
     return `<span class="source-strategy source-strategy-direct"><strong>直接网页爬虫</strong><small>此源不依赖 RSS</small></span>`;
   }
   return `<span class="source-strategy"><strong>RSS 优先 · 自动兜底</strong><small>返回 HTML 时切换爬虫</small></span>`;
+}
+
+function sourceCrawlerHealthMarkup(item) {
+  const labels = {
+    robots_denied: "robots.txt 禁止",
+    rate_limited: "触发限流",
+    access_blocked: "访问受限",
+    temporarily_unavailable: "站点异常",
+    extraction_failed: "解析失败",
+  };
+  if (!state.crawlerEnabled) {
+    return `<span class="crawler-health"><strong>全局关闭</strong><small>未执行网页爬取</small></span>`;
+  }
+  if (item.crawler_in_cooldown) {
+    return `<span class="crawler-health crawler-health-cooldown"><strong>冷却中</strong><small>${escapeHtml(labels[item.crawler_failure_kind] || item.crawler_failure_kind || "爬虫受限")} · 至 ${formatFullTime(item.crawler_cooldown_until)}</small></span>`;
+  }
+  if (item.crawler_last_success_at) {
+    return `<span class="crawler-health crawler-health-ok"><strong>正常</strong><small>上次成功 ${formatTime(item.crawler_last_success_at)}</small></span>`;
+  }
+  if (item.crawler_failure_kind) {
+    return `<span class="crawler-health crawler-health-warning"><strong>待重试</strong><small>${escapeHtml(labels[item.crawler_failure_kind] || item.crawler_failure_kind)}</small></span>`;
+  }
+  return `<span class="crawler-health"><strong>未检测</strong><small>尚无爬虫运行记录</small></span>`;
 }
 
 function renderSources() {
@@ -713,6 +709,7 @@ function renderSources() {
     <td><strong>${escapeHtml(item.name)}</strong></td>
     <td><span class="tag">${escapeHtml(sourceModeLabel(item.mode))}</span></td>
     <td>${sourceFallbackMarkup(item.mode)}</td>
+    <td title="${escapeHtml(item.crawler_last_error || "")}">${sourceCrawlerHealthMarkup(item)}</td>
     <td>${escapeHtml(item.language || "-")}</td><td>${escapeHtml(item.country || "-")}</td><td class="url-cell" title="${escapeHtml(item.site_domain || "")}">${escapeHtml(item.site_domain || "-")}</td><td class="url-cell" title="${escapeHtml(item.url_template)}">${escapeHtml(item.url_template)}</td>
     <td>${toggleMarkup("source", item)}</td>
     <td><div class="row-actions"><button class="icon-button source-edit" data-id="${item.id}" title="编辑" type="button"><i data-lucide="pencil"></i></button><button class="icon-button danger-button source-delete" data-id="${item.id}" title="删除" type="button"><i data-lucide="trash-2"></i></button></div></td>
@@ -802,7 +799,7 @@ function syncSourceSiteField() {
       : "https://example.com/feed.xml";
   $("source-url-hint").textContent = mode === "crawler"
     ? "最多抓取 30 篇同站文章；必须能从页面或结构化数据识别发布日期。"
-    : "RSS 返回 HTML 时会自动切换为网页爬虫。";
+    : "爬虫总开关开启后，RSS 返回 HTML 时才会切换为网页爬虫。";
 }
 
 function openSourceDialog(item = null) {
@@ -945,7 +942,26 @@ async function loadSettings() {
     $("schedule-time").value = data.schedule_time;
     $("incremental-collection").checked = data.incremental_collection;
     $("search-local-keyword-filter").checked = data.search_local_keyword_filter;
+    state.crawlerEnabled = data.crawler_enabled;
+    $("crawler-enabled").checked = data.crawler_enabled;
+    $("crawler-respect-robots").checked = data.crawler_respect_robots;
+    $("crawler-min-interval").value = data.crawler_min_interval_seconds;
+    $("crawler-cooldown-minutes").value = data.crawler_cooldown_minutes;
+    syncCrawlerSettingsAvailability();
   } catch (error) { showToast(error.message, true); }
+}
+
+function syncCrawlerSettingsAvailability() {
+  const enabled = $("crawler-enabled").checked;
+  state.crawlerEnabled = enabled;
+  ["crawler-respect-robots", "crawler-min-interval", "crawler-cooldown-minutes"]
+    .forEach((id) => { $(id).disabled = !enabled; });
+  const status = $("crawler-fallback-status").querySelector("span");
+  status.textContent = enabled ? "网页爬虫兜底已启用" : "网页爬虫兜底已关闭";
+  $("crawler-fallback-description").textContent = enabled
+    ? "RSS 不可用时，采集任务自动切换到同站网页爬虫"
+    : "开启总开关后，RSS 不可用时才会切换到同站网页爬虫";
+  renderSources();
 }
 
 async function saveSettings(event) {
@@ -957,6 +973,10 @@ async function saveSettings(event) {
         schedule_time: $("schedule-time").value,
         incremental_collection: $("incremental-collection").checked,
         search_local_keyword_filter: $("search-local-keyword-filter").checked,
+        crawler_enabled: $("crawler-enabled").checked,
+        crawler_respect_robots: $("crawler-respect-robots").checked,
+        crawler_min_interval_seconds: Number($("crawler-min-interval").value),
+        crawler_cooldown_minutes: Number($("crawler-cooldown-minutes").value),
       }),
     });
     await loadStatus();
@@ -970,9 +990,6 @@ async function loadAISettings() {
     $("ai-business-profile").value = data.business_profile;
     $("ai-relevance-prompt").value = data.relevance_prompt;
     $("ai-report-prompt").value = data.report_prompt;
-    $("ai-report-prompt-trade-policy").value = data.category_report_prompts["贸易政策"];
-    $("ai-report-prompt-tariff-adjustment").value = data.category_report_prompts["关税调整"];
-    $("ai-report-prompt-industry-regulation").value = data.category_report_prompts["行业法规"];
     $("ai-threshold").value = data.relevance_threshold;
     $("ai-batch-size").value = data.batch_size;
     $("ai-content-max-chars").value = data.content_max_chars;
@@ -988,11 +1005,6 @@ async function saveAISettings(event) {
     business_profile: $("ai-business-profile").value.trim(),
     relevance_prompt: $("ai-relevance-prompt").value.trim(),
     report_prompt: $("ai-report-prompt").value.trim(),
-    category_report_prompts: {
-      "贸易政策": $("ai-report-prompt-trade-policy").value.trim(),
-      "关税调整": $("ai-report-prompt-tariff-adjustment").value.trim(),
-      "行业法规": $("ai-report-prompt-industry-regulation").value.trim(),
-    },
     relevance_threshold: Number($("ai-threshold").value),
     batch_size: Number($("ai-batch-size").value),
     content_max_chars: Number($("ai-content-max-chars").value),
@@ -1105,6 +1117,7 @@ function bindEvents() {
   $("keyword-context-terms").addEventListener("compositionend", updateKeywordQueryPreview);
   $("keyword-exclude-terms").addEventListener("compositionend", updateKeywordQueryPreview);
   $("settings-form").addEventListener("submit", saveSettings);
+  $("crawler-enabled").addEventListener("change", syncCrawlerSettingsAvailability);
   $("ai-settings-form").addEventListener("submit", saveAISettings);
   $("cleanup-scope").addEventListener("change", syncCleanupFields);
   $("preview-cleanup").addEventListener("click", previewCleanup);

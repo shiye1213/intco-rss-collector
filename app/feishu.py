@@ -26,8 +26,16 @@ class FeishuWebhookClient:
         secret: str | None = None,
         opener: Callable[..., Any] = urlopen,
     ) -> None:
-        self.webhook_url = (webhook_url or os.getenv("FEISHU_WEBHOOK_URL", "")).strip()
-        self.secret = (secret or os.getenv("FEISHU_WEBHOOK_SECRET", "")).strip()
+        self.webhook_url = (
+            os.getenv("FEISHU_WEBHOOK_URL", "")
+            if webhook_url is None
+            else webhook_url
+        ).strip()
+        self.secret = (
+            os.getenv("FEISHU_WEBHOOK_SECRET", "")
+            if secret is None
+            else secret
+        ).strip()
         self.opener = opener
 
     @property
@@ -81,20 +89,21 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
             ],
         },
         {"tag": "hr"},
-        {"tag": "markdown", "content": f"**日报摘要**\n{_text(report.get('executive_summary'))}"},
-        {"tag": "markdown", "content": f"**风险依据**\n{_text(report.get('risk_basis'))}"},
+        {
+            "tag": "markdown",
+            "content": f"**总体概括**\n{_text(report.get('overview'), 1200)}",
+        },
     ]
-    for heading, field, formatter in (
-        ("关键进展", "key_developments", _development_text),
-        ("关键风险", "key_risks", _item_text),
-        ("建议行动", "recommended_actions", _item_text),
-    ):
-        entries = report.get(field) or []
-        if entries:
-            lines = [formatter(item) for item in entries[:5] if isinstance(item, dict)]
-            if lines:
-                elements.append({"tag": "hr"})
-                elements.append({"tag": "markdown", "content": f"**{heading}**\n" + "\n".join(lines)})
+    details = report.get("details") or []
+    lines = [_detail_text(item) for item in details[:8] if isinstance(item, dict)]
+    if lines:
+        elements.append({"tag": "hr"})
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": "**详细解读**\n" + "\n\n".join(lines),
+            }
+        )
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -105,14 +114,10 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _development_text(item: dict[str, Any]) -> str:
+def _detail_text(item: dict[str, Any]) -> str:
     title = _text(item.get("title"), 100)
-    finding = _text(item.get("finding"), 350)
-    return f"- **{title}**：{finding}{_source_links(item)}"
-
-
-def _item_text(item: dict[str, Any]) -> str:
-    return f"- {_text(item.get('content'), 400)}{_source_links(item)}"
+    content = _text(item.get("content"), 700)
+    return f"- **{title}**\n  {content}{_source_links(item)}"
 
 
 def _source_links(item: dict[str, Any]) -> str:
@@ -123,7 +128,7 @@ def _source_links(item: dict[str, Any]) -> str:
             continue
         url = str(source.get("source_url") or "").strip()
         if url.startswith(("https://", "http://")):
-            links.append(f"[{_text(source.get('title') or source.get('publisher') or '原文', 80)}]({url})")
+            links.append(f"[来源 {len(links) + 1}]({url})")
     return f"\n  原文：{' · '.join(links)}" if links else ""
 
 

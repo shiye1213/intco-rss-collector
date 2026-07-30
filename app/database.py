@@ -17,7 +17,6 @@ from .mysql_backend import (
 from .normalization import infer_country, normalize_publisher
 from .prompts import (
     DEFAULT_BUSINESS_PROFILE,
-    DEFAULT_REPORT_CATEGORY_PROMPTS,
     DEFAULT_RELEVANCE_PROMPT,
     DEFAULT_REPORT_PROMPT,
     LEGACY_DEFAULT_BUSINESS_PROFILE,
@@ -32,7 +31,8 @@ from .prompts import (
     LEGACY_DEFAULT_REPORT_PROMPT_V5,
     LEGACY_DEFAULT_REPORT_PROMPT_V6,
     LEGACY_DEFAULT_REPORT_PROMPT_V7,
-    REPORT_CATEGORY_SETTING_KEYS,
+    LEGACY_DEFAULT_REPORT_PROMPT_V8,
+    LEGACY_DEFAULT_REPORT_PROMPT_V9,
 )
 from .query_builder import build_keyword_query
 
@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS rss_sources (
     country TEXT NOT NULL DEFAULT '',
     site_domain TEXT NOT NULL DEFAULT '',
     crawler_enabled INTEGER NOT NULL DEFAULT 0,
+    crawler_failure_kind TEXT NOT NULL DEFAULT '',
+    crawler_failure_count INTEGER NOT NULL DEFAULT 0,
+    crawler_cooldown_until TEXT,
+    crawler_last_error TEXT NOT NULL DEFAULT '',
+    crawler_last_success_at TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -331,6 +336,8 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     risk_level TEXT NOT NULL DEFAULT 'low',
     risk_score INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',
+    overview TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '[]',
     executive_summary TEXT NOT NULL DEFAULT '',
     risk_basis TEXT NOT NULL DEFAULT '',
     key_developments TEXT NOT NULL DEFAULT '[]',
@@ -502,8 +509,12 @@ DEFAULT_KEYWORDS = (
         "match_terms": ["丁腈手套", "医用手套", "一次性手套", "防护手套"],
         "context_terms": [
             "政府采购",
+            "公共采购",
             "国产优先",
             "本国产品",
+            "本土化采购",
+            "本地化要求",
+            "国产化要求",
         ],
         "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
         "lookback_days": 90,
@@ -514,10 +525,12 @@ DEFAULT_KEYWORDS = (
         "category_name": "贸易政策",
         "match_terms": ["nitrile gloves", "medical gloves"],
         "context_terms": [
-            "procurement rules",
+            "government procurement",
+            "public procurement",
             "federal procurement",
-            "domestic procurement",
+            "domestic preference",
             "Buy American",
+            "local content requirement",
         ],
         "exclude_terms": ["tariff", "duty", "boxing", "football", "baseball"],
         "lookback_days": 90,
@@ -528,9 +541,12 @@ DEFAULT_KEYWORDS = (
         "category_name": "关税调整",
         "match_terms": ["丁腈手套", "医用手套", "一次性手套", "PVC手套"],
         "context_terms": [
-            "手套关税",
+            "关税",
+            "进口关税",
+            "进口税",
             "加征关税",
             "关税税率",
+            "关税豁免",
             "反倾销税",
             "反补贴税",
         ],
@@ -543,11 +559,14 @@ DEFAULT_KEYWORDS = (
         "category_name": "关税调整",
         "match_terms": ["nitrile gloves", "medical gloves", "vinyl gloves"],
         "context_terms": [
-            "tariff on gloves",
+            "tariff",
+            "import duty",
+            "additional duty",
             "glove tariff",
-            "120% tariff",
             "Section 301",
-            "import duty on gloves",
+            "tariff exemption",
+            "anti-dumping duty",
+            "countervailing duty",
         ],
         "exclude_terms": ["boxing", "football", "baseball"],
         "lookback_days": 90,
@@ -558,9 +577,13 @@ DEFAULT_KEYWORDS = (
         "category_name": "行业法规",
         "match_terms": ["丁腈手套", "医用手套", "一次性手套", "防护手套"],
         "context_terms": [
-            "医用手套召回",
+            "召回",
+            "产品召回",
             "进口警示",
             "质量通报",
+            "医疗器械注册",
+            "产品认证",
+            "强制标准",
         ],
         "exclude_terms": ["关税", "进口税", "拳击", "橄榄球", "棒球"],
         "lookback_days": 90,
@@ -571,8 +594,12 @@ DEFAULT_KEYWORDS = (
         "category_name": "行业法规",
         "match_terms": ["nitrile gloves", "medical gloves", "disposable gloves"],
         "context_terms": [
-            "medical glove recall",
+            "recall",
+            "import alert",
             "FDA import alert",
+            "510(k)",
+            "medical device regulation",
+            "product registration",
         ],
         "exclude_terms": ["tariff", "duty", "boxing", "football", "baseball"],
         "lookback_days": 90,
@@ -696,7 +723,12 @@ DEFAULT_KEYWORDS = (
         "context_terms": [
             "price",
             "demand",
+            "orders",
+            "tender",
             "procurement",
+            "capacity",
+            "utilization",
+            "average selling price",
             "shortage",
         ],
         "exclude_terms": ["boxing", "football", "baseball"],
@@ -706,7 +738,17 @@ DEFAULT_KEYWORDS = (
     {
         "name": "医疗手套供需与价格（中文）",
         "match_terms": ["丁腈手套", "医用手套", "一次性手套"],
-        "context_terms": ["价格", "需求", "采购", "短缺", "产能"],
+        "context_terms": [
+            "价格",
+            "需求",
+            "订单",
+            "招标",
+            "采购",
+            "产能",
+            "开工率",
+            "平均售价",
+            "短缺",
+        ],
         "exclude_terms": ["拳击", "橄榄球", "棒球"],
         "lookback_days": 14,
         "active": True,
@@ -766,6 +808,8 @@ DEFAULT_KEYWORDS = (
             "Kossan",
             "Supermax",
             "Sri Trang",
+            "Careplus",
+            "Riverstone",
         ],
         "context_terms": [
             "glove",
@@ -774,6 +818,9 @@ DEFAULT_KEYWORDS = (
             "factory",
             "price",
             "earnings",
+            "utilization",
+            "average selling price",
+            "margin",
         ],
         "exclude_terms": ["NBA", "movie", "prison"],
         "lookback_days": 14,
@@ -823,8 +870,12 @@ DEFAULT_KEYWORDS = (
             "NBR latex",
             "nitrile butadiene rubber",
             "PVC resin",
+            "acrylonitrile",
+            "butadiene",
             "丁腈胶乳",
             "PVC树脂",
+            "丙烯腈",
+            "丁二烯",
         ],
         "context_terms": [
             "价格",
@@ -861,6 +912,117 @@ DEFAULT_KEYWORDS = (
         "context_terms": ["医疗用品", "手套", "出口制造", "供应链"],
         "exclude_terms": ["邮轮", "旅游"],
         "lookback_days": 14,
+        "active": True,
+    },
+    {
+        "name": "英科医疗公司动态",
+        "match_terms": ["英科医疗", "INTCO Medical"],
+        "context_terms": [
+            "公告",
+            "业绩",
+            "订单",
+            "产能",
+            "工厂",
+            "扩产",
+            "召回",
+            "关税",
+            "earnings",
+            "orders",
+            "capacity",
+            "factory",
+            "recall",
+            "tariff",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "康复护理产品（中文）",
+        "match_terms": ["轮椅", "电动代步车", "助行器"],
+        "context_terms": ["采购", "需求", "召回", "认证", "法规", "市场"],
+        "exclude_terms": ["轮椅篮球", "残奥会"],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "康复护理产品（英文）",
+        "match_terms": ["wheelchair", "mobility scooter", "walking aid"],
+        "context_terms": [
+            "procurement",
+            "demand",
+            "recall",
+            "FDA",
+            "regulation",
+            "market",
+        ],
+        "exclude_terms": ["wheelchair basketball", "Paralympics"],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "理疗与护理产品（中文）",
+        "match_terms": ["冷热敷产品", "冷敷袋", "热敷袋", "急救包"],
+        "context_terms": ["医疗", "护理", "召回", "认证", "需求", "采购"],
+        "exclude_terms": ["食品保温", "餐饮"],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "理疗与护理产品（英文）",
+        "match_terms": [
+            "hot cold pack",
+            "cold therapy pack",
+            "instant cold pack",
+            "first aid kit",
+        ],
+        "context_terms": [
+            "medical",
+            "healthcare",
+            "recall",
+            "FDA",
+            "demand",
+            "procurement",
+        ],
+        "exclude_terms": ["food delivery", "meal kit"],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "公共卫生与防护需求（中文）",
+        "match_terms": [
+            "传染病暴发",
+            "疫情暴发",
+            "公共卫生紧急事件",
+            "医院感染",
+        ],
+        "context_terms": [
+            "医用手套",
+            "个人防护装备",
+            "PPE",
+            "防护用品",
+            "医疗物资",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
+        "active": True,
+    },
+    {
+        "name": "公共卫生与防护需求（英文）",
+        "match_terms": [
+            "disease outbreak",
+            "public health emergency",
+            "hospital infection",
+            "health emergency",
+        ],
+        "context_terms": [
+            "medical gloves",
+            "personal protective equipment",
+            "PPE",
+            "medical supplies",
+        ],
+        "exclude_terms": [],
+        "lookback_days": 30,
         "active": True,
     },
     {
@@ -959,7 +1121,7 @@ DEFAULT_KEYWORDS = (
         "context_terms": ["关税", "反倾销", "反补贴", "进口税"],
         "exclude_terms": ["轮胎", "汽车"],
         "lookback_days": 90,
-        "active": False,
+        "active": True,
     },
     {
         "name": "手套原材料关税（英文）",
@@ -972,7 +1134,7 @@ DEFAULT_KEYWORDS = (
         ],
         "exclude_terms": ["tire", "tyre", "automotive"],
         "lookback_days": 90,
-        "active": False,
+        "active": True,
     },
     {
         "name": "通用关税政策（中文）",
@@ -1172,6 +1334,36 @@ class Database:
                     ADD COLUMN crawler_enabled INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            if self.backend == "mysql":
+                crawler_source_migrations = {
+                    "crawler_failure_kind": "VARCHAR(40) NOT NULL DEFAULT ''",
+                    "crawler_failure_count": "INT NOT NULL DEFAULT 0",
+                    "crawler_cooldown_until": "VARCHAR(40) NULL",
+                    "crawler_last_error": "LONGTEXT NOT NULL DEFAULT ('')",
+                    "crawler_last_success_at": "VARCHAR(40) NULL",
+                }
+            else:
+                crawler_source_migrations = {
+                    "crawler_failure_kind": "TEXT NOT NULL DEFAULT ''",
+                    "crawler_failure_count": "INTEGER NOT NULL DEFAULT 0",
+                    "crawler_cooldown_until": "TEXT",
+                    "crawler_last_error": "TEXT NOT NULL DEFAULT ''",
+                    "crawler_last_success_at": "TEXT",
+                }
+            source_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(rss_sources)"
+                ).fetchall()
+            }
+            for column, definition in crawler_source_migrations.items():
+                if column not in source_columns:
+                    connection.execute(
+                        f"""
+                        ALTER TABLE rss_sources
+                        ADD COLUMN {column} {definition}
+                        """  # noqa: S608
+                    )
             keyword_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(keywords)").fetchall()
@@ -1294,6 +1486,16 @@ class Database:
                     "INTEGER REFERENCES keyword_categories(id) ON DELETE SET NULL"
                 ),
                 "keyword_category_name": "TEXT NOT NULL DEFAULT ''",
+                "overview": (
+                    "LONGTEXT NOT NULL DEFAULT ('')"
+                    if self.backend == "mysql"
+                    else "TEXT NOT NULL DEFAULT ''"
+                ),
+                "details": (
+                    "JSON NOT NULL DEFAULT (JSON_ARRAY())"
+                    if self.backend == "mysql"
+                    else "TEXT NOT NULL DEFAULT '[]'"
+                ),
             }
             for column, definition in report_migrations.items():
                 if column not in report_columns:
@@ -1661,15 +1863,13 @@ class Database:
                 "timezone": "Asia/Shanghai",
                 "incremental_collection": "true",
                 "search_local_keyword_filter": "true",
+                "crawler_enabled": "false",
+                "crawler_respect_robots": "true",
+                "crawler_min_interval_seconds": "3",
+                "crawler_cooldown_minutes": "60",
                 "ai_business_profile": DEFAULT_BUSINESS_PROFILE,
                 "ai_relevance_prompt": DEFAULT_RELEVANCE_PROMPT,
                 "ai_report_prompt": DEFAULT_REPORT_PROMPT,
-                **{
-                    REPORT_CATEGORY_SETTING_KEYS[category_name]: prompt
-                    for category_name, prompt in (
-                        DEFAULT_REPORT_CATEGORY_PROMPTS.items()
-                    )
-                },
                 "ai_relevance_threshold": "70",
                 "ai_batch_size": "20",
                 "ai_content_max_chars": "30000",
@@ -1710,6 +1910,8 @@ class Database:
                         LEGACY_DEFAULT_REPORT_PROMPT_V5,
                         LEGACY_DEFAULT_REPORT_PROMPT_V6,
                         LEGACY_DEFAULT_REPORT_PROMPT_V7,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V8,
+                        LEGACY_DEFAULT_REPORT_PROMPT_V9,
                     ],
                     DEFAULT_REPORT_PROMPT,
                 ),
@@ -1740,9 +1942,26 @@ class Database:
                 f"SELECT * FROM rss_sources {where} ORDER BY id"  # noqa: S608
             ).fetchall()
         result = self.rows(rows)
+        now = datetime.now(UTC)
         for item in result:
             if item.pop("crawler_enabled", 0):
                 item["mode"] = "crawler"
+            cooldown_until = item.get("crawler_cooldown_until")
+            try:
+                parsed_cooldown = (
+                    datetime.fromisoformat(
+                        str(cooldown_until).replace("Z", "+00:00")
+                    )
+                    if cooldown_until
+                    else None
+                )
+            except ValueError:
+                parsed_cooldown = None
+            if parsed_cooldown is not None and parsed_cooldown.tzinfo is None:
+                parsed_cooldown = parsed_cooldown.replace(tzinfo=UTC)
+            item["crawler_in_cooldown"] = bool(
+                parsed_cooldown and parsed_cooldown > now
+            )
         return result
 
     def get_keyword_categories(self) -> list[dict[str, Any]]:
