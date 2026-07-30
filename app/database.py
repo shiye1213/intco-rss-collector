@@ -1872,6 +1872,7 @@ class Database:
                 "ai_report_prompt": DEFAULT_REPORT_PROMPT,
                 "ai_relevance_threshold": "70",
                 "ai_batch_size": "20",
+                "ai_parallelism": "4",
                 "ai_content_max_chars": "30000",
                 "ai_auto_analyze": "false",
                 "ai_auto_report": "false",

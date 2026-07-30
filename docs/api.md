@@ -230,13 +230,14 @@
   "report_prompt": "按自然日汇总全部合格新闻的日报生成要求……",
   "relevance_threshold": 70,
   "batch_size": 20,
+  "parallelism": 4,
   "content_max_chars": 30000,
   "auto_analyze": false,
   "auto_report": false
 }
 ```
 
-企业业务边界、相关性提示词和统一日报提示词均可在系统设置中查看和修改。系统会固定追加业务分类代码、JSON 输出结构、来源 ID/链接校验和防 Prompt 注入规则。自动开关默认关闭；`auto_report=true` 只有在 `auto_analyze=true` 时才会执行，并为当天生成一份综合日报。
+企业业务边界、相关性提示词和统一日报提示词均可在系统设置中查看和修改。`parallelism` 控制正文抓取、相关性审核和业务分析各阶段的并发上限，范围为 1～20；三个阶段之间仍按顺序执行。系统会固定追加业务分类代码、JSON 输出结构、来源 ID/链接校验和防 Prompt 注入规则。自动开关默认关闭；`auto_report=true` 只有在 `auto_analyze=true` 时才会执行，并为当天生成一份综合日报。
 
 ## 数据维护
 
