@@ -1680,6 +1680,18 @@ class IntelligenceRepository:
                 report[field] = self._decode_json(report[field], [])
         return reports
 
+    def delete_report(self, report_id: int) -> bool:
+        with self.database.connect() as connection:
+            connection.execute(
+                "DELETE FROM daily_report_articles WHERE report_id = ?",
+                (report_id,),
+            )
+            cursor = connection.execute(
+                "DELETE FROM daily_reports WHERE id = ?",
+                (report_id,),
+            )
+        return cursor.rowcount > 0
+
     def get_report(self, report_id: int) -> dict[str, Any] | None:
         with self.database.connect() as connection:
             row = connection.execute(

@@ -554,6 +554,10 @@ async function loadReports() {
       <td>${formatFullTime(report.updated_at)}</td>
       <td><div class="report-actions"><button class="icon-button report-detail-button" data-id="${report.id}" type="button" title="查看日报" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="file-search"></i></button><button class="icon-button report-feishu-button" data-id="${report.id}" type="button" title="推送到飞书" ${report.status !== "success" ? "disabled" : ""}><i data-lucide="send"></i></button></div></td>
     </tr>`).join("");
+    $("report-rows").querySelectorAll(".report-actions").forEach((actions, index) => {
+      const report = data.items[index];
+      actions.insertAdjacentHTML("beforeend", `<button class="icon-button danger-button report-delete-button" data-id="${report.id}" type="button" title="\u5220\u9664\u65e5\u62a5" ${report.status === "running" ? "disabled" : ""}><i data-lucide="trash-2"></i></button>`);
+    });
     $("report-empty").classList.toggle("hidden", data.items.length > 0);
     refreshIcons();
   } catch (error) { showToast(error.message, true); }
@@ -563,6 +567,15 @@ async function sendReportToFeishu(id) {
   try {
     const data = await api(`/api/reports/${id}/feishu`, { method: "POST" });
     showToast(`日报 #${data.report_id} 已推送到飞书`);
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function deleteReport(id) {
+  if (!window.confirm(`\u786e\u5b9a\u5220\u9664\u65e5\u62a5 #${id} \u5417\uff1f\u5220\u9664\u540e\u65e0\u6cd5\u6062\u590d\u3002`)) return;
+  try {
+    const data = await api(`/api/reports/${id}`, { method: "DELETE" });
+    showToast(`\u65e5\u62a5 #${data.report_id} \u5df2\u5220\u9664`);
+    await loadReports();
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -1190,6 +1203,7 @@ function bindEvents() {
     if (target.classList.contains("report-detail-button")) openReportDetail(id);
     if (target.classList.contains("report-feishu-button")) sendReportToFeishu(id);
     if (target.classList.contains("source-edit")) openSourceDialog(state.sources.find((item) => item.id === Number(id)));
+    if (target.classList.contains("report-delete-button")) deleteReport(id);
     if (target.classList.contains("keyword-edit")) openKeywordDialog(state.keywords.find((item) => item.id === Number(id)));
     if (target.classList.contains("keyword-category-button")) {
       state.keywordCategoryId = target.dataset.categoryId;

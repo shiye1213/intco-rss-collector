@@ -764,6 +764,38 @@ def test_daily_report_uses_only_completed_business_articles_and_risk_floor(
         "https://example.com/medical-gloves"
     )
     assert repository.has_successful_report(date(2026, 7, 20))
+def test_daily_report_can_be_deleted_without_deleting_articles(tmp_path) -> None:
+    database = Database(tmp_path / "delete-report.db")
+    database.initialize()
+    article_id = create_article(
+        database,
+        slug="delete-report-article",
+        title="Report deletion test article",
+        summary="The source article must remain after deleting its report.",
+    )
+    repository = IntelligenceRepository(database)
+    report_id = repository.create_report(
+        report_date=date(2026, 7, 20),
+        article_ids=[article_id],
+        model="test-model",
+    )
+
+    assert repository.delete_report(report_id)
+    assert repository.get_report(report_id) is None
+    assert not repository.delete_report(report_id)
+    with database.connect() as connection:
+        report_article_count = connection.execute(
+            "SELECT COUNT(*) FROM daily_report_articles WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()[0]
+        article_count = connection.execute(
+            "SELECT COUNT(*) FROM articles WHERE id = ?",
+            (article_id,),
+        ).fetchone()[0]
+    assert report_article_count == 0
+    assert article_count == 1
+
+
 
 
 def test_daily_report_combines_articles_from_all_keyword_categories(tmp_path) -> None:

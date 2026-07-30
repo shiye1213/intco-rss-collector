@@ -854,6 +854,14 @@ def create_app(
             raise HTTPException(status_code=404, detail="日报不存在")
         return report
 
+    @app.delete("/api/reports/{report_id}")
+    def delete_daily_report(report_id: int):
+        if report_manager.running_report_id == report_id:
+            raise HTTPException(status_code=409, detail="\u65e5\u62a5\u6b63\u5728\u751f\u6210\uff0c\u6682\u65f6\u4e0d\u80fd\u5220\u9664")
+        if not intelligence_repository.delete_report(report_id):
+            raise HTTPException(status_code=404, detail="\u65e5\u62a5\u4e0d\u5b58\u5728")
+        return {"report_id": report_id, "deleted": True}
+
     @app.post("/api/reports/{report_id}/feishu")
     async def send_daily_report_to_feishu(report_id: int):
         try:

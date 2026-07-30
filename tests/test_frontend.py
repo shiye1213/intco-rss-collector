@@ -84,6 +84,14 @@ def test_reports_can_be_manually_sent_to_feishu() -> None:
     assert 'api(`/api/reports/${id}/feishu`, { method: "POST" })' in javascript
 
 
+def test_reports_can_be_deleted_with_confirmation() -> None:
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "report-delete-button" in javascript
+    assert "window.confirm" in javascript
+    assert 'api(`/api/reports/${id}`, { method: "DELETE" })' in javascript
+
+
 def test_ai_settings_support_automatic_feishu_push() -> None:
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
