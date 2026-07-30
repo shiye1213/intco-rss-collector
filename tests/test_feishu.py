@@ -39,10 +39,11 @@ def test_report_card_contains_required_sections_and_source_links() -> None:
     content = "\n".join(element.get("content", "") for element in card["elements"])
     assert card["header"]["template"] == "red"
     assert "日报摘要" in content
-    assert "关键进展" not in content
+    assert "业务进展" in content
     assert "**准入规则更新**\n规则扩大本地化要求" in content
     assert "业务影响" in content
     assert "关键风险" in content
+    assert "业务机会" not in content
     assert "建议行动" in content
     assert "[监管原文](https://example.com/source)" in content
     assert "[查看原文](https://example.com/source)" not in content
@@ -63,6 +64,23 @@ def test_report_card_uses_shortened_news_titles_for_source_links() -> None:
     assert "[监管原文](https://example.com/source)" in content
     assert f"[{long_title[:24]}…](https://example.com/source-2)" in content
     assert long_title not in content
+
+
+def test_report_card_keeps_all_developments_until_the_card_size_limit() -> None:
+    report = sample_report()
+    report["key_developments"] = [
+        {
+            "title": f"风险事项 {index}",
+            "finding": "完整事实",
+            "business_impact": "完整解读",
+        }
+        for index in range(9)
+    ]
+
+    card = build_report_card(report)
+    content = "\n".join(element.get("content", "") for element in card["elements"])
+
+    assert "风险事项 8" in content
 
 
 def test_webhook_sends_interactive_card_and_signature() -> None:
@@ -86,7 +104,8 @@ def test_webhook_sends_interactive_card_and_signature() -> None:
     assert payload["sign"] == build_signature(payload["timestamp"], "secret")
 
 
-def test_webhook_requires_url() -> None:
+def test_webhook_requires_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
     with pytest.raises(FeishuWebhookNotConfigured):
         FeishuWebhookClient("", "").send_report(sample_report())
 

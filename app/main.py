@@ -242,6 +242,7 @@ class AISettingsPayload(BaseModel):
     content_max_chars: int = Field(default=30000, ge=2000, le=100000)
     auto_analyze: bool = False
     auto_report: bool = False
+    auto_feishu_push: bool = False
 
     @field_validator("business_profile")
     @classmethod
@@ -769,6 +770,7 @@ def create_app(
             ),
             "auto_analyze": settings.get("ai_auto_analyze", "false") == "true",
             "auto_report": settings.get("ai_auto_report", "false") == "true",
+            "auto_feishu_push": settings.get("feishu_auto_push", "false") == "true",
         }
 
     @app.put("/api/ai/settings")
@@ -786,6 +788,9 @@ def create_app(
         )
         database.set_setting("ai_auto_analyze", str(payload.auto_analyze).lower())
         database.set_setting("ai_auto_report", str(payload.auto_report).lower())
+        database.set_setting(
+            "feishu_auto_push", str(payload.auto_feishu_push).lower()
+        )
         return payload.model_dump()
 
     @app.get("/api/maintenance/cleanup-preview")

@@ -841,6 +841,39 @@ def test_automatic_workflow_generates_one_combined_report(tmp_path) -> None:
     assert report_manager.executed == [1]
 
 
+def test_daily_report_auto_feishu_push_requires_the_setting(tmp_path) -> None:
+    database = Database(tmp_path / "daily-report-feishu.db")
+    database.initialize()
+
+    class FakeRepository:
+        def get_report(self, report_id: int) -> dict[str, Any]:
+            return {"id": report_id, "status": "success"}
+
+    class FakeFeishuClient:
+        configured = True
+
+        def __init__(self) -> None:
+            self.sent_reports: list[dict[str, Any]] = []
+
+        def send_report(self, report: dict[str, Any]) -> None:
+            self.sent_reports.append(report)
+
+    feishu_client = FakeFeishuClient()
+    manager = DailyReportManager(
+        database,
+        FakeRepository(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        feishu_client,  # type: ignore[arg-type]
+    )
+
+    manager._send_report_to_feishu(7)
+    assert feishu_client.sent_reports == []
+
+    database.set_setting("feishu_auto_push", "true")
+    manager._send_report_to_feishu(7)
+    assert feishu_client.sent_reports == [{"id": 7, "status": "success"}]
+
+
 def test_analysis_queue_can_process_one_collection_run(tmp_path) -> None:
     database = Database(tmp_path / "analysis-collection-run.db")
     database.initialize()

@@ -1877,6 +1877,7 @@ class Database:
                 "ai_content_max_chars": "30000",
                 "ai_auto_analyze": "false",
                 "ai_auto_report": "false",
+                "feishu_auto_push": "false",
             }
             for key, value in defaults.items():
                 connection.execute(

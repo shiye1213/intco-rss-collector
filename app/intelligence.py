@@ -2285,7 +2285,11 @@ class DailyReportManager:
         self.feishu_client.send_report(report)
 
     def _send_report_to_feishu(self, report_id: int) -> None:
-        if not self.feishu_client.configured:
+        settings = self.database.get_settings()
+        if (
+            settings.get("feishu_auto_push", "false").lower() != "true"
+            or not self.feishu_client.configured
+        ):
             return
         try:
             self.send_to_feishu(report_id)

@@ -11,6 +11,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+MAX_CARD_SIZE = 28_000
+MAX_MARKDOWN_BLOCK_SIZE = 6_000
+
+
 class FeishuWebhookError(RuntimeError):
     """The Feishu custom bot did not accept a message."""
 
@@ -94,25 +98,33 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
     ]
     developments = [
         item
-        for item in (report.get("key_developments") or [])[:5]
+        for item in (report.get("key_developments") or [])
         if isinstance(item, dict)
     ]
     if developments:
         elements.append({"tag": "hr"})
-        elements.extend(
-            {"tag": "markdown", "content": _development_text(item)}
-            for item in developments
+        _append_markdown_chunks(
+            elements,
+            "业务进展",
+            [_development_text(item) for item in developments],
         )
     for heading, field in (
         ("关键风险", "key_risks"),
+        ("业务机会", "opportunities"),
         ("建议行动", "recommended_actions"),
+        ("后续监控", "watchlist"),
     ):
-        entries = report.get(field) or []
+        entries = [
+            item for item in (report.get(field) or []) if isinstance(item, dict)
+        ]
         if entries:
-            lines = [_item_text(item) for item in entries[:5] if isinstance(item, dict)]
-            if lines:
-                elements.append({"tag": "hr"})
-                elements.append({"tag": "markdown", "content": f"**{heading}**\n" + "\n".join(lines)})
+            elements.append({"tag": "hr"})
+            _append_markdown_chunks(
+                elements,
+                heading,
+                [_item_text(item) for item in entries],
+            )
+    _limit_card_size(elements)
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -125,13 +137,54 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
 
 def _development_text(item: dict[str, Any]) -> str:
     title = _text(item.get("title"), 100)
-    finding = _text(item.get("finding"), 350)
-    impact = _text(item.get("business_impact"), 350)
+    finding = _text(item.get("finding"), 600)
+    impact = _text(item.get("business_impact"), 1_000)
     return f"**{title}**\n{finding}\n业务影响：{impact}{_source_links(item)}"
 
 
 def _item_text(item: dict[str, Any]) -> str:
-    return f"- {_text(item.get('content'), 400)}{_source_links(item)}"
+    return f"- {_text(item.get('content'), 1_000)}{_source_links(item)}"
+
+
+def _append_markdown_chunks(
+    elements: list[dict[str, Any]], heading: str, lines: list[str]
+) -> None:
+    chunk = f"**{heading}**\n"
+    for line in lines:
+        candidate = f"{chunk}{line}" if chunk.endswith("\n") else f"{chunk}\n{line}"
+        if len(candidate) > MAX_MARKDOWN_BLOCK_SIZE and chunk != f"**{heading}**\n":
+            elements.append({"tag": "markdown", "content": chunk})
+            chunk = f"**{heading}（续）**\n{line}"
+        else:
+            chunk = candidate
+    if chunk.strip():
+        elements.append({"tag": "markdown", "content": chunk})
+
+
+def _limit_card_size(elements: list[dict[str, Any]]) -> None:
+    """Keep custom-bot payloads under Feishu's practical 30 KB card limit."""
+    size = len(json.dumps(elements, ensure_ascii=False).encode("utf-8"))
+    truncated = False
+    while size > MAX_CARD_SIZE and len(elements) > 5:
+        elements.pop()
+        truncated = True
+        if elements and elements[-1].get("tag") == "hr":
+            elements.pop()
+        size = len(json.dumps(elements, ensure_ascii=False).encode("utf-8"))
+    if size > MAX_CARD_SIZE:
+        raise FeishuWebhookError("飞书卡片内容超过大小限制，无法推送")
+    if truncated:
+        elements.append(
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": "日报内容过长，部分末尾区块未能发送。",
+                    }
+                ],
+            }
+        )
 
 
 def _source_links(item: dict[str, Any]) -> str:
