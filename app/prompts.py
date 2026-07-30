@@ -6,7 +6,7 @@ from typing import Any
 
 RELEVANCE_PROMPT_VERSION = "intco-relevance-v8"
 BUSINESS_ANALYSIS_PROMPT_VERSION = "intco-business-analysis-v6"
-REPORT_PROMPT_VERSION = "intco-daily-report-v13"
+REPORT_PROMPT_VERSION = "intco-daily-report-v14"
 
 CATEGORY_LABELS = {
     "market_demand": "市场需求",
@@ -342,6 +342,9 @@ def build_report_prompts(
 
 企业业务边界：
 {business_profile.strip()}
+业务分类代码（category 只能使用冒号前的英文代码）：
+{_category_codes()}
+
 
 管理员配置的日报要求：
 {report_prompt.strip()}

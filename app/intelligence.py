@@ -371,6 +371,51 @@ def enforce_company_fact_boundary(
     raise ValueError("review 或 analysis 至少提供一个")
 
 
+_REPORT_CATEGORY_ALIASES = {
+    "cost_supply_chain": "raw_material_supply",
+    "cost_and_supply_chain": "raw_material_supply",
+    "supply_chain": "raw_material_supply",
+    "competition_supply": "competitor",
+    "competitive_supply": "competitor",
+    "trade_policy_tariff": "trade_tariff",
+    "trade_policy_and_tariff": "trade_tariff",
+    "trade_policy": "policy_regulation",
+    "industry_regulation": "policy_regulation",
+}
+
+
+def normalize_report_category(value: Any) -> str:
+    """Map model-created report labels to a supported business category."""
+    original = str(value or "").strip()
+    normalized = re.sub(
+        r"[^a-z0-9\u4e00-\u9fff]+", "_", original.casefold()
+    ).strip("_")
+    for code, label in CATEGORY_LABELS.items():
+        if normalized in {code.casefold(), label.casefold()}:
+            return code
+    if normalized in _REPORT_CATEGORY_ALIASES:
+        return _REPORT_CATEGORY_ALIASES[normalized]
+    if "tariff" in normalized or "关税" in normalized:
+        return "trade_tariff"
+    if "compet" in normalized or "竞争" in normalized:
+        return "competitor"
+    if any(term in normalized for term in ("raw_material", "supply", "cost", "原材料", "供应链", "成本")):
+        return "raw_material_supply"
+    if any(term in normalized for term in ("regulation", "policy", "compliance", "法规", "政策", "合规")):
+        return "policy_regulation"
+    if any(term in normalized for term in ("demand", "market", "需求", "市场")):
+        return "market_demand"
+    if any(term in normalized for term in ("health", "卫生", "疫情")):
+        return "public_health"
+    if any(term in normalized for term in ("customer", "channel", "客户", "渠道")):
+        return "customer_channel"
+    if any(term in normalized for term in ("technology", "product", "技术", "产品")):
+        return "technology_product"
+    if "esg" in normalized or "可持续" in normalized:
+        return "esg"
+    return "other"
+
+
 class KeyDevelopment(BaseModel):
     article_id: int
     category: CategoryCode
@@ -384,11 +429,21 @@ class KeyDevelopment(BaseModel):
     business_impact: str = Field(max_length=1000)
     recommended_action: str = Field(default="暂未明确", max_length=1000)
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_category(cls, value: Any) -> str:
+        return normalize_report_category(value)
+
 
 class CitedReportItem(BaseModel):
     category: CategoryCode
     content: str = Field(min_length=1, max_length=1000)
     article_ids: list[int] = Field(default_factory=list, max_length=8)
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_category(cls, value: Any) -> str:
+        return normalize_report_category(value)
 
     @field_validator("content")
     @classmethod

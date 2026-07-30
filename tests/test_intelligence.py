@@ -20,6 +20,7 @@ from app.intelligence import (
     AutomaticIntelligenceWorkflow,
     BusinessAnalysis,
     DailyReportManager,
+    DailyReportAssessment,
     IntelligenceRepository,
     RelevanceAssessment,
     enforce_company_fact_boundary,
@@ -275,6 +276,23 @@ def report_response(article_id: int) -> dict[str, Any]:
             },
         ],
     }
+
+
+def test_daily_report_normalizes_model_created_categories() -> None:
+    response = report_response(1)
+    response["key_developments"][0]["category"] = "trade_policy_tariff"
+    response["key_risks"][0]["category"] = "cost_supply_chain"
+    response["opportunities"][0]["category"] = "competition_supply"
+    response["recommended_actions"][0]["category"] = "trade_policy_tariff"
+    response["watchlist"][0]["category"] = "unrecognized_model_label"
+
+    assessment = DailyReportAssessment.model_validate(response)
+
+    assert assessment.key_developments[0].category == "trade_tariff"
+    assert assessment.key_risks[0].category == "raw_material_supply"
+    assert assessment.opportunities[0].category == "competitor"
+    assert assessment.recommended_actions[0].category == "trade_tariff"
+    assert assessment.watchlist[0].category == "other"
 
 
 def test_full_text_gate_only_analyzes_and_stores_relevant_articles(tmp_path) -> None:
@@ -1324,6 +1342,9 @@ def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     assert "可能传导" in analysis_system
     assert '"relevance_review"' in analysis_user
     assert "自定义日报要求" in report_system
+    assert "业务分类代码" in report_system
+    assert "- raw_material_supply: 原材料与供应链" in report_system
+    assert "- trade_tariff: 贸易与关税" in report_system
     assert "今日情报概览" in report_system
     assert "最多各5项" in report_system
     assert "负责部门" in report_system
