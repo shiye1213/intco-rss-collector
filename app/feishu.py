@@ -91,7 +91,7 @@ def build_report_card(report: dict[str, Any]) -> dict[str, Any]:
             "tag": "div",
             "fields": [
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**日期**\n{report.get('report_date', '-')}"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**风险等级**\n{risk_labels.get(risk_level, risk_level)}（{report.get('risk_score', 0)}）"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**相关性**\n{risk_labels.get(risk_level, risk_level)}（{report.get('risk_score', 0)}）"}},
             ],
         },
         {"tag": "hr"},

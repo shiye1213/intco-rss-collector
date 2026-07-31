@@ -150,6 +150,8 @@ class SourcePayload(BaseModel):
     def validate_mode_template(self) -> None:
         if self.mode == "search" and "{query}" not in self.url_template:
             raise ValueError("搜索型 RSS 地址必须包含 {query} 占位符")
+        if self.mode == "direct" and "{query}" in self.url_template:
+            raise ValueError("直连 RSS 地址必须是固定 Feed 地址，不能包含 {query}")
         if self.mode != "search" and self.site_domain:
             raise ValueError("站点限制只适用于搜索型 RSS")
         if self.mode == "crawler" and "{query}" in self.url_template:

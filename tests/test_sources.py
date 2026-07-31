@@ -54,6 +54,17 @@ def test_direct_source_rejects_site_domain() -> None:
         source.validate_mode_template()
 
 
+def test_direct_source_rejects_query_placeholder() -> None:
+    source = SourcePayload(
+        name="Invalid direct feed",
+        url_template="https://news.google.com/rss/search?q={query}",
+        mode="direct",
+    )
+
+    with pytest.raises(ValueError, match="固定 Feed 地址"):
+        source.validate_mode_template()
+
+
 def test_crawler_source_accepts_fixed_news_page() -> None:
     source = SourcePayload(
         name="Example news crawler",

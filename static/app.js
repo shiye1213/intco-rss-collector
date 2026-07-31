@@ -865,7 +865,25 @@ function syncSourceSiteField() {
       : "https://example.com/feed.xml";
   $("source-url-hint").textContent = mode === "crawler"
     ? "最多抓取 30 篇同站文章；必须能从页面或结构化数据识别发布日期。"
-    : "爬虫总开关开启后，RSS 返回 HTML 时才会切换为网页爬虫。";
+    : mode === "search"
+      ? "搜索型 RSS 地址必须包含 {query}；采集时系统会替换为关键词查询。"
+      : "直连 RSS 必须填写固定 RSS/Atom 地址，不能包含 {query}。";
+}
+
+function handleSourceModeChange() {
+  const modeSelect = $("source-mode");
+  const previousMode = modeSelect.dataset.previousMode || "";
+  const mode = modeSelect.value;
+  const urlInput = $("source-url");
+  const urlMatchesMode = mode === "search" && urlInput.value.includes("{query}");
+  if (previousMode && previousMode !== mode
+      && urlInput.value.trim() && !urlMatchesMode) {
+    urlInput.value = "";
+    showToast("数据源类型已切换，请填写与新类型匹配的地址");
+  }
+  modeSelect.dataset.previousMode = mode;
+  syncSourceSiteField();
+  urlInput.focus();
 }
 
 function openSourceDialog(item = null) {
@@ -878,6 +896,7 @@ function openSourceDialog(item = null) {
   $("source-site-domain").value = item?.site_domain || "";
   $("source-url").value = item?.url_template || "";
   $("source-active").checked = item?.active ?? true;
+  $("source-mode").dataset.previousMode = $("source-mode").value;
   syncSourceSiteField();
   $("source-dialog").showModal();
 }
@@ -1177,7 +1196,7 @@ function bindEvents() {
   $("article-prev").addEventListener("click", () => { state.articleOffset = Math.max(0, state.articleOffset - state.articleLimit); loadArticles(); });
   $("article-next").addEventListener("click", () => { state.articleOffset += state.articleLimit; loadArticles(); });
   $("add-source").addEventListener("click", () => openSourceDialog());
-  $("source-mode").addEventListener("change", syncSourceSiteField);
+  $("source-mode").addEventListener("change", handleSourceModeChange);
   $("add-keyword").addEventListener("click", () => openKeywordDialog());
   $("source-form").addEventListener("submit", saveSource);
   $("keyword-form").addEventListener("submit", saveKeyword);

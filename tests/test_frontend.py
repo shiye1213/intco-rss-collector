@@ -122,6 +122,17 @@ def test_source_site_domain_setting_is_wired() -> None:
     assert "syncSourceSiteField" in javascript
 
 
+def test_source_mode_change_clears_incompatible_url() -> None:
+    javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "function handleSourceModeChange()" in javascript
+    assert 'urlInput.value = ""' in javascript
+    assert 'urlInput.value.includes("{query}")' in javascript
+    assert "数据源类型已切换，请填写与新类型匹配的地址" in javascript
+    assert '"change", handleSourceModeChange' in javascript
+    assert "直连 RSS 必须填写固定 RSS/Atom 地址" in javascript
+
+
 def test_web_crawler_source_mode_is_wired() -> None:
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
