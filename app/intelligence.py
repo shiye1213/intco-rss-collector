@@ -4,8 +4,10 @@ import json
 import logging
 import re
 import threading
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, time, timedelta
+from difflib import SequenceMatcher
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -189,6 +191,172 @@ def extract_report_dimensions(article: dict[str, Any]) -> tuple[list[str], list[
     if len(products) > 1 and "手套" in products:
         products.remove("手套")
     return regions[:5], products[:5]
+
+
+_REPORT_EVENT_TITLE_SUFFIX = re.compile(r"\s+[-–—|]\s+[^\n]{1,120}$")
+_REPORT_EVENT_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _normalize_report_event_text(
+    value: Any,
+    *,
+    strip_source_suffix: bool = False,
+) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    if strip_source_suffix:
+        normalized = _REPORT_EVENT_TITLE_SUFFIX.sub("", normalized)
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", normalized)
+
+
+def _report_event_evidence_text(article: dict[str, Any]) -> str:
+    values = [str(article.get("title") or ""), str(article.get("summary") or "")]
+    evidence = article.get("analysis_evidence") or article.get("evidence") or []
+    if isinstance(evidence, list):
+        values.extend(str(item) for item in evidence if str(item).strip())
+    return "\n".join(values)
+
+
+def _report_event_shingles(value: str, size: int = 3) -> set[str]:
+    normalized = _normalize_report_event_text(value)
+    if not normalized:
+        return set()
+    if len(normalized) <= size:
+        return {normalized}
+    return {
+        normalized[index : index + size]
+        for index in range(len(normalized) - size + 1)
+    }
+
+
+def _report_event_shingle_similarity(left: str, right: str) -> float:
+    left_shingles = _report_event_shingles(left)
+    right_shingles = _report_event_shingles(right)
+    union = left_shingles | right_shingles
+    if not union:
+        return 0.0
+    return len(left_shingles & right_shingles) / len(union)
+
+
+def _report_event_number_anchors(article: dict[str, Any]) -> set[str]:
+    value = unicodedata.normalize(
+        "NFKC", _report_event_evidence_text(article)
+    ).replace(",", "")
+    anchors: set[str] = set()
+    for match in _REPORT_EVENT_NUMBER.findall(value):
+        number = float(match)
+        if number.is_integer() and 1900 <= number <= 2100:
+            continue
+        if abs(number) < 10:
+            continue
+        anchors.add(f"{number:g}")
+    return anchors
+
+
+def _same_report_event(
+    left: dict[str, Any], right: dict[str, Any]
+) -> bool:
+    left_url = str(left.get("final_url") or left.get("url") or "").rstrip("/")
+    right_url = str(right.get("final_url") or right.get("url") or "").rstrip("/")
+    if left_url and left_url == right_url:
+        return True
+
+    left_title = _normalize_report_event_text(
+        left.get("title"), strip_source_suffix=True
+    )
+    right_title = _normalize_report_event_text(
+        right.get("title"), strip_source_suffix=True
+    )
+    if left_title and left_title == right_title:
+        return True
+    if left_title and right_title:
+        if SequenceMatcher(None, left_title, right_title).ratio() >= 0.78:
+            return True
+    title_shingle_similarity = _report_event_shingle_similarity(
+        str(left.get("title") or ""), str(right.get("title") or "")
+    )
+    shared_numbers = (
+        _report_event_number_anchors(left)
+        & _report_event_number_anchors(right)
+    )
+
+    left_summary = _normalize_report_event_text(left.get("summary"))
+    right_summary = _normalize_report_event_text(right.get("summary"))
+    if left_summary and right_summary:
+        summary_similarity = SequenceMatcher(
+            None, left_summary, right_summary
+        ).ratio()
+        if summary_similarity >= 0.78 and (
+            title_shingle_similarity >= 0.12 or shared_numbers
+        ):
+            return True
+
+    evidence_shingle_similarity = _report_event_shingle_similarity(
+        _report_event_evidence_text(left),
+        _report_event_evidence_text(right),
+    )
+    if len(shared_numbers) == 1:
+        shared_number = float(next(iter(shared_numbers)))
+        if (
+            abs(shared_number) >= 1000
+            and title_shingle_similarity >= 0.06
+            and evidence_shingle_similarity >= 0.08
+        ):
+            return True
+    if len(shared_numbers) < 2:
+        return False
+    return evidence_shingle_similarity >= 0.06
+
+
+def deduplicate_report_articles(
+    articles: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse syndicated coverage into one representative report event.
+
+    Raw articles remain untouched for auditing. Only the list passed into report
+    generation is reduced, choosing the highest-risk and richest article from
+    each transitive group of matching URLs, headlines, summaries or numeric facts.
+    """
+    if len(articles) < 2:
+        return list(articles)
+
+    parents = list(range(len(articles)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left_index: int, right_index: int) -> None:
+        left_root = find(left_index)
+        right_root = find(right_index)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for left_index, left in enumerate(articles):
+        for right_index in range(left_index + 1, len(articles)):
+            if _same_report_event(left, articles[right_index]):
+                union(left_index, right_index)
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(articles)):
+        groups.setdefault(find(index), []).append(index)
+
+    representatives: list[tuple[int, dict[str, Any]]] = []
+    for indexes in groups.values():
+        representative_index = max(
+            indexes,
+            key=lambda index: (
+                int(articles[index].get("risk_score") or 0),
+                int(articles[index].get("impact_score") or 0),
+                len(str(articles[index].get("full_text") or "")),
+                len(str(articles[index].get("summary") or "")),
+                -index,
+            ),
+        )
+        representatives.append((min(indexes), articles[representative_index]))
+    representatives.sort(key=lambda item: item[0])
+    return [article for _index, article in representatives]
 
 
 def risk_level_for_score(score: int) -> RiskLevel:
@@ -2413,10 +2581,18 @@ class DailyReportManager:
                 raise IntelligenceAlreadyRunningError(
                     f"日报 #{self._running_report_id} 正在生成"
                 )
-            articles = self.repository.relevant_articles_for_report(report_date)
-            if not articles:
+            candidate_articles = self.repository.relevant_articles_for_report(
+                report_date
+            )
+            if not candidate_articles:
                 raise ValueError(
                     "所选日期下没有完成全文审核与业务分析的相关新闻"
+                )
+            articles = deduplicate_report_articles(candidate_articles)
+            if len(articles) < len(candidate_articles):
+                logging.getLogger(__name__).info(
+                    "日报 %s 事件级去重：%s 篇文章合并为 %s 个事件",
+                    report_date, len(candidate_articles), len(articles),
                 )
             report_id = self.repository.create_report(
                 report_date=report_date,

@@ -23,6 +23,7 @@ from app.intelligence import (
     DailyReportAssessment,
     IntelligenceRepository,
     RelevanceAssessment,
+    deduplicate_report_articles,
     enforce_company_fact_boundary,
     extract_report_dimensions,
 )
@@ -217,6 +218,82 @@ def test_extract_report_dimensions_uses_explicit_evidence_not_source_country() -
             "country": "CA",
         }
     ) == ([], [])
+
+
+def test_report_event_deduplication_collapses_july_28_syndicated_news() -> None:
+    articles = [
+        {
+            "article_id": 277,
+            "title": "300981，上半年净利最高预增超35倍！ - finance.sina.com.cn",
+            "summary": (
+                "健康防护手套行业回暖，中红医疗和蓝帆医疗业绩预增，"
+                "英科医疗受到汇率波动影响。"
+            ),
+            "analysis_evidence": ["300981上半年净利润大幅增长"],
+            "risk_score": 50,
+            "impact_score": 4,
+            "full_text": "详细行业分析" * 100,
+        },
+        {
+            "article_id": 280,
+            "title": (
+                "中红医疗(300981.SZ)预计上半年归母净利润同比增长"
+                "2338%～3557% - Investing.com"
+            ),
+            "summary": (
+                "中红医疗预计净利润同比增长2338%-3557%，"
+                "主因健康防护手套价格上涨。"
+            ),
+            "risk_score": 40,
+        },
+        {
+            "article_id": 272,
+            "title": (
+                "健康防护手套销售价格上涨，中红医疗预计上半年净利同比增长"
+                "2338%~3557% - news.qq.com"
+            ),
+            "summary": "中红医疗预计净利润同比增长2338%至3557%。",
+            "risk_score": 20,
+        },
+        {
+            "article_id": 281,
+            "title": (
+                "健康防护手套销售价格上涨，中红医疗预计上半年净利同比增长"
+                "2338%~3557% - caiwennews.com"
+            ),
+            "summary": "中红医疗预计净利润同比增长2338%至3557%。",
+            "risk_score": 20,
+        },
+        {
+            "article_id": 900,
+            "title": "欧盟调整医疗器械进口注册要求",
+            "summary": "欧盟发布新的医疗器械注册安排。",
+            "risk_score": 30,
+        },
+    ]
+
+    deduplicated = deduplicate_report_articles(articles)
+
+    assert [article["article_id"] for article in deduplicated] == [277, 900]
+
+
+def test_report_event_deduplication_keeps_distinct_similar_topics() -> None:
+    articles = [
+        {
+            "article_id": 1,
+            "title": "美国将医疗手套进口关税提高至25%",
+            "summary": "新税率适用于医疗手套。",
+            "risk_score": 60,
+        },
+        {
+            "article_id": 2,
+            "title": "美国医院将防护用品采购量提高25%",
+            "summary": "采购计划涉及口罩和防护服。",
+            "risk_score": 40,
+        },
+    ]
+
+    assert deduplicate_report_articles(articles) == articles
 
 
 def report_response(article_id: int) -> dict[str, Any]:
