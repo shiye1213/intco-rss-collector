@@ -1331,6 +1331,20 @@ def test_delete_pending_articles_preserves_completed_analysis(tmp_path) -> None:
     assert repository.status()["pending"] == 0
 
 
+def test_delete_pending_articles_avoids_mysql_target_table_subquery() -> None:
+    constants = (
+        IntelligenceRepository.delete_pending_articles.__code__.co_consts
+    )
+    sql_constants = [
+        value for value in constants if isinstance(value, str)
+    ]
+    assert any("SELECT a.id" in value for value in sql_constants)
+    assert not any(
+        "DELETE FROM articles" in value and "SELECT a.id" in value
+        for value in sql_constants
+    )
+
+
 def test_split_prompts_use_full_text_and_keep_stage_responsibilities() -> None:
     article = {
         "article_id": 1,

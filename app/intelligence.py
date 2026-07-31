@@ -634,21 +634,34 @@ class IntelligenceRepository:
 
     def delete_pending_articles(self) -> int:
         condition = self._candidate_condition()
+        deleted = 0
         with self.database.connect() as connection:
-            cursor = connection.execute(
-                f"""
-                DELETE FROM articles
-                WHERE id IN (
+            while True:
+                rows = connection.execute(
+                    f"""
                     SELECT a.id
                     FROM articles a
                     LEFT JOIN article_contents ic ON ic.article_id = a.id
                     LEFT JOIN article_relevance_reviews rr ON rr.article_id = a.id
                     LEFT JOIN business_articles ba ON ba.article_id = a.id
                     WHERE ({condition})
+                    ORDER BY a.id
+                    LIMIT 500
+                    """  # noqa: S608
+                ).fetchall()
+                article_ids = [int(row["id"]) for row in rows]
+                if not article_ids:
+                    break
+                placeholders = ",".join("?" for _ in article_ids)
+                cursor = connection.execute(
+                    f"DELETE FROM articles WHERE id IN ({placeholders})",  # noqa: S608
+                    article_ids,
                 )
-                """  # noqa: S608
-            )
-            return int(cursor.rowcount)
+                batch_deleted = int(cursor.rowcount)
+                deleted += batch_deleted
+                if batch_deleted == 0:
+                    break
+        return deleted
 
     def candidate_article_ids(
         self,
